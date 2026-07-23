@@ -1,0 +1,3 @@
+[submodule "generative_latent_prior"]
+	path = generative_latent_prior
+	url = https://github.com/g-luo/generative_latent_prior.git
