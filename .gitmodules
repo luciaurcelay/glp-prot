@@ -1,3 +1,6 @@
 [submodule "generative_latent_prior"]
 	path = generative_latent_prior
 	url = https://github.com/g-luo/generative_latent_prior.git
+[submodule "InterPLM"]
+	path = InterPLM
+	url = https://github.com/ElanaPearl/InterPLM.git
