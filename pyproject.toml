@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glp-plm"
+version = "0.0.1"
+description = "Generative Latent Prior ported from LLM to protein-LM (ESM-2) activations"
+requires-python = ">=3.9"
+dependencies = ["torch>=2.2", "numpy", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["glp_plm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

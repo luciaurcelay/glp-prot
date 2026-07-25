@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Runs / artifacts / data (never commit large blobs)
+runs/
+*.pt
+*.safetensors
+*.npz
+*.gz
+data/
+
+# Reference PDFs (kept locally as ground truth, not tracked — 34 MB)
+docs/papers/
+
+# OS
+.DS_Store

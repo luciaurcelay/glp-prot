@@ -1,0 +1,51 @@
+# Mac proof-of-concept: MPS/CPU, fp32, ~2M activations, 2-block GLP (PLAN §6.2/§8, D8).
+# Everything here except {device, precision, output_dir, data scale, store_mode,
+# train.batch_size} is shared with esm8m_h100.yaml — the cluster run is a config swap.
+
+device: mps          # falls back to cpu if MPS unavailable (utils.get_device)
+precision: fp32      # MPS bf16 is flaky (PLAN §6.2/R risk register)
+seed: 0
+output_dir: runs/poc_mac
+
+model:
+  activation_dim: 320   # esm2-8m hidden size at layer 4 (RECON §5)
+  d_model: null         # -> 640  (2 x activation_dim)
+  d_mlp: null           # -> 1280 (4 x activation_dim); meta-neurons = n_blocks * 1280
+  n_blocks: 2
+
+data:
+  model_name: facebook/esm2_t6_8M_UR50D
+  layer: 4                       # hidden_states[4] = residual after block 4 (RECON §2)
+  n_train_activations: 2000000   # ~1.3 GB fp16 (PLAN §6.1)
+  store_mode: precache           # Mac: memmap shards
+  activation_dtype: float16
+  # PoC data: a small Swiss-Prot slice is fine; NO UniRef50 download (RECON §10).
+  train_fasta: null              # set in W1 (e.g. Swiss-Prot subset FASTA)
+  eval_uniprot_tsv: null         # set in W1 (1k subset or small REST pull; RECON §9/D12)
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500       # real InterPLM default (RECON §9, D9)
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20      # 20 for PCA/steering sanity; bump to 1000 for final FD
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5         # d=4096 prior; re-tune at d=320 (PLAN §6.2, R10)
+  batch_size: 512    # smaller than the 4096 spine batch for Mac memory
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 10
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]   # probing time in schedule fraction; select val / report test (RECON §7, D8/D9)
+  topk: 512
+  seed: 42

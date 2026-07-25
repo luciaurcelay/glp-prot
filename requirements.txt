@@ -1,0 +1,8 @@
+# Core (used by scaffolded model/diffusion/train + tests)
+torch>=2.2
+numpy
+pyyaml
+pytest
+# Data/eval pipeline (W1+): reuse InterPLM as a dependency (PLAN §5).
+# Install the InterPLM submodule editable:  pip install -e InterPLM
+# InterPLM brings: transformers, huggingface_hub, nnsight, scikit-learn, scipy, pandas, einops

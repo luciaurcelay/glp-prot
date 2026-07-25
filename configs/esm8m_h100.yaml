@@ -1,0 +1,50 @@
+# Full ESM-2-8M spine run on 1x H100 (PLAN §8/§9, GATE G2).
+# DIFFERS FROM poc_mac.yaml ONLY IN: device, precision, output_dir, data scale +
+# store_mode, and train.batch_size (D8 parity contract — no code changes).
+
+device: cuda
+precision: bf16
+seed: 0
+output_dir: runs/esm8m_h100
+
+model:
+  activation_dim: 320
+  d_model: null         # -> 640
+  d_mlp: null           # -> 1280
+  n_blocks: 6           # spine 4->6 (PLAN §6.2); start here, scan down for the mini curve
+
+data:
+  model_name: facebook/esm2_t6_8M_UR50D
+  layer: 4
+  n_train_activations: 50000000   # start 50M -> 100M -> 300M, watch FD plateau (PLAN §6.1)
+  store_mode: stream              # cluster: producer-consumer streaming
+  activation_dtype: float16
+  train_fasta: null               # UniRef50 subset (streamed) — ask before downloading
+  eval_uniprot_tsv: null          # full Swiss-Prot 50k eval set (RECON §9)
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5
+  batch_size: 4096      # GLP reference batch (train_llama8b_static.yaml)
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 10
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]
+  topk: 512
+  seed: 42
