@@ -1,4 +1,4 @@
-"""Per-dimension standardizer for activations (PLAN §6.2/§6.1; RECON §6, D7).
+"""Per-dimension standardizer for activations (PLAN §6.2/§6.1; INTERPLM_MAP §6, D7).
 
 GLP standardizes activations to zero-mean/unit-var before diffusion and inverts
 after sampling. The released reference (denoiser.py:19-71) persists `{mean, var}`

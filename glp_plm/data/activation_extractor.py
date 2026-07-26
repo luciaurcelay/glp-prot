@@ -1,6 +1,6 @@
 """Thin wrapper over InterPLM's ESM embedder — the single hook-parity guard.
 
-RECON §1 (deltas D1, D2):
+INTERPLM_MAP §1 (deltas D1, D2):
   * The real API is the class `interplm.embedders.esm.ESM` (factory
     `interplm.embedders.get_embedder("esm", model_name=...)`), NOT the
     plan's `interplm.esm.embed`.

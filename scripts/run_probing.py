@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 """run_probing — thin CLI stub (PLAN §11).
 
-Not implemented this session: the data/eval pipeline is gated behind RECON.md
-review (PLAN §9). See RECON.md §9-10 for the verified InterPLM entrypoints this
-will wrap. Kept as a stub so the repo skeleton matches PLAN §5/§11 exactly.
+Not implemented yet (PLAN §9). See docs/INTERPLM_MAP.md for the InterPLM
+entrypoints this will wrap. Kept as a stub so the repo skeleton matches PLAN §5/§11.
 """
 import argparse
 
@@ -13,7 +12,7 @@ def main():
     ap.add_argument("--config", required=True)
     ap.parse_args()
     raise NotImplementedError(
-        "run_probing is scaffolded but not implemented yet (post-RECON-review; PLAN §9)."
+        "run_probing is scaffolded but not implemented yet (PLAN §9)."
     )
 
 

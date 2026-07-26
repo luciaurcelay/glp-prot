@@ -1,7 +1,7 @@
 """Sinusoidal timestep embedding + MLP, matching the GLP reference.
 
 Ref: generative_latent_prior/glp/denoiser.py:76-92 (timestep_embedding) and
-:155-159 (time_embed MLP). Verified in RECON §5.
+:155-159 (time_embed MLP). Verified in INTERPLM_MAP §5.
 """
 
 from __future__ import annotations

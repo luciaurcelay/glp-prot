@@ -2,7 +2,7 @@
 
 **Target venue:** *Interpretability for Discovery* workshop, NeurIPS 2026 (non-archival). Deadline: 5 weeks.
 **Execution model:** Built and run primarily via Claude Code. Local Apple-Silicon proof-of-concept first, then a compute cluster (assume 1× H100; multi-GPU only if time allows).
-**Conventions:** Sections marked `⚠ DECISION` need human sign-off; `⚠ RISK` carries go/no-go weight; `⚠ FAIRNESS` marks reviewer-attack surfaces. Claims have been verified against the InterPLM and GLP clones — see `RECON.md` for `file:line` citations.
+**Conventions:** Sections marked `⚠ DECISION` need human sign-off; `⚠ RISK` carries go/no-go weight; `⚠ FAIRNESS` marks reviewer-attack surfaces. Claims have been verified against the InterPLM and GLP clones — see `docs/INTERPLM_MAP.md` for `file:line` citations.
 
 ---
 
@@ -16,32 +16,32 @@ We port the **Generative Latent Prior (GLP)** — a diffusion "meta-model" of ne
 
 ```mermaid
 flowchart TD
-    ESM["ESM-2-8M (frozen)<br/>facebook/esm2_t6_8M_UR50D"]
-    HOOK["Hook point: residual stream after block 4<br/>hidden_states index 4, cls/eos dropped<br/>=== hook parity ==="]
-    ESM --> HOOK
+ ESM["ESM-2-8M (frozen)<br/>facebook/esm2_t6_8M_UR50D"]
+ HOOK["Hook point: residual stream after block 4<br/>hidden_states index 4, cls/eos dropped<br/>=== hook parity ==="]
+ ESM --> HOOK
 
-    HOOK --> TRAIN["Training activations (unlabeled)<br/>UniRef50 / Swiss-Prot slice"]
-    HOOK --> EVALSET["Eval activations (labeled)<br/>Swiss-Prot, per-AA concept labels"]
-    HOOK --> SAE["InterPLM SAE (released, layer 4)<br/>dict 10,240 - not retrained"]
+ HOOK --> TRAIN["Training activations (unlabeled)<br/>UniRef50 / Swiss-Prot slice"]
+ HOOK --> EVALSET["Eval activations (labeled)<br/>Swiss-Prot, per-AA concept labels"]
+ HOOK --> SAE["InterPLM SAE (released, layer 4)<br/>dict 10,240 - not retrained"]
 
-    TRAIN --> STD["Standardize (per-dim mean/var)"]
-    STD --> FM["GLP training - flow matching<br/>z_t=(1-t)z0+t*noise, target=noise-z0, MSE"]
-    FM --> GLP["GLP denoiser u(z_t, t)<br/>SwiGLU blocks, no attention, single-token"]
+ TRAIN --> STD["Standardize (per-dim mean/var)"]
+ STD --> FM["GLP training - flow matching<br/>z_t=(1-t)z0+t*noise, target=noise-z0, MSE"]
+ FM --> GLP["GLP denoiser u(z_t, t)<br/>SwiGLU blocks, no attention, single-token"]
 
-    GLP --> SAMP["Sampler: from noise / SDEdit"]
-    SAMP --> GENQ["Generation quality: FD, PCA, %Loss-Recovered<br/><b>Gate G2</b>"]
+ GLP --> SAMP["Sampler: from noise / SDEdit"]
+ SAMP --> GENQ["Generation quality: FD, PCA, %Loss-Recovered<br/><b>Gate G2</b>"]
 
-    GLP --> META["Meta-neurons<br/>down_proj input at probing time u"]
-    META --> PROBE["1-D probing: GLP vs SAE vs raw-layer vs raw-MLP<br/>AUC + F1 · <b>Deliverable 2</b>"]
-    SAE --> PROBE
-    EVALSET --> PROBE
+ GLP --> META["Meta-neurons<br/>down_proj input at probing time u"]
+ META --> PROBE["1-D probing: GLP vs SAE vs raw-layer vs raw-MLP<br/>AUC + F1 · <b>Deliverable 2</b>"]
+ SAE --> PROBE
+ EVALSET --> PROBE
 
-    SAE --> STEER["On-manifold steering<br/>SAE clamp (recon+error) + GLP SDEdit cleanup"]
-    GLP --> STEER
-    EVALSET --> STEER
-    STEER --> PARETO["Concept vs naturalness Pareto<br/><b>Deliverable 3</b>"]
+ SAE --> STEER["On-manifold steering<br/>SAE clamp (recon+error) + GLP SDEdit cleanup"]
+ GLP --> STEER
+ EVALSET --> STEER
+ STEER --> PARETO["Concept vs naturalness Pareto<br/><b>Deliverable 3</b>"]
 
-    META --> CAND["Novel candidates: unlabeled meta-neurons<br/>+ held-out signal · <b>Subsection 4</b>"]
+ META --> CAND["Novel candidates: unlabeled meta-neurons<br/>+ held-out signal · <b>Subsection 4</b>"]
 ```
 
 ---
@@ -64,24 +64,24 @@ flowchart TD
 ### 2.1 GLP (Luo et al., 2026) — the method we port
 
 - **Objective — flow matching.** Forward: `z_t = (1 − t)·z0 + t·ε`, `t ∈ [0,1]`. Reverse from `z1 ~ N(0,I)`: `z_{t'} = z_t + û·(t' − t)`. Train denoiser `û_θ(z_t, t)` to predict target velocity `u = ε − z0` with **MSE loss**. Unconditional.
-- **Architecture.** Stack of **SwiGLU MLP blocks with residual connections**. **No attention** (single-token modeling, like SAEs). **Norm is LayerNorm, not RMSNorm** (verified in the released code — RECON §4/D3). Timestep conditioning is the only diffusion-specific piece and is now known exactly from the release (RECON §4/D4): a `time_proj = Linear(d_model→d_mlp)` applied to the time embedding **multiplies the SwiGLU gate pre-activation** — `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`. This is a **plain multiplicative** modulation: **no `(1+γ)` scale, no `β` bias, and the `up` path is not modulated** (i.e. not the standard FiLM parameterisation the earlier plan versions assumed). Source: `generative_latent_prior/glp/denoiser.py:111,119-124`.
+- **Architecture.** Stack of **SwiGLU MLP blocks with residual connections**. **No attention** (single-token modeling, like SAEs). **Norm is LayerNorm, not RMSNorm** (verified in the released code). Timestep conditioning is the only diffusion-specific piece and is now known exactly from the release: a `time_proj = Linear(d_model→d_mlp)` applied to the time embedding **multiplies the SwiGLU gate pre-activation** — `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`. This is a **plain multiplicative** modulation: **no `(1+γ)` scale, no `β` bias, and the `up` path is not modulated** (i.e. not the standard FiLM parameterisation the earlier plan versions assumed). Source: `generative_latent_prior/glp/denoiser.py:111,119-124`.
 - **Width rule (critical for generation quality).** `model_width = 2 × activation_dim`; gated-MLP **expansion factor = 2× over model width** ⇒ MLP inner = `4 × activation_dim`. GLP found sufficient width relative to input essential (Li et al., 2024).
 - **Data pipeline.** Same activations used for SAEs: residual stream at one intermediate layer, all token positions except BOS. **Producer–consumer**: producer caches into a fixed-size buffer flushed on consumption. Consumer uses **mixed-precision**. Standardize activations to zero-mean/unit-var before diffusion; restore after.
 - **Their hyperparameters.** 1 epoch over 1B activations, batch 4096, lr 5e-5, cosine, warmup 0.01. Middlemost layer (Llama1B L7 / Llama8B L15). Sizes 0.5B–3.3B params (3–24 blocks) at d=2048. Single A100-80GB; longest run 5.6 days. **These are d=2048 settings — starting points for us, not gospel (see §6.2).**
 - **Available-feature counts (Table 12) confirm the meta-neuron formula.** Llama8B GLP (6 blocks, d=4096 ⇒ inner 16384): 6×16384 = 98,304 meta-neurons ✓. Llama1B 24-block (inner 8192): 24×8192 = 196,608 ✓. So **meta-neuron count = n_blocks × MLP_inner**.
 - **Generation-quality metrics.** **Frechet Distance (FD)** between 50k generated (from noise, 1000 steps) vs. real activations; lower bound = FD(train, val). Reference magnitudes: Llama1B lower-bound 0.22, SAE-recon 1.99, GLP 0.53–0.68; Llama8B lower-bound 2.60, SAE-recon 6.91, GLP 5.93. **Note: GLP beats SAE but does not reach the lower bound** — see §6.4. **PCA overlap** (top-2 PCs); converges ~20 steps. **Delta LM Loss** = increase in source-model loss from injecting reconstructed activations (GLP adapts this by interpolating a real activation with noise at `t_start=0.5`, 20 steps).
 - **On-manifold steering (SDEdit analog).** `acts_edit = acts + α·w`; standardize; `acts_noisy = (1−t_start)·acts_edit + t_start·noise`; reverse-sample `t_start`→0; de-standardize. **Bigger `t_start` = stronger correction, weaker edit-fidelity.** Config: `t_start=0.5`, `num_steps=20`, `α = r·‖a‖₂`, helpful regime `r ≥ 1`. Pushes the concept–fluency Pareto frontier outward on sentiment/SAE-feature/persona steering.
-- **Probing (Section 5).** "Meta-neurons" = the **post-gating gated-MLP neuron value at each block, i.e. the input to `down_proj`** — `φᵢ(z) = SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)` (NOT the bare gate pre-activation; per GLP's footnote this is the gated MLP neuron of Choi et al. 2024). **The value includes the `time_proj(t_emb)` factor** and is therefore a function of the probing time (this refines earlier plan versions, which wrote `SiLU(gate)·up` and dropped the time factor — RECON §4/D5). Source: `generative_latent_prior/glp/script_probe.py:128,104` hooks `denoiser.model.layers.{i}.down_proj` input. Read from one forward pass with input noised at a chosen **`u`** (schedule fraction; **released default `u=0.9`** ⇒ lightly-noised/near-clean — RECON §7/D8; NOT the plan's earlier `t=0.1/0.5`). Probes are run **on the last-token activation** (see §6.5, H4 — this needs a protein-specific decision). Per concept: filter to top-k=512 candidates on train, fit 1-D logistic regression (L-BFGS 1000 iters, L2, 5-fold CV over {1e-5…1e0}), select best by **val AUC**, report **test AUC**. GLP beats SAE, raw layer output, raw MLP neuron across 113 tasks.
+- **Probing (Section 5).** "Meta-neurons" = the **post-gating gated-MLP neuron value at each block, i.e. the input to `down_proj`** — `φᵢ(z) = SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)` (NOT the bare gate pre-activation; per GLP's footnote this is the gated MLP neuron of Choi et al. 2024). **The value includes the `time_proj(t_emb)` factor** and is therefore a function of the probing time (this refines earlier plan versions, which wrote `SiLU(gate)·up` and dropped the time factor). Source: `generative_latent_prior/glp/script_probe.py:128,104` hooks `denoiser.model.layers.{i}.down_proj` input. Read from one forward pass with input noised at a chosen **`u`** (schedule fraction; **released default `u=0.9`** ⇒ lightly-noised/near-clean; NOT the plan's earlier `t=0.1/0.5`). Probes are run **on the last-token activation** (see §6.5, H4 — this needs a protein-specific decision). Per concept: filter to top-k=512 candidates on train, fit 1-D logistic regression (L-BFGS 1000 iters, L2, 5-fold CV over {1e-5…1e0}), select best by **val AUC**, report **test AUC**. GLP beats SAE, raw layer output, raw MLP neuron across 113 tasks.
 
 ### 2.2 InterPLM (Simon & Zou, 2024) — our substrate
 
-- **Model.** ESM-2-8M (`facebook/esm2_t6_8M_UR50D`): 6 transformer blocks, **d=320**, `intermediate_size=1280` (FFN, GELU), 20 heads, **rotary** position embeddings, `vocab_size=33`, `mask_token_id=32`, `pad_token_id=1` (from config.json; `d=320` corroborated by `interplm/embedders/esm.py:25`; the other fields are re-verified on first model download in W1 — RECON §11). Second option: ESM-2-650M (`facebook/esm2_t33_650M_UR50D`), **d=1280**, 33 layers. **InterPLM uses the canonical `EsmForMaskedLM`/`EsmModel`; do not use the NVIDIA `nv_esm` repackaging** (different class, would break hook parity).
+- **Model.** ESM-2-8M (`facebook/esm2_t6_8M_UR50D`): 6 transformer blocks, **d=320**, `intermediate_size=1280` (FFN, GELU), 20 heads, **rotary** position embeddings, `vocab_size=33`, `mask_token_id=32`, `pad_token_id=1` (from config.json; `d=320` corroborated by `interplm/embedders/esm.py:25`; the other fields are re-verified on first model download in W1). Second option: ESM-2-650M (`facebook/esm2_t33_650M_UR50D`), **d=1280**, 33 layers. **InterPLM uses the canonical `EsmForMaskedLM`/`EsmModel`; do not use the NVIDIA `nv_esm` repackaging** (different class, would break hook parity).
 - **Released SAEs (verified on HF, Jan 2025).** `Elana/InterPLM-esm2-8m` layers 1–6; `Elana/InterPLM-esm2-650m` layers 1,9,18,24,30,33. Both: expansion 32× ⇒ **dictionary 10,240**. Load via `load_sae_from_hf(plm_model="esm2-8m", plm_layer=4)` or `hf_hub_download(repo_id="Elana/InterPLM-esm2-8m", filename="layer_4/ae_normalized.pt")` → `load_model(...)`. **(The paper text's "10,420" is a typo; 320×32 = 10,240 is correct and matches the HF cards.)**
 - **SAE hook.** Residual stream **after transformer blocks 1–6**, **excluding `<cls>` and `<eos>`**. Primary analyses use **layer 4**.
-- **Embedding helper (reuse this) — API corrected (RECON §1/D1-D2).** There is **no `interplm.esm.embed` module**. The real embedder is the class **`interplm.embedders.esm.ESM`** (factory `interplm.embedders.get_embedder("esm", model_name=...)`); `model_name` is a **constructor** arg. Methods: **`embed_single_sequence(sequence, layer)`** (`esm.py:242`) and **`extract_embeddings_multiple_layers(sequences, layers, batch_size, shuffle)`** (`esm.py:116`). Both **already drop `<cls>`/`<eos>`/pad** and return `(n_tokens, d)` (`esm.py:181-186`), so our wrapper **must not re-strip** and hook parity is **exact** (not "up to the cls/eos drop"). **We call these to guarantee hook parity — we do not reimplement extraction.** (See §6.1, R5.)
+- **Embedding helper (reuse this) — API corrected.** There is **no `interplm.esm.embed` module**. The real embedder is the class **`interplm.embedders.esm.ESM`** (factory `interplm.embedders.get_embedder("esm", model_name=...)`); `model_name` is a **constructor** arg. Methods: **`embed_single_sequence(sequence, layer)`** (`esm.py:242`) and **`extract_embeddings_multiple_layers(sequences, layers, batch_size, shuffle)`** (`esm.py:116`). Both **already drop `<cls>`/`<eos>`/pad** and return `(n_tokens, d)` (`esm.py:181-186`), so our wrapper **must not re-strip** and hook parity is **exact** (not "up to the cls/eos drop"). **We call these to guarantee hook parity — we do not reimplement extraction.** (See §6.1, R5.)
 - **SAE training data (for reference only; we don't retrain).** 5M UniRef50 sequences, sharded per 1,000 proteins, tokens shuffled within shards.
 - **Feature normalization.** Each feature scaled to [0,1] by max activation over a 50k Swiss-Prot scan (`ae_normalized.pt` already encodes this).
-- **Swiss-Prot eval set.** Reviewed UniProtKB proteins **that have an AlphaFoldDB structure** (the pipeline drops rows without one — `extract_annotations.py:151`), length **≤ 1022** (CLS+EOS ⇒ 1024 tokens; `extract_annotations.py:256`), split by **shard ranges** (not a fixed 25k/25k — `prepare_eval_set.py:15-22`; RECON §9/D11-D12). Protein-level annotations → **per-amino-acid binary labels**, domain relationships preserved (each domain instance gets a distinct integer index in `aa_concepts.npz`). **Concept frequency filter (corrected): kept if `>25` domains OR `>1,500` AAs** — the real `make_eval_subset` defaults (`prepare_eval_set.py:21-22`); the "10" cited in earlier versions is `min_required_instances` (a *subcategory-inclusion* knob, default 100), a different parameter (RECON §9/D9). **Field names:** `ft_act_site`, `ft_binding`, `ft_disulfid`, `ft_helix`, `ft_turn`, `ft_strand`, `ft_coiled`, `ft_carbohyd`, `ft_transit`, … are the UniProt **REST download field IDs** (README:163); after `extract_annotations` the **materialized concept columns are human-readable display names + subcategory expansions** (e.g. `Active site_<note>`, `Binding site_<ligand>`, `Helix`, `Beta strand`, `Disulfide bond`) read from `uniprotkb_aa_concepts_columns.txt` — read that file, never hardcode `ft_*` (RECON §9/D10). ℹ️ Because every eval protein has an AFDB accession, the §6.7 biophysical candidate signal is cheaper than earlier billed.
+- **Swiss-Prot eval set.** Reviewed UniProtKB proteins **that have an AlphaFoldDB structure** (the pipeline drops rows without one — `extract_annotations.py:151`), length **≤ 1022** (CLS+EOS ⇒ 1024 tokens; `extract_annotations.py:256`), split by **shard ranges** (not a fixed 25k/25k — `prepare_eval_set.py:15-22`). Protein-level annotations → **per-amino-acid binary labels**, domain relationships preserved (each domain instance gets a distinct integer index in `aa_concepts.npz`). **Concept frequency filter (corrected): kept if `>25` domains OR `>1,500` AAs** — the real `make_eval_subset` defaults (`prepare_eval_set.py:21-22`); the "10" cited in earlier versions is `min_required_instances` (a *subcategory-inclusion* knob, default 100), a different parameter. **Field names:** `ft_act_site`, `ft_binding`, `ft_disulfid`, `ft_helix`, `ft_turn`, `ft_strand`, `ft_coiled`, `ft_carbohyd`, `ft_transit`, … are the UniProt **REST download field IDs** (README:163); after `extract_annotations` the **materialized concept columns are human-readable display names + subcategory expansions** (e.g. `Active site_<note>`, `Binding site_<ligand>`, `Helix`, `Beta strand`, `Disulfide bond`) read from `uniprotkb_aa_concepts_columns.txt` — read that file, never hardcode `ft_*`. ℹ️ Because every eval protein has an AFDB accession, the §6.7 biophysical candidate signal is cheaper than earlier billed.
 - **`⚠` Concept-count provenance (versions disagree — do NOT hardcode):** the v1 preprint (in our context) reports **433 concepts evaluated / 143 aligned**; the bioRxiv v2 / Nature Methods version reports a hierarchical categorization over **258 concepts**. The paper also exists as arXiv:2412.12101. These are different numbers from different versions. **Claude Code must read the actual released concept set from the repo/dashboard, not trust any hardcoded count from this plan.** The concept-selection procedure (§7) operates on whatever set the repo materializes, so it is robust to which version is used.
 - **InterPLM metric.** Domain-adjusted F1: **precision per amino acid, recall per domain**. Threshold swept {0, 0.15, 0.5, 0.6, 0.8}, best-F1 kept.
 - **Steering (NNsight).** Decompose ESM embedding into **SAE reconstruction + error**; **clamp** target feature to a value (fraction of max activation); recombine; continue forward pass; read logits/softmax. Demonstrated on **periodic-glycine features** (`f/4616, f/4970, f/10003`) with `MGPP<mask>PP`, steering only the unmasked G, measuring P(G) at the masked position.
@@ -119,14 +119,14 @@ GLP's fluency = "free-run generate text, LLM-judge it." **ESM-2 is a bidirection
 | # | Decision | Default | Rationale |
 |---|---|---|---|
 | D1 | Spine model | **ESM-2-8M, layer 4, d=320** | Tiny GLP (~15M params), Mac-trainable, H100-fast. Layer 4 = InterPLM's primary analysis layer, best-characterized SAE. |
-| D2 | Hook point | **Residual after block 4** (`hidden_states[4]`), via `interplm.embedders.esm.ESM` | Byte-identical to what the released SAE saw (R5); API corrected in §2.2 (RECON §1). |
+| D2 | Hook point | **Residual after block 4** (`hidden_states[4]`), via `interplm.embedders.esm.ESM` | Byte-identical to what the released SAE saw (R5); API corrected in §2.2. |
 | D3 | 650M | **Stretch scaling point; hook a released-SAE layer (e.g. layer 18 or 24)** | SAE side now cheap (released weights at layers 1,9,18,24,30,33); cost is the wider GLP + embedding extraction. |
 | D4 | ESMFold/pLDDT | **Tier-2, cluster-only, feasibility-gated** | HF `EsmForProteinFolding` **vendors** openfold utils (no separate `pip install openfold`, no `nvcc` compile) BUT is not openfold-free and needs **16–24 GB GPU mem**. Primary steering metric is pure-ESM. |
 | D5 | Probing metric | **AUC (headline) + F1 (secondary)** | AUC = faithful GLP port; F1 = InterPLM-native. |
 | D6 | SAE weights | **Download released HF weights** | Verified available; retraining unnecessary. |
 | D7 | Discovery emphasis | **Probing+steering spine; novel candidates = 1 subsection** | Per PI direction. |
 | D8 | Mac PoC | **End-to-end parity smoke test** | Cluster is a config swap. |
-| D9 | Probing `u` | **Select on val, report on test** over a `u` grid (e.g. {0.1,0.5,0.9}) | Closes a fairness hole (R8). Probing time lives in `u` (schedule fraction, released default 0.9), not `t=0.1/0.5` (RECON §7/D8). |
+| D9 | Probing `u` | **Select on val, report on test** over a `u` grid (e.g. {0.1,0.5,0.9}) | Closes a fairness hole (R8). Probing time lives in `u` (schedule fraction, released default 0.9), not `t=0.1/0.5`. |
 
 ---
 
@@ -137,47 +137,47 @@ Fresh repo `glp-plm/` that **imports InterPLM as a dependency** (SAE loading, em
 ```
 glp-plm/
 ├── configs/
-│   ├── poc_mac.yaml              # tiny, MPS/CPU, ~2M acts, 2-block GLP, fp32
-│   ├── esm8m_h100.yaml           # full spine run, bf16, streaming
-│   └── esm650m_h100.yaml         # stretch
+│ ├── poc_mac.yaml # tiny, MPS/CPU, ~2M acts, 2-block GLP, fp32
+│ ├── esm8m_h100.yaml # full spine run, bf16, streaming
+│ └── esm650m_h100.yaml # stretch
 ├── glp_plm/
-│   ├── data/
-│   │   ├── activation_extractor.py   # THIN wrapper over interplm.embedders.esm.ESM (cls/eos already dropped by it)
-│   │   ├── producer_consumer.py      # fixed-size buffer, streaming (cluster)
-│   │   ├── activation_store.py       # memmap shards + standardizer (Mac/precache)
-│   │   └── swissprot_labels.py       # reuse InterPLM annotation code → per-AA binary labels
-│   ├── model/
-│   │   ├── swiglu_block.py            # Llama3 SwiGLU + residual + FiLM(t) on gate; expose gated neuron SiLU(gate)*up
-│   │   ├── glp.py                     # denoiser û_θ(z_t, t); in/out projections
-│   │   └── timestep_embed.py          # sinusoidal + MLP embedding of t → per-block FiLM params
-│   ├── diffusion/
-│   │   ├── flow_matching.py           # z_t, target u = ε − z0, MSE
-│   │   ├── sampler.py                 # reverse integration; n-step; from t_start (SDEdit)
-│   │   └── scaler.py                  # per-dim mean/std; standardize/destandardize
-│   ├── train/
-│   │   ├── trainer.py                 # loop, mixed precision, cosine, ckpt
-│   │   └── scaling_sweep.py           # 3-size curve (stretch)
-│   ├── eval/
-│   │   ├── frechet.py                 # FD between two activation sets (+ lower bound + SAE-recon FD)
-│   │   ├── pca_overlap.py             # top-2 PCA, real vs generated
-│   │   ├── loss_recovered.py          # InterPLM %Loss Recovered (== GLP ΔLM); masked-LM CE
-│   │   ├── meta_neurons.py            # extract SwiGLU gate pre-acts at selected t
-│   │   ├── probing_1d.py              # GLP protocol: filter→1D LR→val AUC→test AUC
-│   │   ├── probing_f1.py              # InterPLM domain-adjusted F1
-│   │   ├── concept_selection.py       # pre-registered headline concept picker (§7)
-│   │   ├── steering.py                # SAE clamp (+ GLP SDEdit cleanup) via NNsight
-│   │   ├── naturalness.py             # pseudo-perplexity (non-steered positions), AA-dist shift
-│   │   └── esmfold_plddt.py           # Tier-2, optional
-│   └── utils/ (logging, seeds, device, io)
-├── scripts/                          # thin CLI entrypoints per phase (§11)
-├── tests/                            # flow-matching round-trip, FD sanity, hook-parity assert
-├── notebooks/                        # figure generation
+│ ├── data/
+│ │ ├── activation_extractor.py # THIN wrapper over interplm.embedders.esm.ESM (cls/eos already dropped by it)
+│ │ ├── producer_consumer.py # fixed-size buffer, streaming (cluster)
+│ │ ├── activation_store.py # memmap shards + standardizer (Mac/precache)
+│ │ └── swissprot_labels.py # reuse InterPLM annotation code → per-AA binary labels
+│ ├── model/
+│ │ ├── swiglu_block.py # Llama3 SwiGLU + residual + FiLM(t) on gate; expose gated neuron SiLU(gate)*up
+│ │ ├── glp.py # denoiser û_θ(z_t, t); in/out projections
+│ │ └── timestep_embed.py # sinusoidal + MLP embedding of t → per-block FiLM params
+│ ├── diffusion/
+│ │ ├── flow_matching.py # z_t, target u = ε − z0, MSE
+│ │ ├── sampler.py # reverse integration; n-step; from t_start (SDEdit)
+│ │ └── scaler.py # per-dim mean/std; standardize/destandardize
+│ ├── train/
+│ │ ├── trainer.py # loop, mixed precision, cosine, ckpt
+│ │ └── scaling_sweep.py # 3-size curve (stretch)
+│ ├── eval/
+│ │ ├── frechet.py # FD between two activation sets (+ lower bound + SAE-recon FD)
+│ │ ├── pca_overlap.py # top-2 PCA, real vs generated
+│ │ ├── loss_recovered.py # InterPLM %Loss Recovered (== GLP ΔLM); masked-LM CE
+│ │ ├── meta_neurons.py # extract SwiGLU gate pre-acts at selected t
+│ │ ├── probing_1d.py # GLP protocol: filter→1D LR→val AUC→test AUC
+│ │ ├── probing_f1.py # InterPLM domain-adjusted F1
+│ │ ├── concept_selection.py # pre-registered headline concept picker (§7)
+│ │ ├── steering.py # SAE clamp (+ GLP SDEdit cleanup) via NNsight
+│ │ ├── naturalness.py # pseudo-perplexity (non-steered positions), AA-dist shift
+│ │ └── esmfold_plddt.py # Tier-2, optional
+│ └── utils/ (logging, seeds, device, io)
+├── scripts/ # thin CLI entrypoints per phase (§11)
+├── tests/ # flow-matching round-trip, FD sanity, hook-parity assert
+├── notebooks/ # figure generation
 └── PLAN.md
 ```
 
 **Interface contract:** every phase is one script + one `config.yaml`. `poc_mac.yaml → esm8m_h100.yaml` changes only `device`, scale knobs, buffer mode, precision — no code changes (D8 parity).
 
-**Hook-parity test (shipped, `tests/test_hook_parity.py`):** assert that `activation_extractor` output for a fixed sequence **equals** `ESM(model_name="facebook/esm2_t6_8M_UR50D").embed_single_sequence(seq, layer=4)` **exactly** (the embedder already drops cls/eos, so no "up to" caveat — RECON §1/D2). This is the single most important guard in the repo (R5). It skips cleanly until InterPLM + ESM-2-8M weights are present, then must pass.
+**Hook-parity test (shipped, `tests/test_hook_parity.py`):** assert that `activation_extractor` output for a fixed sequence **equals** `ESM(model_name="facebook/esm2_t6_8M_UR50D").embed_single_sequence(seq, layer=4)` **exactly** (the embedder already drops cls/eos, so no "up to" caveat). This is the single most important guard in the repo (R5). It skips cleanly until InterPLM + ESM-2-8M weights are present, then must pass.
 
 ---
 
@@ -185,9 +185,9 @@ glp-plm/
 
 ### 6.1 Data — activation extraction
 
-**Reuse InterPLM's embedder.** `activation_extractor.py` wraps `interplm.embedders.esm.ESM` (via `get_embedder`); it does not touch ESM directly. It (a) calls `embed_single_sequence(seq, L)` / `extract_embeddings_multiple_layers(...)` at layer L, (b) returns `[n_tokens, d]` **as-is** — the helper has **already** dropped `<cls>`/`<eos>`/pad (`esm.py:181-186`), so the wrapper adds no processing (RECON §1/D1-D2). This guarantees the GLP training distribution == the SAE training distribution.
+**Reuse InterPLM's embedder.** `activation_extractor.py` wraps `interplm.embedders.esm.ESM` (via `get_embedder`); it does not touch ESM directly. It (a) calls `embed_single_sequence(seq, L)` / `extract_embeddings_multiple_layers(...)` at layer L, (b) returns `[n_tokens, d]` **as-is** — the helper has **already** dropped `<cls>`/`<eos>`/pad (`esm.py:181-186`), so the wrapper adds no processing. This guarantees the GLP training distribution == the SAE training distribution.
 
-**HF hidden-state indexing note (prevents off-by-one) — confirmed.** With `output_hidden_states=True`, `hidden_states[0]` = input embeddings, `hidden_states[1..6]` = outputs of blocks 1..6. InterPLM "layer 4" = `hidden_states[4]` (verified in `esm.py:179` and independently in `intervention.py:52-53` — RECON §2). The InterPLM helper already handles this; our wrapper matches its convention, verified by the hook-parity test.
+**HF hidden-state indexing note (prevents off-by-one) — confirmed.** With `output_hidden_states=True`, `hidden_states[0]` = input embeddings, `hidden_states[1..6]` = outputs of blocks 1..6. InterPLM "layer 4" = `hidden_states[4]` (verified in `esm.py:179` and independently in `intervention.py:52-53`). The InterPLM helper already handles this; our wrapper matches its convention, verified by the hook-parity test.
 
 **Two stores:**
 - **Training store** (unlabeled): UniRef50 subset, for GLP training.
@@ -198,7 +198,7 @@ glp-plm/
 **Standardization:** per-dim mean/std over a large training-store sample, persisted as `scaler.pt`; applied before diffusion, inverted after sampling; reused for eval/steering.
 
 **Activation budget `⚠ DECISION`:**
-- Mac PoC: **2M activations** (~1.3 GB fp16). **Source (RECON §10/D12):** use a small Swiss-Prot slice — README notes Swiss-Prot works for this — **no UniRef50 download for the PoC**. Note the shipped 1k subset `data/uniprotkb/swissprot_dense_annot_1k_subset.tsv.gz` is **gitignored and absent from the clone**; fetch it from upstream or pull a small reviewed+AFDB Swiss-Prot slice via the README REST query.
+- Mac PoC: **2M activations** (~1.3 GB fp16). **Source:** use a small Swiss-Prot slice — README notes Swiss-Prot works for this — **no UniRef50 download for the PoC**. Note the shipped 1k subset `data/uniprotkb/swissprot_dense_annot_1k_subset.tsv.gz` is **gitignored and absent from the clone**; fetch it from upstream or pull a small reviewed+AFDB Swiss-Prot slice via the README REST query.
 - Cluster spine: **start 50M → 100M → 300M**, watch FD plateau. d=320 manifold ≪ Llama d=2048, so we expect convergence well below GLP's 1B. **Empirically determined, not assumed.**
 - 300M fp16 ≈ 190 GB → **streaming producer-consumer on cluster**; pre-caching is Mac-only. (100M ≈ 64 GB fits most scratch disks as a fallback.)
 
@@ -213,7 +213,7 @@ glp-plm/
 | ≈ params | — | ~15–25M* | ~230–320M* |
 | meta-neurons | n_blocks·inner | 7,680 (6 blk) | 30,720 (6 blk) |
 
-- **Block (matches the released code — RECON §4):** `x → LayerNorm → SwiGLU(t) → +residual`, where `SwiGLU(t) = down_proj( SiLU(gate_proj(x)·time_proj(t_emb)) · up_proj(x) )`. **Norm is LayerNorm, not RMSNorm** (D3). **Timestep conditioning (D4):** the exact scheme is now known from the release — a `time_proj = Linear(d_model→d_mlp)` on the time embedding **multiplies the gate pre-activation**; **no `(1+γ)` scale, no `β` bias, up path unmodulated**. The earlier "standard-FiLM extrapolation" caveat is **resolved** — implement the released scheme directly. Source: `generative_latent_prior/glp/denoiser.py:111,119-124`.
+- **Block (matches the released code):** `x → LayerNorm → SwiGLU(t) → +residual`, where `SwiGLU(t) = down_proj(SiLU(gate_proj(x)·time_proj(t_emb)) · up_proj(x))`. **Norm is LayerNorm, not RMSNorm** (D3). **Timestep conditioning (D4):** the exact scheme is now known from the release — a `time_proj = Linear(d_model→d_mlp)` on the time embedding **multiplies the gate pre-activation**; **no `(1+γ)` scale, no `β` bias, up path unmodulated**. The earlier "standard-FiLM extrapolation" caveat is **resolved** — implement the released scheme directly. Source: `generative_latent_prior/glp/denoiser.py:111,119-124`.
 - **In/out projections:** `d→width` in, `width→d` out (velocity prediction).
 - **Normalizer (D7):** persist `{mean, var}` and use `(x−mean)/√var` (matches the release's `rep_statistics.pt` layout so GLP-published stats can be loaded); `std=√var`.
 - **`⚠` Hyperparameters are d=2048 defaults — re-tune for d=320.** Batch 4096 / lr 5e-5 / cosine / warmup 0.01 are starting points. At d=320 expect to sweep lr ∈ {1e-4, 5e-5, 2e-5} and possibly larger batch. Treat GLP's numbers as priors, not settings.
@@ -225,7 +225,7 @@ glp-plm/
 ### 6.3 Diffusion + sampling
 
 - **Loss:** `z0`~store, `ε`~N(0,I), `t`~U(0,1); `z_t=(1−t)z0+tε`; `MSE(û, ε−z0)`.
-- **Sampler:** `linspace(t_start, 0, num_steps)`; Euler `z ← z + dt·û`. `t_start=1` gen-from-noise; `t_start=0.5` SDEdit/loss-recovered. **Note (RECON §6/D6):** the released reference integrates via diffusers `FlowMatchEulerDiscreteScheduler` (where σ plays the role of `t`); our own Euler is mathematically **exact for the constant-velocity case** (basis of the round-trip test). To reproduce GLP's *published FD magnitudes*, match their scheduler's σ-spacing (W2 only; non-blocking).
+- **Sampler:** `linspace(t_start, 0, num_steps)`; Euler `z ← z + dt·û`. `t_start=1` gen-from-noise; `t_start=0.5` SDEdit/loss-recovered. **Note:** the released reference integrates via diffusers `FlowMatchEulerDiscreteScheduler` (where σ plays the role of `t`); our own Euler is mathematically **exact for the constant-velocity case** (basis of the round-trip test). To reproduce GLP's *published FD magnitudes*, match their scheduler's σ-spacing (W2 only; non-blocking).
 - **Steps:** 1000 for final FD; 20 for steering cleanup & PCA sanity.
 
 ### 6.4 Generation-quality eval (the W2 gate)
@@ -237,11 +237,11 @@ glp-plm/
 
 ### 6.5 Probing (Primary Deliverable 2)
 
-- **Meta-neuron bank:** per eval activation, GLP forward at `u` (selected on val, reported on test — D9), collect the **post-gating gated-MLP neuron = input to `down_proj` = `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`** at each block (H2; includes the time factor — RECON §4/D5) → `[N, n_blocks·inner]` (8M/6-block: 7,680 candidates). Hooked as `denoiser.model.layers.{i}.down_proj` input (`script_probe.py:128`).
+- **Meta-neuron bank:** per eval activation, GLP forward at `u` (selected on val, reported on test — D9), collect the **post-gating gated-MLP neuron = input to `down_proj` = `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`** at each block (H2; includes the time factor) → `[N, n_blocks·inner]` (8M/6-block: 7,680 candidates). Hooked as `denoiser.model.layers.{i}.down_proj` input (`script_probe.py:128`).
 - **Baselines (R6, pinned):**
-  - **InterPLM SAE features:** 10,240, from released `ae_normalized.pt` at layer 4.
-  - **Raw layer output:** the residual stream at layer 4, d=320 (also GLP's/SAE's input).
-  - **Raw ESM MLP neuron:** ESM-2-8M's **FFN intermediate activation** at layer 4, d_ff = 1,280 (standard 4× FFN). Tap the FFN hidden pre-output-projection, matching GLP's "raw MLP neuron" baseline.
+ - **InterPLM SAE features:** 10,240, from released `ae_normalized.pt` at layer 4.
+ - **Raw layer output:** the residual stream at layer 4, d=320 (also GLP's/SAE's input).
+ - **Raw ESM MLP neuron:** ESM-2-8M's **FFN intermediate activation** at layer 4, d_ff = 1,280 (standard 4× FFN). Tap the FFN hidden pre-output-projection, matching GLP's "raw MLP neuron" baseline.
 - **`⚠` H4 — probing position (port decision, NOT inherited blindly):** GLP probes the **last-token** activation because its concepts are sequence-level. Our Swiss-Prot concepts are **per-residue** (a residue is or isn't in a binding site). So we probe **per-amino-acid activations at annotated positions**, matching InterPLM's per-AA label granularity — we do **not** copy GLP's last-token choice, which would be wrong here. State this divergence explicitly in the paper.
 - **AUC protocol (headline):** per concept — top-k=512 candidates on train, 1-D logistic regression per candidate (L-BFGS 1000 iters, L2, 5-fold CV over {1e-5…1e0}), select by **val AUC**, report **test AUC**; aggregate with 95% bootstrap CIs.
 - **F1 protocol (secondary):** InterPLM domain-adjusted F1 (precision/AA, recall/domain), threshold sweep.
@@ -258,10 +258,10 @@ A probing-AUC win alone does **not** prove GLP captures structure the SAE cannot
 - **Testbed 1 (cheap, reproducible):** periodic-glycine features (`f/4616, f/4970, f/10003`) on `MGPP<mask>PP`; steer the unmasked G; measure P(G) at the masked position vs clamp strength. Reproduce InterPLM Fig 7, then add the GLP curve.
 - **Testbed 2 (broader):** disulfide (`ft_disulfid`→Cys), helix (`ft_helix`), a few high-F1 features; steer at concept positions in natural Swiss-Prot sequences.
 - **Metrics (encoder-native naturalness — R3, orthogonalized):**
-  - **Concept score:** increase in target-consistent AA probability, measured **only at target/masked positions**.
-  - **Naturalness score:** **pseudo-perplexity measured only at non-steered, non-adjacent positions** (mask-one-at-a-time NLL of true residues), capturing *collateral* damage to untouched context. The two axes are therefore measured on disjoint positions and are genuinely orthogonal.
-  - **Output:** concept-vs-naturalness **Pareto frontier** as clamp strength sweeps — the ESM analog of GLP Fig 5. Claim: GLP cleanup pushes the frontier out.
-  - **Honest caveat (in paper):** pPPL is an imperfect naturalness proxy; it can reward mere in-distribution-ness. This is precisely why Tier-2 foldability is the stronger axis.
+ - **Concept score:** increase in target-consistent AA probability, measured **only at target/masked positions**.
+ - **Naturalness score:** **pseudo-perplexity measured only at non-steered, non-adjacent positions** (mask-one-at-a-time NLL of true residues), capturing *collateral* damage to untouched context. The two axes are therefore measured on disjoint positions and are genuinely orthogonal.
+ - **Output:** concept-vs-naturalness **Pareto frontier** as clamp strength sweeps — the ESM analog of GLP Fig 5. Claim: GLP cleanup pushes the frontier out.
+ - **Honest caveat (in paper):** pPPL is an imperfect naturalness proxy; it can reward mere in-distribution-ness. This is precisely why Tier-2 foldability is the stronger axis.
 - **Tier-2 (feasibility-gated):** iteratively fill masks to generate a steered sequence, fold with HF `EsmForProteinFolding`, report **pLDDT**. "GLP-cleaned steering yields more foldable proteins." `⚠` H1: the HF port vendors openfold utilities (no `nvcc`/separate openfold install) but needs **16–24 GB GPU memory** and is a genuinely heavy dependency — verified, not openfold-free. Batch folding accordingly.
 
 ### 6.7 Novel candidates (Subsection 4) — held-out signal fixed (R7)
@@ -269,9 +269,9 @@ A probing-AUC win alone does **not** prove GLP captures structure the SAE cannot
 - Auto-interpret meta-neurons via InterPLM's Claude pipeline (max-activating proteins + Swiss-Prot metadata → description; validate by predicting held-out activations).
 - **Candidate = coherent, consistent activation + no Swiss-Prot label.**
 - **`⚠` "Unannotated ≠ discovery" guard — primary held-out signal is structure-free:**
-  1. **Causal steering effect** (no structures needed): steering the candidate meta-neuron produces a consistent, interpretable shift in AA predictions.
-  2. **Cross-family consistency** (no structures needed): the candidate activates coherently across proteins from *different* Pfam families held out from selection.
-  - **Optional upgrade (needs structures) — cheaper than earlier billed (RECON §9/D11):** correlation with a biophysical property (SASA, contact number, secondary-structure propensity) computed from **AlphaFold DB** structures for the max-activating UniProt entries. **Every eval protein already has an AFDB accession** (the annotation pipeline filters to AFDB-bearing proteins — `extract_annotations.py:151`), so no extra selection is needed; the cost is only the AFDB-fetch + DSSP/biotite dependency. Consider promoting from "only if W4 slack" to a light default.
+ 1. **Causal steering effect** (no structures needed): steering the candidate meta-neuron produces a consistent, interpretable shift in AA predictions.
+ 2. **Cross-family consistency** (no structures needed): the candidate activates coherently across proteins from *different* Pfam families held out from selection.
+ - **Optional upgrade (needs structures) — cheaper than earlier billed:** correlation with a biophysical property (SASA, contact number, secondary-structure propensity) computed from **AlphaFold DB** structures for the max-activating UniProt entries. **Every eval protein already has an AFDB accession** (the annotation pipeline filters to AFDB-bearing proteins — `extract_annotations.py:151`), so no extra selection is needed; the cost is only the AFDB-fetch + DSSP/biotite dependency. Consider promoting from "only if W4 slack" to a light default.
 - Report a small curated set, explicitly labeled as hypotheses.
 
 ### 6.7.1 Mini scaling curve (stretch, R11)
@@ -285,14 +285,14 @@ Train 3 GLP sizes (e.g., 2, 4, 6 blocks) on the 8M spine; plot **diffusion loss 
 The single biggest cherry-picking risk is choosing concepts *after* seeing GLP's numbers. We pre-register the selection using **only InterPLM-validation-set statistics and the SAE's own val F1** — never any GLP output — freeze the list, then run all methods. `concept_selection.py` implements and dumps `frozen_concepts.json` (committed before probing runs).
 
 **Selection procedure:**
-1. **Candidate pool:** all Swiss-Prot concepts passing InterPLM's frequency filter — **`>25` domains OR `>1,500` AAs** (the real `make_eval_subset` defaults, `prepare_eval_set.py:21-22`; the earlier ">10 domains" conflated the different `min_required_instances` knob — RECON §9/D9). Read the materialized concept set from `uniprotkb_aa_concepts_columns.txt` (display-name columns, not `ft_*` — D10).
+1. **Candidate pool:** all Swiss-Prot concepts passing InterPLM's frequency filter — **`>25` domains OR `>1,500` AAs** (the real `make_eval_subset` defaults, `prepare_eval_set.py:21-22`; the earlier ">10 domains" conflated the different `min_required_instances` knob). Read the materialized concept set from `uniprotkb_aa_concepts_columns.txt` (display-name columns, not `ft_*` — D10).
 2. **Stability filter:** require ≥ 500 positive AA tokens in the **test** split (so per-concept AUC has tight CIs). Record positive prevalence per concept.
 3. **Category stratification:** tag each concept into one of five biological buckets so the table spans biology, not one easy category:
-   - *Structural* — `ft_helix`, `ft_strand`, `ft_turn`, `ft_coiled`
-   - *Chemical/PTM* — `ft_disulfid`, `ft_carbohyd`, modified residues
-   - *Binding/catalytic* — `ft_act_site`, `ft_binding`
-   - *Topology/localization* — `ft_transmem`, `ft_intramem`, signal/transit
-   - *Domain/family motifs* — selected Pfam/Swiss-Prot domain concepts
+ - *Structural* — `ft_helix`, `ft_strand`, `ft_turn`, `ft_coiled`
+ - *Chemical/PTM* — `ft_disulfid`, `ft_carbohyd`, modified residues
+ - *Binding/catalytic* — `ft_act_site`, `ft_binding`
+ - *Topology/localization* — `ft_transmem`, `ft_intramem`, signal/transit
+ - *Domain/family motifs* — selected Pfam/Swiss-Prot domain concepts
 4. **SAE-tractability spread:** compute each concept's **best InterPLM-SAE val F1** (from released weights). Within each category, deliberately include concepts spanning the F1 range — some the SAE handles well (high F1) *and* some it struggles with (low F1). The low-F1-for-SAE concepts are where a nonlinear encoder could plausibly help; including them by rule (not by result) is what makes a GLP win credible rather than cherry-picked.
 5. **Freeze the headline set:** a fixed **N = 15** concepts (3 per category), chosen to satisfy (2)–(4). Deterministic given the val statistics; seed and log the tie-breaks.
 
@@ -321,7 +321,7 @@ ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M
 ## 9. Week-by-week plan with go/no-go gates
 
 > Progress checklist. `[x]` done · `[~]` partial/in-progress · `[ ]` not started.
-> Status as of end of W1 (Mac PoC). See `RECON.md` and `SETUP.md` for details.
+> Status as of end of W1 (Mac PoC). See `docs/INTERPLM_MAP.md` and `SETUP.md` for details.
 
 **Week 1 — Pipeline + Mac PoC. — ✅ COMPLETE (Gate G1 passed)**
 - [x] Python 3.11 env + InterPLM importable (`SETUP.md`; path-bootstrap, not pip-editable).
@@ -377,31 +377,31 @@ ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M
 
 ```bash
 # W1
-python scripts/download_interplm_saes.py  --config configs/poc_mac.yaml   # HF: Elana/InterPLM-esm2-8m layers 1-6
-python scripts/build_swissprot_eval.py     --config configs/poc_mac.yaml   # 50k proteins, per-AA labels, 25k/25k
-python scripts/extract_activations.py      --config configs/poc_mac.yaml --store train
-python scripts/extract_activations.py      --config configs/poc_mac.yaml --store eval
-python scripts/train_glp.py                --config configs/poc_mac.yaml
-python scripts/eval_generation.py          --config configs/poc_mac.yaml   # FD + PCA (G1)
+python scripts/download_interplm_saes.py --config configs/poc_mac.yaml # HF: Elana/InterPLM-esm2-8m layers 1-6
+python scripts/build_swissprot_eval.py --config configs/poc_mac.yaml # 50k proteins, per-AA labels, 25k/25k
+python scripts/extract_activations.py --config configs/poc_mac.yaml --store train
+python scripts/extract_activations.py --config configs/poc_mac.yaml --store eval
+python scripts/train_glp.py --config configs/poc_mac.yaml
+python scripts/eval_generation.py --config configs/poc_mac.yaml # FD + PCA (G1)
 pytest tests/test_hook_parity.py tests/test_flow_matching_roundtrip.py
 
 # W2 (swap config only)
-python scripts/train_glp.py                --config configs/esm8m_h100.yaml
-python scripts/eval_generation.py          --config configs/esm8m_h100.yaml # FD + PCA + %LR (G2)
+python scripts/train_glp.py --config configs/esm8m_h100.yaml
+python scripts/eval_generation.py --config configs/esm8m_h100.yaml # FD + PCA + %LR (G2)
 
 # W3
-python scripts/freeze_concepts.py          --config configs/esm8m_h100.yaml # writes frozen_concepts.json
-python scripts/run_probing.py              --config configs/esm8m_h100.yaml --metric auc
-python scripts/run_probing.py              --config configs/esm8m_h100.yaml --metric f1
-python scripts/test_nonlinearity.py        --config configs/esm8m_h100.yaml # optional (§6.5.1)
-python scripts/auto_interp_metaneurons.py  --config configs/esm8m_h100.yaml
+python scripts/freeze_concepts.py --config configs/esm8m_h100.yaml # writes frozen_concepts.json
+python scripts/run_probing.py --config configs/esm8m_h100.yaml --metric auc
+python scripts/run_probing.py --config configs/esm8m_h100.yaml --metric f1
+python scripts/test_nonlinearity.py --config configs/esm8m_h100.yaml # optional (§6.5.1)
+python scripts/auto_interp_metaneurons.py --config configs/esm8m_h100.yaml
 
 # W4
-python scripts/run_steering.py             --config configs/esm8m_h100.yaml --testbed glycine
-python scripts/run_steering.py             --config configs/esm8m_h100.yaml --testbed broad
-python scripts/run_steering.py             --config configs/esm8m_h100.yaml --tier2-plddt   # optional
-python scripts/train_glp.py                --config configs/esm650m_h100.yaml               # stretch
-python scripts/scaling_sweep.py            --config configs/esm8m_h100.yaml                 # stretch
+python scripts/run_steering.py --config configs/esm8m_h100.yaml --testbed glycine
+python scripts/run_steering.py --config configs/esm8m_h100.yaml --testbed broad
+python scripts/run_steering.py --config configs/esm8m_h100.yaml --tier2-plddt # optional
+python scripts/train_glp.py --config configs/esm650m_h100.yaml # stretch
+python scripts/scaling_sweep.py --config configs/esm8m_h100.yaml # stretch
 ```
 
 ---

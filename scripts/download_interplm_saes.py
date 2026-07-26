@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Download InterPLM's released SAE weights from HuggingFace (PLAN §11, W1).
 
-Reuses `interplm.sae.inference.load_sae_from_hf` (RECON §3) — we do NOT retrain SAEs
+Reuses `interplm.sae.inference.load_sae_from_hf` (INTERPLM_MAP §3) — we do NOT retrain SAEs
 (D6). Default: layer 4 (InterPLM's primary analysis layer). Pass --all-layers to cache
 1-6. Prints dict_size / activation_dim as a sanity check (expect 10,240 / 320).
 """

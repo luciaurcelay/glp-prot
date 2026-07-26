@@ -1,8 +1,9 @@
 # CLAUDE.md — agent onboarding for `glp-prot`
 
 Read this first. It tells a new agent what this repo is, how it's laid out, how to run
-things, and the non-negotiable rules. For the full spec read `docs/PLAN.md`; for what was
-verified against the source repos read `RECON.md`; for environment setup read `SETUP.md`.
+things, and the non-negotiable rules. For the full spec read `docs/PLAN.md`; for what to
+reuse from the InterPLM/GLP clones (with `file:line` pointers) read `docs/INTERPLM_MAP.md`;
+for environment setup read `SETUP.md`.
 
 ## What this project is
 Porting the **Generative Latent Prior (GLP)** — a diffusion "meta-model" of neural
@@ -15,8 +16,8 @@ on-manifold prior makes SAE concept-steering produce more natural proteins.
 ## Ground truth (trust these over priors)
 - `docs/PLAN.md` — authoritative spec (single working version, no changelog). §9 is a
   **progress checklist** — read it to see what's done.
-- `RECON.md` — every provisional PLAN claim verified against the clones, with `file:line`
-  citations and 12 deltas (D1–D12). When PLAN and RECON disagree, RECON wins.
+- `docs/INTERPLM_MAP.md` — the reuse map: where to find / what to call in the InterPLM and
+  GLP clones (with `file:line`), plus the live gotchas. Consult before reimplementing anything.
 - The two clones are **git submodules** and are ground truth over the papers:
   - `InterPLM/` (ElanaPearl/InterPLM) — SAEs, embedder, Swiss-Prot annotation, steering.
   - `generative_latent_prior/` (g-luo/generative_latent_prior) — the released GLP code.
@@ -67,7 +68,7 @@ Cluster (W2) is a config swap to `esm8m_h100.yaml` — no code changes (D8 parit
 3. **Canonical `facebook/esm2_t6_8M_UR50D`** (EsmModel/EsmForMaskedLM). Never the NVIDIA
    `nv_esm` repackaging (breaks hook parity).
 4. **Meta-neuron** = input to `down_proj` = `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`
-   (post-gating, includes the time factor — RECON §4/D5). Block uses **LayerNorm**, and time
+   (post-gating, includes the time factor). Block uses **LayerNorm**, and time
    conditioning is **plain multiplicative** on the gate (no (1+γ)/β).
 
 ## Working agreement (how to operate here)

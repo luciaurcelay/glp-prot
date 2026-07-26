@@ -2,7 +2,7 @@
 """Build the labeled Swiss-Prot eval store (PLAN §11, W1 Step 3).
 
 Fetch InterPLM's 1k dense-annotated subset -> extract_annotations -> prepare_eval_set
--> embed each shard at the hooked layer, aligned to per-AA labels (RECON §9).
+-> embed each shard at the hooked layer, aligned to per-AA labels (INTERPLM_MAP §9).
 Prints a sanity report (rows aligned, d, a concept's positive prevalence).
 """
 import argparse
@@ -28,7 +28,7 @@ def main():
     processed = data_root / "processed"
 
     # The shipped 1k subset is not committed upstream (README-only), so pull a fresh
-    # densely-annotated Swiss-Prot slice via the same REST query family (RECON §9/D12).
+    # densely-annotated Swiss-Prot slice via the same REST query family (INTERPLM_MAP §9/D12).
     sl.fetch_uniprot_annotated_tsv(subset, n_prot=args.n_prot)
     sl.build_annotations(subset, processed, n_shards=cfg.data.n_shards,
                          min_required_instances=args.min_required_instances)

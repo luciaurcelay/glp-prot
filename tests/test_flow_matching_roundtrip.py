@@ -1,4 +1,4 @@
-"""Flow-matching round-trip (PLAN §6.2 unit test; RECON §6).
+"""Flow-matching round-trip (PLAN §6.2 unit test; INTERPLM_MAP §6).
 
 A denoiser that returns the EXACT velocity u = eps - z0 must reconstruct z0 from
 z1 = eps under the reverse sampler, to tolerance. Because z(t) = z0 + t*(eps - z0)
