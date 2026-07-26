@@ -26,20 +26,20 @@ from glp_plm.model import GLPDenoiser
 from glp_plm.utils import get_device, set_seed
 
 
-def _raw_mlp_cached(processed: Path, split_shards, layer, model_name, device, cache: Path):
-    """Compute (once) and cache the ESM FFN-intermediate bank for a split."""
+def _raw_mlp_cached(processed: Path, split_shards, layer, model_name, device, cache: Path,
+                    d_ff: int = 1280):
+    """Compute (once) and cache the ESM FFN-intermediate bank for a split, on disk."""
     if cache.exists():
-        return np.load(cache, mmap_mode="r")
+        n = cache.stat().st_size // (d_ff * np.dtype("float16").itemsize)
+        return np.memmap(cache, dtype="float16", mode="r", shape=(n, d_ff))
     import pandas as pd
     rows = []
     for i in split_shards:
         df = pd.read_csv(processed / f"shard_{i}" / "protein_data.tsv", sep="\t")
         seq_col = next(c for c in df.columns if c.lower() == "sequence")
         rows.extend(str(s) for s in df[seq_col].tolist())
-    bank = bl.raw_mlp_bank(rows, layer=layer, model_name=model_name, device=device)
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    np.save(cache, bank.numpy().astype(np.float16))
-    return np.load(cache, mmap_mode="r")
+    print(f"[probing] building raw_mlp cache for {len(rows):,} proteins -> {cache.name}", flush=True)
+    return bl.raw_mlp_to_memmap(rows, cache, layer=layer, model_name=model_name, device=device)
 
 
 def main():
@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--min-pos", type=int, default=100, help="skip concepts below this in either split")
     ap.add_argument("--methods", default=",".join(bl.METHODS))
     ap.add_argument("--max-concepts", type=int, help="cap concepts (smoke tests)")
+    ap.add_argument("--n-shards-per-split", type=int,
+                    help="use only the first N shards of each split (bounds the raw_mlp cache)")
     ap.add_argument("--n-jobs", type=int, default=-1)
     args = ap.parse_args()
 
@@ -65,8 +67,9 @@ def main():
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
 
     # ---- data ----
-    A_tr, Y_tr, names = sl.load_split(processed, "valid", cfg.data.layer)
-    A_te, Y_te, _ = sl.load_split(processed, "test", cfg.data.layer)
+    ns = args.n_shards_per_split
+    A_tr, Y_tr, names = sl.load_split(processed, "valid", cfg.data.layer, n_shards=ns)
+    A_te, Y_te, _ = sl.load_split(processed, "test", cfg.data.layer, n_shards=ns)
     A_tr, A_te = A_tr.float(), A_te.float()
     print(f"[probing] valid {tuple(A_tr.shape)}  test {tuple(A_te.shape)}  concepts {len(names)}")
 
@@ -85,12 +88,17 @@ def main():
         sae = load_sae_from_hf(plm, cfg.data.layer)
     mlp_tr = mlp_te = None
     if "raw_mlp" in methods:
-        meta_tr = json.loads((processed / "valid" / "metadata.json").read_text())
-        meta_te = json.loads((processed / "test" / "metadata.json").read_text())
-        mlp_tr = _raw_mlp_cached(processed, meta_tr["shard_source"], cfg.data.layer,
-                                 cfg.data.model_name, device, processed / "cache" / "raw_mlp_valid.npy")
-        mlp_te = _raw_mlp_cached(processed, meta_te["shard_source"], cfg.data.layer,
-                                 cfg.data.model_name, device, processed / "cache" / "raw_mlp_test.npy")
+        tag = f"s{ns}" if ns else "all"
+        for split, holder in (("valid", "tr"), ("test", "te")):
+            shards = sl.split_shards(processed, split, ns)
+            bank = _raw_mlp_cached(processed, shards, cfg.data.layer, cfg.data.model_name,
+                                   device, processed / "cache" / f"raw_mlp_{split}_{tag}.npy")
+            if holder == "tr":
+                mlp_tr = bank
+            else:
+                mlp_te = bank
+        assert mlp_tr.shape[0] == A_tr.shape[0], "raw_mlp/activation row mismatch (valid)"
+        assert mlp_te.shape[0] == A_te.shape[0], "raw_mlp/activation row mismatch (test)"
 
     # ---- concept list ----
     if args.concepts:

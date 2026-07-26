@@ -51,12 +51,16 @@ def raw_layer_bank(x: torch.Tensor) -> torch.Tensor:
 #  Raw ESM MLP neuron (FFN intermediate)
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
-def raw_mlp_bank(sequences: List[str], layer: int = 4,
-                 model_name: str = "facebook/esm2_t6_8M_UR50D",
-                 device: str = "cpu", batch_size: int = 8) -> torch.Tensor:
-    """ESM-2 FFN intermediate (post-GELU, pre-output-projection) at `layer`.
+def raw_mlp_to_memmap(sequences: List[str], out_path, layer: int = 4,
+                      model_name: str = "facebook/esm2_t6_8M_UR50D",
+                      device: str = "cpu", batch_size: int = 8,
+                      dtype: str = "float16"):
+    """ESM-2 FFN intermediate (post-GELU, pre-output-projection) at `layer` -> memmap.
 
-    Row order matches the activation store: sequences concatenated in order, with
+    Streams straight to disk: at 1.26M residues x 1280 dims an in-RAM bank is 6.4 GB
+    (12.8 GB with the concat copy), which OOMs a 16 GB machine.
+
+    Row order matches the activation store: sequences concatenated in order with
     <cls>/<eos>/pad dropped — the same slicing InterPLM's embedder uses
     (`esm.py:181-186`), so rows align with the per-AA labels.
 
@@ -64,13 +68,23 @@ def raw_mlp_bank(sequences: List[str], layer: int = 4,
     `encoder.layer[L-1]` in the 0-indexed HF module list, so we hook
     `encoder.layer[L-1].intermediate`.
     """
+    from pathlib import Path
+
     from interplm.embedders import get_embedder
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     embedder = get_embedder("esm", model_name=model_name, device=device)
     model, tok = embedder.model, embedder.tokenizer
+    d_ff = model.config.intermediate_size
 
     encoder = getattr(model, "encoder", None) or model.esm.encoder
     target = encoder.layer[layer - 1].intermediate
+
+    seqs = [embedder.preprocess_sequence(s) for s in sequences]
+    upper = sum(len(s) for s in seqs)            # exact unless a sequence is truncated
+    mm = np.memmap(out_path, dtype=dtype, mode="w+", shape=(upper, d_ff))
 
     captured = {}
 
@@ -78,20 +92,32 @@ def raw_mlp_bank(sequences: List[str], layer: int = 4,
         captured["ffn"] = out.detach()
 
     handle = target.register_forward_hook(hook)
+    pos = 0
+    flush_every = 200_000                         # rows; caps dirty page-cache growth
+    next_flush = flush_every
     try:
-        rows = []
-        for i in range(0, len(sequences), batch_size):
-            batch = [embedder.preprocess_sequence(s) for s in sequences[i:i + batch_size]]
+        for i in range(0, len(seqs), batch_size):
+            batch = seqs[i:i + batch_size]
             inputs = tok(batch, return_tensors="pt", padding=True, truncation=True,
                          max_length=embedder.max_length)
             inputs = {k: v.to(embedder.device) for k, v in inputs.items()}
             model(**inputs)
-            ffn = captured["ffn"].cpu()          # (B, T, d_ff)
+            ffn = captured["ffn"].to("cpu")       # (B, T, d_ff)
             for j, seq in enumerate(batch):
-                rows.append(ffn[j, 1:len(seq) + 1, :])
-        return torch.cat(rows, dim=0).float()
+                chunk = ffn[j, 1:len(seq) + 1, :].numpy().astype(dtype, copy=False)
+                mm[pos:pos + len(chunk)] = chunk
+                pos += len(chunk)
+            if pos >= next_flush:                 # write back so RAM doesn't balloon
+                mm.flush()
+                next_flush = pos + flush_every
+        mm.flush()
     finally:
         handle.remove()
+        del mm
+    if pos < upper:                               # truncation shortened some sequences
+        with open(out_path, "r+b") as f:
+            f.truncate(pos * d_ff * np.dtype(dtype).itemsize)
+    return np.memmap(out_path, dtype=dtype, mode="r", shape=(pos, d_ff))
 
 
 # --------------------------------------------------------------------------- #

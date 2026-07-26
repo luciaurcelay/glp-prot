@@ -19,7 +19,7 @@ import re
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -229,7 +229,15 @@ def embed_shards(processed_dir: Path, shard_ids: List[int], model_name: str,
         print(f"[swissprot] shard {i}: {acts.shape[0]} aa activations at layer {layer}")
 
 
-def load_split(processed_dir: Path, split: str, layer: int):
+def split_shards(processed_dir: Path, split: str, n_shards: Optional[int] = None) -> List[int]:
+    """Shard ids backing a split, optionally truncated to the first `n_shards`."""
+    meta = json.loads((Path(processed_dir) / split / "metadata.json").read_text())
+    ids = list(meta["shard_source"])
+    return ids[:n_shards] if n_shards else ids
+
+
+def load_split(processed_dir: Path, split: str, layer: int,
+               n_shards: Optional[int] = None):
     """Load (activations, labels_df, concept_names) for a split ('valid'/'test').
 
     labels: dense array (n_aa, n_kept_concepts) from aa_concepts.npz restricted to the
@@ -241,7 +249,9 @@ def load_split(processed_dir: Path, split: str, layer: int):
     meta = json.loads((split_dir / "metadata.json").read_text())
     kept = meta["indices_of_concepts_to_keep"]
     concept_names = (split_dir / "aa_concepts_columns.txt").read_text().splitlines()
-    shard_ids = meta["shard_source"]
+    shard_ids = list(meta["shard_source"])
+    if n_shards:                     # bound the split (keeps raw_mlp caches sane)
+        shard_ids = shard_ids[:n_shards]
 
     acts, labels = [], []
     for i in shard_ids:
