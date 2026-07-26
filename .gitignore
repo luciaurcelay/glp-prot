@@ -1,4 +1,6 @@
 # Python
+.venv/
+venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -11,7 +13,7 @@ runs/
 *.safetensors
 *.npz
 *.gz
-data/
+/data/          # only the repo-root data dir (NOT the glp_plm/data source package)
 
 # Reference PDFs (kept locally as ground truth, not tracked — 34 MB)
 docs/papers/

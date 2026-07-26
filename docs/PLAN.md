@@ -288,29 +288,38 @@ ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M
 
 ## 9. Week-by-week plan with go/no-go gates
 
-**Week 1 — Pipeline + Mac PoC.**
-- Claude Code: import InterPLM; **download released SAE weights** (8M layers 1–6, via `load_sae_from_hf`); materialize the **Swiss-Prot eval set** with per-AA labels + a **shard-range val/test split** (reuse InterPLM annotation code: `extract_annotations` → `embed_annotations` → normalize → `prepare_eval_set`). No prebuilt 25k/25k exists and the shipped 1k subset is absent from the clone — fetch it or REST a small slice; **no UniRef50 download for the PoC** (RECON §9-10/D12).
-- Implement extractor (wrapping `interplm.embedders.esm.ESM`), store, scaler, GLP, flow-matching, sampler, trainer. Ship **hook-parity test** and **flow-matching round-trip test**. *(model/diffusion/sampler/trainer + both tests already shipped — see RECON.md checkpoint.)*
-- Run `poc_mac.yaml` end-to-end: ~2M acts → 2-block GLP → FD/PCA sanity.
-- **GATE G1 (end W1):** pipeline runs on Mac; loss decreases; PCA of generated vs real non-garbage; hook-parity test passes.
+> Progress checklist. `[x]` done · `[~]` partial/in-progress · `[ ]` not started.
+> Status as of end of W1 (Mac PoC). See `RECON.md` and `SETUP.md` for details.
 
-**Week 2 — Scale on cluster + generation-quality gate.**
-- Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320.
-- Train at 50M → 100M → 300M; watch FD plateau. Compute FD (vs SAE-recon + lower bound), PCA overlap, % Loss Recovered.
-- **GATE G2 (GO/NO-GO):** **GLP FD < SAE-reconstruction FD**; PCA converged; %LR competitive with the SAE. **If G2 fails → drop steering, ship probing-only paper.**
+**Week 1 — Pipeline + Mac PoC. — ✅ COMPLETE (Gate G1 passed)**
+- [x] Python 3.11 env + InterPLM importable (`SETUP.md`; path-bootstrap, not pip-editable).
+- [x] Download released SAE weights (esm2-8m layer 4 via `load_sae_from_hf`; `dict_size=10240`, `activation_dim=320`). *(Only layer 4 cached; `--all-layers` available for 1–6.)*
+- [x] Materialize the **Swiss-Prot eval set**: per-AA labels + shard-range val/test split (`extract_annotations` → `prepare_eval_set` → aligned embeddings). 2,000 proteins → valid split (252,204 AAs, 78 concepts). *(Deviations: shipped 1k subset absent upstream → REST slice; pandas-compat shim for `shard_protein_data`.)*
+- [x] Implement extractor (wraps `interplm.embedders.esm.ESM`), activation store (memmap+scaler), GLP model, flow-matching, sampler, trainer.
+- [x] Ship **hook-parity test** (live & passing — byte-identical to InterPLM) and **flow-matching round-trip test**. All 6 tests green.
+- [x] Build ~2M-activation training store (10k Swiss-Prot REST slice; no UniRef50).
+- [x] Run `poc_mac.yaml` end-to-end: ~2M acts → 2-block GLP → FD/PCA sanity.
+- [x] **GATE G1:** pipeline runs on Mac ✅; loss decreases (2.33→1.19) ✅; PCA of generated vs real non-garbage ✅ (FD 2.61× lower bound; gen 14.1% vs real 12.6% top-2 PC variance); hook-parity passes ✅.
+- [ ] *(deferred)* streaming `producer_consumer.py` (W2/cluster); `eval/loss_recovered.py` %LR (W2/G2).
 
-**Week 3 — Probing (guaranteed) + candidates.**
-- Freeze `frozen_concepts.json` (§7) **before** running probes.
-- Meta-neuron extraction (t selected on val); 1-D AUC probing across all four methods; InterPLM F1 secondary; three-level reporting (§7); optional nonlinearity test (§6.5.1).
-- Auto-interp; assemble novel-candidate subsection with structure-free held-out signal.
-- **Deliverable D2 complete → paper guaranteed submittable.**
+**Week 2 — Scale on cluster + generation-quality gate. — [ ] NOT STARTED**
+- [ ] Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320.
+- [ ] Train at 50M → 100M → 300M; watch FD plateau.
+- [ ] Implement + compute FD (vs SAE-recon + lower bound), PCA overlap, **% Loss Recovered** (adapt `interplm.train.fidelity.calculate_loss_recovered`).
+- [ ] **GATE G2 (GO/NO-GO):** GLP FD < SAE-reconstruction FD; PCA converged; %LR competitive with the SAE. **If G2 fails → drop steering, ship probing-only paper.**
 
-**Week 4 — Steering + optional stretch.**
-- Glycine testbed → reproduce InterPLM Fig 7 + GLP curve; then broader features. Concept-vs-pPPL Pareto (orthogonalized positions).
-- If slack: ESM-2-650M scaling point; ESMFold pLDDT Tier-2; mini scaling curve.
+**Week 3 — Probing (guaranteed) + candidates. — [ ] NOT STARTED**
+- [ ] Freeze `frozen_concepts.json` (§7) **before** running probes.
+- [ ] Meta-neuron extraction (`u` selected on val); 1-D AUC probing across all four methods; InterPLM F1 secondary; three-level reporting (§7); optional nonlinearity test (§6.5.1).
+- [ ] Auto-interp; assemble novel-candidate subsection with structure-free held-out signal.
+- [ ] **Deliverable D2 complete → paper guaranteed submittable.**
 
-**Week 5 — Write-up + buffer.**
-- Figures: FD/PCA panel; probing table + aggregate + per-category; steering Pareto; candidate gallery. Buffer for overruns. Freeze.
+**Week 4 — Steering + optional stretch. — [ ] NOT STARTED**
+- [ ] Glycine testbed → reproduce InterPLM Fig 7 + GLP curve; then broader features. Concept-vs-pPPL Pareto (orthogonalized positions).
+- [ ] If slack: ESM-2-650M scaling point; ESMFold pLDDT Tier-2; mini scaling curve.
+
+**Week 5 — Write-up + buffer. — [ ] NOT STARTED**
+- [ ] Figures: FD/PCA panel; probing table + aggregate + per-category; steering Pareto; candidate gallery. Buffer for overruns. Freeze.
 
 ---
 
