@@ -34,6 +34,7 @@ glp_plm/            our package
   diffusion/        flow_matching, sampler (Euler; sample / sample_on_manifold), scaler
   train/            trainer (flow-matching loop, cosine+warmup)
   eval/             frechet, pca_overlap  (loss_recovered = W2, deferred)
+  experiments/      RunLogger (metrics) + figure registry + make_report (auto-renders figures)
 configs/            poc_mac.yaml (MPS/CPU fp32) · esm8m_h100.yaml (differ only in device/precision/scale/buffer)
 scripts/            _bootstrap.py + one CLI per phase (§11)
 tests/              test_hook_parity.py (live), test_flow_matching_roundtrip.py

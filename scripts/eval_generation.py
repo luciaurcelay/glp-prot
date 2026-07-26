@@ -19,6 +19,7 @@ from glp_plm.diffusion import sampler
 from glp_plm.diffusion.scaler import Scaler
 from glp_plm.eval.frechet import frechet_distance
 from glp_plm.eval.pca_overlap import pca_overlap
+from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
 from glp_plm.utils import get_device, set_seed
 
@@ -59,16 +60,22 @@ def main():
 
     fd_gen = frechet_distance(gen, real_eval)
     fd_lb = frechet_distance(real_anchor_a, real_anchor_b)
-    pca = pca_overlap(real_eval, gen, save_path=out / "pca_overlap.png")
+    pca, proj = pca_overlap(real_eval, gen)
+
+    # log metrics + projections; figures are rendered by make_report
+    run = RunLogger(out)
+    run.log_summary(fd_generated_vs_real=fd_gen, fd_lower_bound=fd_lb,
+                    fd_ratio=fd_gen / max(fd_lb, 1e-9), **pca)
+    run.save_arrays("pca_proj", real=proj["real"], gen=proj["gen"])
 
     print("==== Gate G1 generation report ====")
     print(f"FD(generated, real)       = {fd_gen:.4f}")
     print(f"FD(train, val) lowerbound = {fd_lb:.4f}   (ratio {fd_gen / max(fd_lb, 1e-9):.2f}x)")
-    print(f"PCA real_var_captured_frac= {pca['real_var_captured_frac']:.4f}  (top-2 PCs of real; the baseline)")
-    print(f"PCA gen_var_captured_frac = {pca['gen_var_captured_frac']:.4f}  (match to baseline = well-aligned)")
-    print(f"PCA pc_mean_gap_norm      = {pca['pc_mean_gap_norm']:.4f}  (0 = centered like real, in PC-std units)")
-    print(f"PCA pc_std_ratio          = {pca['pc_std_ratio']:.4f}  (1.0 = matched spread)")
-    print(f"PCA scatter -> {pca.get('scatter_path')}")
+    print(f"PCA real_var_captured_frac= {pca['pca_real_var_captured_frac']:.4f}  (top-2 PCs of real; the baseline)")
+    print(f"PCA gen_var_captured_frac = {pca['pca_gen_var_captured_frac']:.4f}  (match to baseline = well-aligned)")
+    print(f"PCA pc_mean_gap_norm      = {pca['pca_pc_mean_gap_norm']:.4f}  (0 = centered like real, in PC-std units)")
+    print(f"PCA pc_std_ratio          = {pca['pca_pc_std_ratio']:.4f}  (1.0 = matched spread)")
+    make_report(out)
 
 
 if __name__ == "__main__":

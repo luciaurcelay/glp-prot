@@ -28,11 +28,20 @@ glp_plm/
     scaler.py               # per-dim standardizer, stores {mean, var} (GLP-compatible)
   train/trainer.py          # flow-matching loop, cosine+warmup, grad clip, param-count print
   eval/                     # frechet (FD), pca_overlap  (loss_recovered = W2)
+  experiments/              # RunLogger (metrics) + figure registry + report (see below)
   utils/                    # device, seeds
 configs/  poc_mac.yaml  esm8m_h100.yaml   # differ only in device/precision/scale/buffer
-scripts/  one CLI per phase (see PLAN §11)
+scripts/  one CLI per phase (see PLAN §11) + make_report.py
 tests/    test_flow_matching_roundtrip.py  test_hook_parity.py
 ```
+
+## Figures & metrics (`glp_plm/experiments/`)
+Compute logs structured metrics; plotting reads them. Running the pipeline auto-renders
+figures to `runs/<name>/figures/` (train → `training_loss`, `lr_schedule`; eval →
+`generation_pca`, `generation_fd`). A figure is one registered function that declares the
+metric artifacts it needs, so `make_report` renders whatever the current phase produced —
+new figures (W2 `%LR`, W3 probing AUC, W4 steering Pareto) slot in without touching the
+runner. Re-render anytime: `python scripts/make_report.py --config configs/poc_mac.yaml`.
 
 ## Design points (verified against the reference code — see `docs/INTERPLM_MAP.md`)
 - **Meta-neuron** = input to `down_proj` = `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`.

@@ -42,11 +42,18 @@ def fit(
     log_every_n_steps: int = 10,
     seed: int = 0,
     logger=print,
+    run_logger=None,
 ) -> dict:
-    """Train `model` (a GLPDenoiser) on `activations`. Returns a small history dict."""
+    """Train `model` (a GLPDenoiser) on `activations`. Returns a small history dict.
+
+    If `run_logger` (experiments.RunLogger) is given, appends {step, loss, lr} to the
+    "train" series each step so figures.training_loss can plot it.
+    """
     torch.manual_seed(seed)
     model = model.to(device).train()
     logger(f"[trainer] true parameter count: {sum(p.numel() for p in model.parameters()):,}")
+    if run_logger is not None:
+        run_logger.reset_series("train")
 
     n = activations.shape[0]
     steps_per_epoch = max(1, n // batch_size)
@@ -76,6 +83,8 @@ def fit(
 
             history["loss"].append(loss.item())
             history["lr"].append(lr * mult)
+            if run_logger is not None:
+                run_logger.log_step("train", {"step": step, "loss": loss.item(), "lr": lr * mult})
             if step % log_every_n_steps == 0:
                 logger(f"[trainer] epoch {epoch} step {step}/{total_steps} "
                        f"loss {loss.item():.4f} lr {lr * mult:.2e}")

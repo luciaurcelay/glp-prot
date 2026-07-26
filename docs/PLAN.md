@@ -161,19 +161,24 @@ glp-plm/
 │ │ ├── frechet.py # FD between two activation sets (+ lower bound + SAE-recon FD)
 │ │ ├── pca_overlap.py # top-2 PCA, real vs generated
 │ │ ├── loss_recovered.py # InterPLM %Loss Recovered (== GLP ΔLM); masked-LM CE
-│ │ ├── meta_neurons.py # extract SwiGLU gate pre-acts at selected t
+│ │ ├── meta_neurons.py # extract down_proj-input meta-neurons at selected u
 │ │ ├── probing_1d.py # GLP protocol: filter→1D LR→val AUC→test AUC
 │ │ ├── probing_f1.py # InterPLM domain-adjusted F1
 │ │ ├── concept_selection.py # pre-registered headline concept picker (§7)
 │ │ ├── steering.py # SAE clamp (+ GLP SDEdit cleanup) via NNsight
 │ │ ├── naturalness.py # pseudo-perplexity (non-steered positions), AA-dist shift
 │ │ └── esmfold_plddt.py # Tier-2, optional
+│ ├── experiments/ # RunLogger (metrics) + figure registry + make_report (auto-render)
 │ └── utils/ (logging, seeds, device, io)
-├── scripts/ # thin CLI entrypoints per phase (§11)
+├── scripts/ # thin CLI entrypoints per phase (§11) + make_report.py
 ├── tests/ # flow-matching round-trip, FD sanity, hook-parity assert
-├── notebooks/ # figure generation
 └── PLAN.md
 ```
+
+**Figures.** Compute writes metric artifacts to `runs/<name>/metrics/`; `experiments`
+renders figures to `runs/<name>/figures/` from a registry (each figure declares the
+artifacts it needs), so `make_report` produces whatever the current phase enables and new
+figures are one-function additions — no runner changes.
 
 **Interface contract:** every phase is one script + one `config.yaml`. `poc_mac.yaml → esm8m_h100.yaml` changes only `device`, scale knobs, buffer mode, precision — no code changes (D8 parity).
 

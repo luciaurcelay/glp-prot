@@ -39,6 +39,9 @@ Instead, both packages are put on `sys.path` explicitly:
 .venv/bin/python scripts/download_interplm_saes.py --config configs/poc_mac.yaml
 .venv/bin/python scripts/extract_activations.py    --config configs/poc_mac.yaml --store train
 .venv/bin/python scripts/build_swissprot_eval.py   --config configs/poc_mac.yaml
-.venv/bin/python scripts/train_glp.py              --config configs/poc_mac.yaml
-.venv/bin/python scripts/eval_generation.py        --config configs/poc_mac.yaml   # Gate G1
+.venv/bin/python scripts/train_glp.py              --config configs/poc_mac.yaml   # + training_loss/lr figures
+.venv/bin/python scripts/eval_generation.py        --config configs/poc_mac.yaml   # Gate G1 + FD/PCA figures
+.venv/bin/python scripts/make_report.py            --config configs/poc_mac.yaml   # re-render all figures
 ```
+
+Figures and metrics are written under `runs/<name>/` (`figures/*.png|pdf`, `metrics/`).
