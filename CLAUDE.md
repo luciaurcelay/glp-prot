@@ -13,8 +13,8 @@ least as cleanly as InterPLM's SAE features (1-D probing on Swiss-Prot); (2) GLP
 on-manifold prior makes SAE concept-steering produce more natural proteins.
 
 ## Ground truth (trust these over priors)
-- `docs/PLAN.md` — authoritative spec (v5). §9 is a **progress checklist** — read it to
-  see what's done. §12 changelog records every correction.
+- `docs/PLAN.md` — authoritative spec (single working version, no changelog). §9 is a
+  **progress checklist** — read it to see what's done.
 - `RECON.md` — every provisional PLAN claim verified against the clones, with `file:line`
   citations and 12 deltas (D1–D12). When PLAN and RECON disagree, RECON wins.
 - The two clones are **git submodules** and are ground truth over the papers:

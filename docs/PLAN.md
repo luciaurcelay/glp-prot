@@ -1,8 +1,8 @@
-# Generative Latent Prior for Protein Language Models — Implementation Plan (v4)
+# Generative Latent Prior for Protein Language Models — Implementation Plan
 
 **Target venue:** *Interpretability for Discovery* workshop, NeurIPS 2026 (non-archival). Deadline: 5 weeks.
 **Execution model:** Built and run primarily via Claude Code. Local Apple-Silicon proof-of-concept first, then a compute cluster (assume 1× H100; multi-GPU only if time allows).
-**Status:** Fourth iteration. Three review passes; the third re-checked claims introduced by the second (a plan is only as clean as its latest edit). See §12 changelog. Sections marked `⚠ DECISION` need human sign-off; `⚠ RISK` carries go/no-go weight; `⚠ FAIRNESS` marks reviewer-attack surfaces.
+**Conventions:** Sections marked `⚠ DECISION` need human sign-off; `⚠ RISK` carries go/no-go weight; `⚠ FAIRNESS` marks reviewer-attack surfaces. Claims have been verified against the InterPLM and GLP clones — see `RECON.md` for `file:line` citations.
 
 ---
 
@@ -10,7 +10,7 @@
 
 We port the **Generative Latent Prior (GLP)** — a diffusion "meta-model" of neural activations (Luo et al., 2026) — from LLM activations to **protein language model (PLM) activations**, reusing the **InterPLM** (Simon & Zou, *Nature Methods* 2024) SAE + Swiss-Prot annotation pipeline as our validated substrate. GLP learns the *distribution* of ESM-2 residual-stream activations with no linearity/sparsity assumptions. We test two claims a protein biologist can act on: (1) GLP's internal "meta-neurons" isolate biological concepts at least as well as InterPLM's SAE features, measured by 1-D probing against Swiss-Prot concepts; and (2) using GLP as an on-manifold prior makes SAE-based concept steering produce **more natural proteins** at matched concept strength. A small subsection surfaces meta-neurons that map to *no* known annotation but show a **held-out** signal (causal steering effect or cross-family consistency) — candidate motifs for domain follow-up.
 
-**InterPLM SAE weights are released on HuggingFace** (`Elana/InterPLM-esm2-8m`, layers 1–6; `Elana/InterPLM-esm2-650m`, layers 1,9,18,24,30,33), loadable via `interplm.sae.inference.load_sae_from_hf`. We do **not** retrain SAEs. This was corrected from v1.
+**InterPLM SAE weights are released on HuggingFace** (`Elana/InterPLM-esm2-8m`, layers 1–6; `Elana/InterPLM-esm2-650m`, layers 1,9,18,24,30,33), loadable via `interplm.sae.inference.load_sae_from_hf`. We do **not** retrain SAEs.
 
 ---
 
@@ -91,7 +91,7 @@ GLP's fluency = "free-run generate text, LLM-judge it." **ESM-2 is a bidirection
 | D3 | 650M | **Stretch scaling point; hook a released-SAE layer (e.g. layer 18 or 24)** | SAE side now cheap (released weights at layers 1,9,18,24,30,33); cost is the wider GLP + embedding extraction. |
 | D4 | ESMFold/pLDDT | **Tier-2, cluster-only, feasibility-gated** | HF `EsmForProteinFolding` **vendors** openfold utils (no separate `pip install openfold`, no `nvcc` compile) BUT is not openfold-free and needs **16–24 GB GPU mem**. Primary steering metric is pure-ESM. |
 | D5 | Probing metric | **AUC (headline) + F1 (secondary)** | AUC = faithful GLP port; F1 = InterPLM-native. |
-| D6 | SAE weights | **Download released HF weights** (was "retrain" in v1 — corrected) | Verified available; retraining unnecessary. |
+| D6 | SAE weights | **Download released HF weights** | Verified available; retraining unnecessary. |
 | D7 | Discovery emphasis | **Probing+steering spine; novel candidates = 1 subsection** | Per PI direction. |
 | D8 | Mac PoC | **End-to-end parity smoke test** | Cluster is a config swap. |
 | D9 | Probing `u` | **Select on val, report on test** over a `u` grid (e.g. {0.1,0.5,0.9}) | Closes a fairness hole (R8). Probing time lives in `u` (schedule fraction, released default 0.9), not `t=0.1/0.5` (RECON §7/D8). |
@@ -374,72 +374,9 @@ python scripts/scaling_sweep.py            --config configs/esm8m_h100.yaml     
 
 ---
 
-## 12. Changelog v1 → v2 (from critical review)
-
-- **R1/D6 (factual, high):** InterPLM SAE weights **are** released on HF (8M layers 1–6, 650M layers 1,9,18,24,30,33). Removed the "retrain SAEs" W1 task; 650M stretch de-risked. Paper is Nature Methods, not preprint-only.
-- **R2 (overclaim, high):** softened "structure the dictionary missed" to "cleaner isolation"; added §6.5.1 falsification test to gate the strong nonlinearity claim.
-- **R3 (metric, high):** orthogonalized steering axes — concept score at target positions only, pPPL at non-steered/non-adjacent positions only; added honest pPPL caveat motivating pLDDT.
-- **R4 (metric, med):** replaced bespoke "Delta LM Loss" with InterPLM-native **% Loss Recovered**; specified the MLM masking/injection protocol.
-- **R5 (hook parity, med):** extraction now wraps `interplm.esm.embed`; added hook-parity unit test and HF hidden-state indexing note.
-- **R6 (baselines, med):** pinned "raw MLP neuron" = ESM FFN intermediate (d_ff=1280) at layer 4; pinned all four baselines.
-- **R7 (candidates, med):** primary held-out signal is now structure-free (causal + cross-family); AFDB/DSSP biophysical signal demoted to optional with explicit dependency.
-- **R8/D9 (fairness, low-med):** probing `t` selected on val, reported on test.
-- **R9 (FD gate, low):** G2 gate = "GLP FD < SAE-recon FD," not "approaching lower bound."
-- **R10 (hyperparams, low):** GLP's batch/lr flagged as d=2048 priors to re-tune at d=320.
-- **R11 (additive, low):** mini 3-size scaling curve elevated to recommended-if-slack.
-- **New §7:** pre-registered, category-stratified, SAE-tractability-spread concept selection with three-level reporting.
-
-
-### v2 → v3 (second review — hallucination hunt, externally verified)
-
-- **H1 (ESMFold, verified via HF source):** corrected "needs no openfold compile" — the HF port **vendors** `openfold_utils` (no separate install / no `nvcc`) but is **not openfold-free** and needs **16–24 GB GPU memory**. Fixed in D4, §6.6, §8, risk register.
-- **H2 (wrong tensor, verified via GLP footnote):** meta-neuron is the **post-gating gated MLP neuron** `SiLU(gate)·up`, NOT the "gate pre-activation" (v2 said the latter twice). Would have hooked the wrong tensor. Fixed in §2.1, §6.2, §6.5.
-- **H3 (FD protocol, verified via GLP text):** FD uses **one token per document** from 50k docs; added to §6.4 so magnitudes match GLP Table 1.
-- **H4 (probing position, verified via GLP text):** GLP probes the **last-token** activation (sequence-level concepts). For per-residue Swiss-Prot concepts we probe **per-amino-acid at annotated positions** instead — flagged as a deliberate divergence, not a blind copy.
-- **FiLM extrapolation flagged:** GLP only says "multiplicatively modulating the SwiGLU gate"; exact γ/β scheme is not published. v3 marks the standard-FiLM default as an extrapolation to reconcile with GLP's release.
-- **Param estimate widened + caveated:** SwiGLU-only arithmetic under-predicts GLP's published counts ~40%; code must print the true count.
-- **ESM-2-8M architecture facts verified** from config.json (intermediate_size=1280, GELU, rotary, vocab 33 / mask 32 / pad 1) and added; warned against the NVIDIA `nv_esm` repackaging for hook parity.
-- **Verified-correct (no change):** SAE release + load API, 10,240 dict / 32×, the 10,420 typo, 5M UniRef50, Swiss-Prot 50k/25k/25k, cls+eos drop, GLP FD numbers + block/param table, meta-neuron count = n_blocks×inner, steering & probing hyperparameters, InterPLM NNsight recon+error steering, glycine testbed, %Loss Recovered formula.
-
-
-### v3 → v4 (third review — verifying claims the *second* pass introduced)
-
-- **UniRef50 size (verified, was hallucinated in v3):** corrected "~65 GB compressed" → **~12 GB compressed / ~24 GB uncompressed** (I had conflated the ~65M sequence count with file size).
-- **`foldcomp` (category error, was wrong in v3):** removed — foldcomp compresses protein *structures* (AFDB/ESMAtlas), it is not a UniRef50 *sequence* source. Replaced with InterPLM's own fetch scripts / UniProt REST / UniProt FTP.
-- **Concept-count provenance (new caveat):** paper versions disagree — v1 preprint says 433 evaluated / 143 aligned; bioRxiv v2 / Nature Methods says 258 concepts; also on arXiv:2412.12101. Plan no longer hardcodes a count; Claude Code reads the actual released concept set. §7 is robust to this.
-- **%Loss-Recovered masking (softened):** the exact MLM masking for %LR isn't in the Methods we have; flagged "confirm against InterPLM code" rather than asserting 15%.
-- **650M hook layer (specified):** stretch must hook a released-SAE layer (e.g. 18/24), not an arbitrary one.
-- **InterPLM repo structure (verified):** package + scripts + dashboard + NNsight steering + concept-eval pipeline confirmed present; exact function signatures (`embed_single_sequence`, `load_sae_from_hf`, etc.) remain W1-confirm items (honest provisional, not asserted).
-
-
-### v4 → v5 (fourth review — verified against the actual InterPLM + GLP clones; see `RECON.md`)
-
-All items below are backed by `file:line` citations in `RECON.md`. Nothing is asserted from memory; where a claim couldn't be checked offline it is marked W1-deferred.
-
-- **D1 (embedding API, was wrong):** no `interplm.esm.embed`; the embedder is `interplm.embedders.esm.ESM` / `get_embedder("esm", model_name=…)` with `embed_single_sequence(sequence, layer)`. Fixed §2.2, §5, §6.1, D2.
-- **D2 (cls/eos, was double-drop risk):** the embedder already drops `<cls>`/`<eos>`/pad; wrapper must not re-strip; hook parity is exact. Fixed §5, §6.1, hook-parity test note.
-- **D3 (norm):** block uses **LayerNorm**, not RMSNorm. Fixed §2.1, §6.2.
-- **D4 (timestep conditioning):** released scheme is **plain multiplicative** — `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`, no `(1+γ)/β`. The FiLM-extrapolation caveat is **resolved**. Fixed §2.1, §6.2.
-- **D5 (meta-neuron):** = **input to `down_proj`**, and **includes the `time_proj(t_emb)` factor** the earlier formula dropped. Direction (post-gating, not gate pre-act) was right. Fixed §2.1, §6.2, §6.5.
-- **D6 (sampler):** reference uses diffusers `FlowMatchEulerDiscreteScheduler` (σ≡t); our Euler is exact for constant velocity. Noted §6.3.
-- **D7 (normalizer):** persists `{mean, var}`; `std=√var`. Noted §6.2.
-- **D8 (probing time):** it's `u` (schedule fraction, released default **0.9**), not `t=0.1/0.5`. Fixed §2.1, §6.5, D9.
-- **D9 (concept filter):** real defaults are **`>25` domains OR `>1,500` AAs**; the "10" was a different knob (`min_required_instances`). Fixed §2.2, §7.
-- **D10 (concept names):** `ft_*` are REST download IDs; materialized columns are display-name + subcategory expansions; read `uniprotkb_aa_concepts_columns.txt`. Fixed §2.2, §7.
-- **D11 (eval proteins):** all have AFDB structures (length ≤ 1022) ⇒ §6.7 biophysical signal is cheaper. Fixed §2.2, §6.7.
-- **D12 (data provisioning):** no prebuilt 25k/25k (shard-range split); shipped 1k subset absent from clone; PoC needs only a small Swiss-Prot slice, **no UniRef50 download**. Fixed §6.1, §9.
-- **Confirmed as-planned (no change):** layer indexing `layer L = hidden_states[L]`; `load_sae_from_hf` + HF layer sets; width rule `d_model=2d, d_mlp=4d`, meta-neurons `= n_blocks·d_mlp`; flow-matching objective; SDEdit `u=0.5`/20-step recipe; probing top-512→1-D LogRegCV→val-select/test-report; NNsight recon+error steering.
-- **Scaffold + tests shipped this pass:** `glp_plm/` package, `configs/{poc_mac,esm8m_h100}.yaml`, `tests/test_flow_matching_roundtrip.py` (passing) and `tests/test_hook_parity.py` (skips until weights present). 6-block GLP = 7,680 meta-neurons, ~21M params (printed by the trainer).
-
----
-
-## 13. Open questions for the human (before build)
+## 12. Open questions for the human (before build)
 
 1. **Compute confirmation:** single H100 confirmed? Wall-clock/queue limits per job (affects whether 300M-activation runs are one job or checkpointed)?
 2. **W4 stretch priority:** if W1–W3 clean, prefer **650M scaling**, **ESMFold pLDDT**, or the **mini scaling curve**? (Likely only one fits.)
-3. **UniRef50 source — RESOLVED:** no local copy; Claude Code downloads it in W1. Size (verified): `uniref50.fasta.gz` is **~12 GB compressed, ~24 GB uncompressed** — manageable, but we only need a subset. Options, best first: (a) **reuse InterPLM's own data-fetch scripts** (it trained on 5M UniRef50 sequences and ships training/eval walkthrough scripts — matching its path keeps our GLP training distribution aligned with the SAE's); (b) stream a subset from the UniProt REST API with a query filter; (c) download `uniref50.fasta.gz` from the UniProt FTP (`ftp.uniprot.org/pub/databases/uniprot/uniref/uniref50/`) and subsample. **Do NOT use `foldcomp` — it is a protein-structure compression tool (AFDB/ESMAtlas), not a sequence source.** (Corrected: v3 gave a wrong ~65 GB size and mis-suggested foldcomp.)
+3. **UniRef50 source — RESOLVED:** no local copy; Claude Code downloads it (cluster only). Size: `uniref50.fasta.gz` is **~12 GB compressed, ~24 GB uncompressed** — but we only need a subset. Options, best first: (a) **reuse InterPLM's own data-fetch scripts** (it trained on 5M UniRef50 sequences and ships training/eval walkthrough scripts — matching its path keeps our GLP training distribution aligned with the SAE's); (b) stream a subset from the UniProt REST API with a query filter; (c) download `uniref50.fasta.gz` from the UniProt FTP (`ftp.uniprot.org/pub/databases/uniprot/uniref/uniref50/`) and subsample. **Do NOT use `foldcomp` — it is a protein-structure compression tool (AFDB/ESMAtlas), not a sequence source.** (For the Mac PoC we used a small Swiss-Prot REST slice instead — see §6.1.)
 4. **Writing:** scaffold the paper draft (Overleaf/markdown) in parallel from W3, or only after experiments freeze?
-
----
-
-*End v2.*
