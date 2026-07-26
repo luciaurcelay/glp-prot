@@ -3,7 +3,7 @@
 One dataclass tree, loaded from YAML. `poc_mac.yaml` and `esm8m_h100.yaml` differ
 only in device / precision / scale / buffer fields (PLAN §5 interface contract, D8).
 
-Width rule (PLAN §6.2, verified in INTERPLM_MAP §5 against
+Width rule (PLAN §6.2, verified in docs/INTERPLM_MAP.md against
 `generative_latent_prior/configs/train_llama8b_static.yaml`):
     d_model = 2 * activation_dim
     d_mlp   = 4 * activation_dim
@@ -21,7 +21,7 @@ from typing import Any, List, Optional
 class ModelConfig:
     # activation_dim = ESM hidden size at the hooked layer (320 for esm2-8m).
     activation_dim: int = 320
-    # derived from activation_dim when None (2x / 4x, INTERPLM_MAP §5)
+    # derived from activation_dim when None (2x / 4x, docs/INTERPLM_MAP.md)
     d_model: Optional[int] = None
     d_mlp: Optional[int] = None
     n_blocks: int = 2  # PoC 2; spine 4->6 (PLAN §6.2 table)
@@ -49,7 +49,7 @@ class SamplerConfig:
 @dataclass
 class DataConfig:
     # Which PLM + hook point. layer=4 = hidden_states[4] = residual after block 4
-    # (INTERPLM_MAP §2). Byte-identical to what the released SAE saw.
+    # (docs/INTERPLM_MAP.md). Byte-identical to what the released SAE saw.
     model_name: str = "facebook/esm2_t6_8M_UR50D"
     layer: int = 4
     # Activation budget (PLAN §6.1). PoC ~2M; spine 50->300M streamed.
@@ -57,14 +57,14 @@ class DataConfig:
     # "precache" (Mac) writes memmap shards; "stream" (cluster) uses producer-consumer.
     store_mode: str = "precache"
     activation_dtype: str = "float16"   # store format (PLAN §6.1)
-    # Data sources (INTERPLM_MAP §9/§10). For the PoC a small Swiss-Prot slice is fine.
+    # Data sources (docs/INTERPLM_MAP.md). For the PoC a small Swiss-Prot slice is fine.
     train_fasta: Optional[str] = None
     eval_uniprot_tsv: Optional[str] = None
-    # Swiss-Prot eval split by shard ranges (INTERPLM_MAP §9, prepare_eval_set).
+    # Swiss-Prot eval split by shard ranges (docs/INTERPLM_MAP.md, prepare_eval_set).
     n_shards: int = 8
     valid_shard_range: List[int] = field(default_factory=lambda: [0, 3])
     test_shard_range: List[int] = field(default_factory=lambda: [4, 7])
-    min_aa_per_concept: int = 1500       # INTERPLM_MAP §9 (D9): real default is 1500/25, not 10
+    min_aa_per_concept: int = 1500       # docs/INTERPLM_MAP.md: real default is 1500/25, not 10
     min_domains_per_concept: int = 25
 
 
@@ -82,7 +82,7 @@ class TrainConfig:
 
 @dataclass
 class ProbingConfig:
-    # Probing time lives in `u` (schedule fraction), released default 0.9 (INTERPLM_MAP §7, D8).
+    # Probing time lives in `u` (schedule fraction), released default 0.9 (docs/INTERPLM_MAP.md).
     # Select on val, report on test (D9): search this grid.
     u_grid: List[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
     topk: int = 512

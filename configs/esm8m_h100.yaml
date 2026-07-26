@@ -20,7 +20,7 @@ data:
   store_mode: stream              # cluster: producer-consumer streaming
   activation_dtype: float16
   train_fasta: null               # UniRef50 subset (streamed) — ask before downloading
-  eval_uniprot_tsv: null          # full Swiss-Prot 50k eval set (INTERPLM_MAP §9)
+  eval_uniprot_tsv: null          # full Swiss-Prot 50k eval set (docs/INTERPLM_MAP.md)
   n_shards: 8
   valid_shard_range: [0, 3]
   test_shard_range: [4, 7]

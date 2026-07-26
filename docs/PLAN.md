@@ -285,7 +285,7 @@ Train 3 GLP sizes (e.g., 2, 4, 6 blocks) on the 8M spine; plot **diffusion loss 
 The single biggest cherry-picking risk is choosing concepts *after* seeing GLP's numbers. We pre-register the selection using **only InterPLM-validation-set statistics and the SAE's own val F1** — never any GLP output — freeze the list, then run all methods. `concept_selection.py` implements and dumps `frozen_concepts.json` (committed before probing runs).
 
 **Selection procedure:**
-1. **Candidate pool:** all Swiss-Prot concepts passing InterPLM's frequency filter — **`>25` domains OR `>1,500` AAs** (the real `make_eval_subset` defaults, `prepare_eval_set.py:21-22`; the earlier ">10 domains" conflated the different `min_required_instances` knob). Read the materialized concept set from `uniprotkb_aa_concepts_columns.txt` (display-name columns, not `ft_*` — D10).
+1. **Candidate pool:** all Swiss-Prot concepts passing InterPLM's frequency filter — **`>25` domains OR `>1,500` AAs** (the real `make_eval_subset` defaults, `prepare_eval_set.py:21-22`; the earlier ">10 domains" conflated the different `min_required_instances` knob). Read the materialized concept set from `uniprotkb_aa_concepts_columns.txt` (display-name columns, not `ft_*`).
 2. **Stability filter:** require ≥ 500 positive AA tokens in the **test** split (so per-concept AUC has tight CIs). Record positive prevalence per concept.
 3. **Category stratification:** tag each concept into one of five biological buckets so the table spans biology, not one easy category:
  - *Structural* — `ft_helix`, `ft_strand`, `ft_turn`, `ft_coiled`

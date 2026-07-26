@@ -1,13 +1,14 @@
-"""Build the labeled Swiss-Prot eval store by orchestrating InterPLM (INTERPLM_MAP §9).
+"""Build the labeled Swiss-Prot eval store by orchestrating InterPLM (docs/INTERPLM_MAP.md).
 
 We do NOT reimplement annotation logic — we call InterPLM's own functions:
   extract_annotations.main -> aa_concepts.npz (+ uniprotkb_aa_concepts_columns.txt)
   prepare_eval_set.make_eval_subset -> valid/test concept subsets (shard-range split)
 then embed each shard's sequences at the hooked layer with our ActivationExtractor,
 producing per-shard activations aligned ROW-FOR-ROW with aa_concepts.npz
-(same protein order, CLS/EOS dropped — INTERPLM_MAP §9 alignment contract).
+(same protein order, CLS/EOS dropped — the alignment contract; see docs/INTERPLM_MAP.md).
 
-Concept columns are read from the materialized column file, never hardcoded `ft_*` (D10).
+Concept columns are read from the materialized column file; never hardcode `ft_*` — they
+are UniProt display-name columns (see docs/INTERPLM_MAP.md).
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ def fetch_uniprot_fasta_slice(dest: Path, n_seqs: int,
                               query: str = "(reviewed:true) AND (length:[80 TO 400])") -> Path:
     """Download up to `n_seqs` Swiss-Prot sequences as FASTA via the UniProt REST API.
 
-    Used for the unlabeled GLP *training* store on the PoC (INTERPLM_MAP §10) — a small
+    Used for the unlabeled GLP *training* store on the PoC (docs/INTERPLM_MAP.md) — a small
     Swiss-Prot slice standing in for UniRef50 (no 12 GB download). Uses the paginated
     `search` endpoint (500/page) and stops once `n_seqs` are collected.
     """
@@ -87,7 +88,7 @@ def read_fasta(path: Path) -> List[str]:
 
 # UniProt REST field IDs matching InterPLM's Option B query (README:163). The TSV
 # header uses display names ("Sequence", "Length", "AlphaFoldDB", "Active site", ...)
-# which is exactly what extract_annotations expects (INTERPLM_MAP §9/D10).
+# which is exactly what extract_annotations expects (docs/INTERPLM_MAP.md).
 _ANNOT_FIELDS = ",".join([
     "accession", "reviewed", "protein_name", "length", "sequence", "ec",
     "ft_act_site", "ft_binding", "cc_cofactor", "ft_disulfid", "ft_carbohyd",
@@ -248,7 +249,7 @@ def load_split(processed_dir: Path, split: str, layer: int):
         a = np.load(shard / f"activations_layer{layer}.npy")
         y = sparse.load_npz(shard / "aa_concepts.npz").toarray()[:, kept]
         assert a.shape[0] == y.shape[0], (
-            f"shard {i} misalignment: {a.shape[0]} acts vs {y.shape[0]} labels (INTERPLM_MAP §9)"
+            f"shard {i} misalignment: {a.shape[0]} acts vs {y.shape[0]} labels (docs/INTERPLM_MAP.md)"
         )
         acts.append(a)
         labels.append(y)

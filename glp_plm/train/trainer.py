@@ -18,7 +18,7 @@ from glp_plm.diffusion import flow_matching
 
 def cosine_lr_with_warmup(step: int, total_steps: int, warmup_ratio: float,
                           initial_factor: float, final_factor: float) -> float:
-    """Multiplier on base lr (matches the GLP reference schedule shape, INTERPLM_MAP §5)."""
+    """Multiplier on base lr (matches the GLP reference schedule shape, docs/INTERPLM_MAP.md)."""
     warmup_steps = max(1, int(total_steps * warmup_ratio))
     if step < warmup_steps:
         return initial_factor + (1.0 - initial_factor) * step / warmup_steps

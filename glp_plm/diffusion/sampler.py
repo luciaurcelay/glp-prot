@@ -1,4 +1,4 @@
-"""Reverse-integration sampler for flow matching (PLAN §6.3; INTERPLM_MAP §6).
+"""Reverse-integration sampler for flow matching (PLAN §6.3; docs/INTERPLM_MAP.md).
 
 Euler integration of dz/dt = û_theta(z, t) from t_start down to 0:
     for consecutive times t_cur -> t_next (t_next < t_cur):
@@ -8,7 +8,7 @@ Euler integration of dz/dt = û_theta(z, t) from t_start down to 0:
 - `sample_on_manifold`: t_start<1 -> SDEdit cleanup of an edited activation
 
 For a CONSTANT velocity field û = eps - z0 this integrator is EXACT regardless of
-`num_steps`, because z(t) = z0 + t*(eps - z0) is linear in t (INTERPLM_MAP §6). That is
+`num_steps`, because z(t) = z0 + t*(eps - z0) is linear in t (docs/INTERPLM_MAP.md). That is
 what the flow-matching round-trip test relies on.
 
 `denoiser` is any callable (z, t) -> velocity of matching shape; t is a scalar

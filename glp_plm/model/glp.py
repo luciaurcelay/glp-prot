@@ -1,12 +1,12 @@
 """GLP denoiser: û_θ(z_t, t) predicting flow-matching velocity, ported to d=320.
 
 Stack of SwiGLU blocks with residuals, no attention, single-token modeling
-(PLAN §2.1; INTERPLM_MAP §4-5). Matches the released GLP architecture
+(PLAN §2.1; docs/INTERPLM_MAP.md). Matches the released GLP architecture
 (generative_latent_prior/glp/denoiser.py:129-211):
     in_proj: d_input -> d_model ; N x SwiGLUBlock @ (d_model, d_mlp) ; LN ; out_proj -> d_input.
 
 Accepts either (N, d_input) or (B, S, d_input); operates per-token either way.
-`meta_neurons()` returns the per-block down_proj-input tensor for probing (INTERPLM_MAP §4, D5).
+`meta_neurons()` returns the per-block down_proj-input tensor for probing (docs/INTERPLM_MAP.md).
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class GLPDenoiser(nn.Module):
     def meta_neurons(self, z_t: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Per-block down_proj-input tensor -> (N, n_blocks * d_mlp).
 
-        This is the GLP "meta-neuron" bank read at probing time (INTERPLM_MAP §4, D5).
+        This is the GLP "meta-neuron" bank read at probing time (docs/INTERPLM_MAP.md).
         """
         flat, _ = self._flatten(z_t)
         t_emb = self.time_embed(self._prep_t(t, flat.shape[0]))

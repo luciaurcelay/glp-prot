@@ -1,7 +1,7 @@
 """Hook-parity guard (PLAN §5, R5 — the single most important guard in the repo).
 
 Assert our ActivationExtractor output equals InterPLM's own embedder for a fixed
-sequence at layer 4. INTERPLM_MAP §1 (D2): InterPLM's embedder ALREADY drops <cls>/<eos>,
+sequence at layer 4. docs/INTERPLM_MAP.md: InterPLM's embedder ALREADY drops <cls>/<eos>,
 so parity is EXACT (not "up to the cls/eos drop") — our wrapper adds no processing.
 
 This test needs `interplm` + torch/transformers importable AND the ESM-2-8M weights

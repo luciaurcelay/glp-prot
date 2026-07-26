@@ -1,4 +1,4 @@
-"""Flow-matching objective (PLAN §2.1/§6.3; verified in INTERPLM_MAP §6).
+"""Flow-matching objective (PLAN §2.1/§6.3; verified in docs/INTERPLM_MAP.md).
 
 Convention (matches GLP reference up to notation): t in [0,1],
     z_t    = (1 - t) * z0 + t * eps          # t=1 pure noise, t=0 clean
@@ -9,7 +9,7 @@ The GLP reference implements the identical thing via diffusers'
 FlowMatchEulerDiscreteScheduler, where sigma plays the role of t
 (flow_matching.py:32-35). We keep a stdlib-only version so training/tests
 have no diffusers dependency; sigma-spacing only matters for reproducing
-their published FD magnitudes (INTERPLM_MAP §6, D6).
+their published FD magnitudes (docs/INTERPLM_MAP.md).
 """
 
 from __future__ import annotations

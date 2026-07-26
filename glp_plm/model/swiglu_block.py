@@ -1,7 +1,7 @@
 """GLP SwiGLU MLP block with multiplicative timestep conditioning.
 
 Implemented to match the RELEASED GLP reference exactly
-(generative_latent_prior/glp/denoiser.py:94-127), per INTERPLM_MAP §4 (deltas D3, D4, D5):
+(generative_latent_prior/glp/denoiser.py:94-127), per docs/INTERPLM_MAP.md:
 
   * Norm is **LayerNorm** (NOT RMSNorm)                         [D3]
   * Timestep conditioning is a **plain multiplicative** modulation of the gate

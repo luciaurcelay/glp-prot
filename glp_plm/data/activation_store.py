@@ -1,7 +1,7 @@
 """Memmap activation store + standardizer (PLAN §5/§6.1; Mac precache path).
 
 Writes fp16 `(N, d)` activations to a single growable memmap shard on disk and
-persists a fitted `Scaler` (`rep_statistics.pt`, `{mean, var}` — INTERPLM_MAP §6/D7).
+persists a fitted `Scaler` (`rep_statistics.pt`, `{mean, var}` — docs/INTERPLM_MAP.md).
 Streaming producer-consumer (cluster) is a separate W2 concern (see producer_consumer).
 
 Layout under `store_dir/`:
