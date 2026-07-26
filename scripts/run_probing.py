@@ -9,6 +9,7 @@ GLP candidate pool spans the `u` grid, exactly as the released probe pools over
 Baselines get the identical candidate budget (top-k) and identical subsampling.
 """
 import argparse
+import gc
 import json
 from pathlib import Path
 
@@ -56,6 +57,7 @@ def main():
     ap.add_argument("--max-concepts", type=int, help="cap concepts (smoke tests)")
     ap.add_argument("--n-shards-per-split", type=int,
                     help="use only the first N shards of each split (bounds the raw_mlp cache)")
+    ap.add_argument("--restart", action="store_true", help="ignore any saved partial results")
     ap.add_argument("--n-jobs", type=int, default=-1)
     args = ap.parse_args()
 
@@ -70,12 +72,16 @@ def main():
     ns = args.n_shards_per_split
     A_tr, Y_tr, names = sl.load_split(processed, "valid", cfg.data.layer, n_shards=ns)
     A_te, Y_te, _ = sl.load_split(processed, "test", cfg.data.layer, n_shards=ns)
-    A_tr, A_te = A_tr.float(), A_te.float()
-    print(f"[probing] valid {tuple(A_tr.shape)}  test {tuple(A_te.shape)}  concepts {len(names)}")
+    # Keep the resident copies in fp16 and standardize only the per-concept subsample.
+    # Holding raw+standardized float32 for both splits is ~3.2 GB of steady state,
+    # which OOMs alongside everything else on a 16 GB machine.
+    A_tr, A_te = A_tr.half(), A_te.half()
+    gc.collect()
+    print(f"[probing] valid {tuple(A_tr.shape)}  test {tuple(A_te.shape)}  concepts {len(names)}",
+          flush=True)
 
     from glp_plm.diffusion.scaler import Scaler
     scaler = Scaler.load(args.scaler or out / "rep_statistics.pt")
-    Z_tr, Z_te = scaler.standardize(A_tr), scaler.standardize(A_te)
 
     model = None
     if "glp" in methods:
@@ -114,25 +120,41 @@ def main():
     print(f"[probing] probing {len(concepts)} concepts x {len(methods)} methods")
 
     u_grid = list(cfg.probing.u_grid)
+
+    # Resumable: each (concept, method) is appended as it finishes, so a crash or
+    # interruption costs one probe, not the whole sweep.
+    run = RunLogger(out)
+    partial = run.metrics_dir / "probing_partial.jsonl"
     results = []
+    if partial.exists() and not args.restart:
+        results = [json.loads(l) for l in partial.read_text().splitlines() if l.strip()]
+        print(f"[probing] resuming: {len(results)} (concept, method) probes already done")
+    done = {(r["concept"], r["method"]) for r in results}
+
     for ci, concept in enumerate(concepts, 1):
+        todo = [m for m in methods if (concept, m) not in done]
+        if not todo:
+            continue
         y_tr_full = Y_tr[concept].to_numpy().astype(int)
         y_te_full = Y_te[concept].to_numpy().astype(int)
         i_tr = pr.balanced_indices(y_tr_full, args.max_pos, args.neg_per_pos, seed=cfg.seed)
         i_te = pr.balanced_indices(y_te_full, args.max_pos, args.neg_per_pos, seed=cfg.seed + 1)
         y_tr, y_te = y_tr_full[i_tr], y_te_full[i_te]
 
-        for method in methods:
+        a_tr, a_te = A_tr[i_tr].float(), A_te[i_te].float()   # subsample -> float32
+        for method in todo:
             if method == "glp":
                 # pool candidates across the u grid; selection happens on val
-                btr = torch.cat([meta_neuron_bank(model, Z_tr[i_tr], u, device=device) for u in u_grid], dim=1)
-                bte = torch.cat([meta_neuron_bank(model, Z_te[i_te], u, device=device) for u in u_grid], dim=1)
+                z_tr, z_te = scaler.standardize(a_tr), scaler.standardize(a_te)
+                btr = torch.cat([meta_neuron_bank(model, z_tr, u, device=device) for u in u_grid], dim=1)
+                bte = torch.cat([meta_neuron_bank(model, z_te, u, device=device) for u in u_grid], dim=1)
                 Ftr, Fte = btr.numpy(), bte.numpy()
+                del btr, bte, z_tr, z_te
             elif method == "sae":
-                Ftr = bl.sae_bank(sae, A_tr[i_tr]).numpy()
-                Fte = bl.sae_bank(sae, A_te[i_te]).numpy()
+                Ftr = bl.sae_bank(sae, a_tr).numpy()
+                Fte = bl.sae_bank(sae, a_te).numpy()
             elif method == "raw_layer":
-                Ftr, Fte = A_tr[i_tr].numpy(), A_te[i_te].numpy()
+                Ftr, Fte = a_tr.numpy(), a_te.numpy()
             elif method == "raw_mlp":
                 Ftr = np.asarray(mlp_tr[i_tr], dtype=np.float32)
                 Fte = np.asarray(mlp_te[i_te], dtype=np.float32)
@@ -147,11 +169,20 @@ def main():
                 res.feature_index = int(res.feature_index % width)
             res_d = res.to_dict(); res_d["headline"] = concept in headline
             results.append(res_d)
+            with open(partial, "a") as f:        # checkpoint immediately
+                f.write(json.dumps(res_d) + "\n")
+            del Ftr, Fte                          # release the bank before the next method
+            gc.collect()
+        del a_tr, a_te
+        gc.collect()
+        # PyTorch's MPS allocator caches freed blocks; over 100+ concepts that cache
+        # grows until the process is killed. Release it each concept.
+        if device == "mps" and hasattr(torch, "mps"):
+            torch.mps.empty_cache()
         best = {r["method"]: round(r["test_auc"], 3) for r in results if r["concept"] == concept}
-        print(f"[probing] ({ci}/{len(concepts)}) {concept[:44]:<44} {best}")
+        print(f"[probing] ({ci}/{len(concepts)}) {concept[:44]:<44} {best}", flush=True)
 
     # ---- aggregate + persist ----
-    run = RunLogger(out)
     agg = {}
     for m in methods:
         vals = [r["test_auc"] for r in results if r["method"] == m]

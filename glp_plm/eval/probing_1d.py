@@ -118,8 +118,11 @@ def probe_concept(F_train: np.ndarray, y_train: np.ndarray,
     from joblib import Parallel, delayed
 
     cand = topk_filter(F_train, y_train, topk)
-    scored = Parallel(n_jobs=n_jobs)(
-        delayed(_fit_one)(F_train[:, c], y_train, F_test[:, c], y_test, seed) for c in cand
+    # max_nbytes=None: the per-candidate arrays are 1-D and tiny, so disable joblib's
+    # spill-to-/tmp memmapping — with 100+ concepts it churns temp files and memory.
+    scored = Parallel(n_jobs=n_jobs, max_nbytes=None)(
+        delayed(_fit_one)(np.ascontiguousarray(F_train[:, c]), y_train,
+                          np.ascontiguousarray(F_test[:, c]), y_test, seed) for c in cand
     )
     val_aucs = np.array([s[0] for s in scored])
     test_aucs = np.array([s[1] for s in scored])
