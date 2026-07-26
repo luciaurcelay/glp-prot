@@ -11,6 +11,7 @@ import argparse
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
+import numpy as np
 import torch
 
 from glp_plm.config import load_config
@@ -38,17 +39,18 @@ def main():
     store_dir = Path(args.store_dir) if args.store_dir else out / "train_store"
 
     store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
-    real_all = store.load().float()
     scaler = Scaler.load(out / "rep_statistics.pt")
 
-    # held-out real split for FD; a disjoint slice as the lower-bound anchor
-    n = real_all.shape[0]
-    g = torch.Generator().manual_seed(cfg.seed)
-    perm = torch.randperm(n, generator=g)
+    # Draw only the rows we need out of the memmap (the store can exceed RAM):
+    # a held-out real slice for FD + a DISJOINT slice as the lower-bound anchor.
+    mm = store.memmap()
+    n = mm.shape[0]
     k = min(args.n_samples, n // 2)
-    real_eval = real_all[perm[:k]]
-    real_anchor_a = real_all[perm[k:2 * k]]
-    real_anchor_b = real_all[perm[:k]]  # train vs val style split for the lower bound
+    g = torch.Generator().manual_seed(cfg.seed)
+    perm = torch.randperm(n, generator=g)[: 2 * k].numpy()
+    real_eval = torch.from_numpy(np.asarray(mm[np.sort(perm[:k])], dtype=np.float32))
+    real_anchor_a = torch.from_numpy(np.asarray(mm[np.sort(perm[k:2 * k])], dtype=np.float32))
+    real_anchor_b = real_eval  # real-vs-real lower bound: disjoint samples of the same data
 
     # sample from noise in standardized space, then de-standardize
     model = GLPDenoiser(cfg.model).to(device).eval()

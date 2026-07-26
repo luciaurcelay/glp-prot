@@ -43,8 +43,14 @@ def fit(
     seed: int = 0,
     logger=print,
     run_logger=None,
+    scaler=None,
 ) -> dict:
     """Train `model` (a GLPDenoiser) on `activations`. Returns a small history dict.
+
+    `activations` may be a lazy memmap-backed tensor larger than RAM — batches are
+    indexed, moved to device, and cast to float32 ONE AT A TIME. Pass `scaler` to
+    standardize per batch (never standardize the whole store: at 25M x 320 that is
+    32 GB in float32).
 
     If `run_logger` (experiments.RunLogger) is given, appends {step, loss, lr} to the
     "train" series each step so figures.training_loss can plot it.
@@ -67,7 +73,11 @@ def fit(
         perm = torch.randperm(n, generator=gen)
         for b in range(steps_per_epoch):
             idx = perm[b * batch_size:(b + 1) * batch_size]
-            z0 = activations[idx].to(device).float()
+            # index -> float32 -> device, one batch at a time (store may exceed RAM)
+            z0 = activations[idx].float()
+            if scaler is not None:
+                z0 = scaler.standardize(z0)
+            z0 = z0.to(device)
 
             loss, _ = flow_matching.flow_matching_loss(model, z0)
             opt.zero_grad(set_to_none=True)

@@ -1,0 +1,54 @@
+# Mid-scale LOCAL run: the "credible checkpoint" for W3 probing.
+# Same device/precision as poc_mac.yaml; differs only in scale (10M acts, 6 blocks)
+# and output_dir. Bridges the PoC and the cluster run.
+#
+# Budget is sized to THIS machine (M4, 16 GB RAM): 10M x 320 fp16 = 6.4 GB, which the
+# page cache can hold, so memmap batch reads stay fast. 25M (16 GB) equals total RAM
+# and thrashes swap. The cluster config raises this — no code change (D8).
+
+device: mps
+precision: fp32      # MPS bf16 is flaky
+seed: 0
+output_dir: runs/local_mid
+
+model:
+  activation_dim: 320
+  d_model: null         # -> 640
+  d_mlp: null           # -> 1280; meta-neurons = 6 * 1280 = 7,680
+  n_blocks: 6           # spine width (PLAN §6.2), vs 2 for the PoC
+
+data:
+  model_name: facebook/esm2_t6_8M_UR50D
+  layer: 4
+  n_train_activations: 10000000   # 6.4 GB fp16; 5x the PoC, fits page cache on 16 GB
+  store_mode: precache
+  activation_dtype: float16
+  train_fasta: null
+  eval_uniprot_tsv: null
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5          # same as PoC so the only change is scale (data + depth)
+  batch_size: 512
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 50
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]   # select on val, report on test (D9)
+  topk: 512
+  seed: 42
