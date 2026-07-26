@@ -12,6 +12,38 @@ We port the **Generative Latent Prior (GLP)** — a diffusion "meta-model" of ne
 
 **InterPLM SAE weights are released on HuggingFace** (`Elana/InterPLM-esm2-8m`, layers 1–6; `Elana/InterPLM-esm2-650m`, layers 1,9,18,24,30,33), loadable via `interplm.sae.inference.load_sae_from_hf`. We do **not** retrain SAEs.
 
+**Pipeline (project logic).** Everything hangs off one frozen hook point — the ESM-2-8M residual stream after block 4 — which feeds both the unlabeled GLP training data and the labeled Swiss-Prot eval data, and is exactly what the released SAE saw (hook parity). The trained GLP denoiser then drives all three deliverables.
+
+```mermaid
+flowchart TD
+    ESM["ESM-2-8M (frozen)<br/>facebook/esm2_t6_8M_UR50D"]
+    HOOK["Hook point: residual stream after block 4<br/>hidden_states index 4, cls/eos dropped<br/>=== hook parity ==="]
+    ESM --> HOOK
+
+    HOOK --> TRAIN["Training activations (unlabeled)<br/>UniRef50 / Swiss-Prot slice"]
+    HOOK --> EVALSET["Eval activations (labeled)<br/>Swiss-Prot, per-AA concept labels"]
+    HOOK --> SAE["InterPLM SAE (released, layer 4)<br/>dict 10,240 - not retrained"]
+
+    TRAIN --> STD["Standardize (per-dim mean/var)"]
+    STD --> FM["GLP training - flow matching<br/>z_t=(1-t)z0+t*noise, target=noise-z0, MSE"]
+    FM --> GLP["GLP denoiser u(z_t, t)<br/>SwiGLU blocks, no attention, single-token"]
+
+    GLP --> SAMP["Sampler: from noise / SDEdit"]
+    SAMP --> GENQ["Generation quality: FD, PCA, %Loss-Recovered<br/><b>Gate G2</b>"]
+
+    GLP --> META["Meta-neurons<br/>down_proj input at probing time u"]
+    META --> PROBE["1-D probing: GLP vs SAE vs raw-layer vs raw-MLP<br/>AUC + F1 · <b>Deliverable 2</b>"]
+    SAE --> PROBE
+    EVALSET --> PROBE
+
+    SAE --> STEER["On-manifold steering<br/>SAE clamp (recon+error) + GLP SDEdit cleanup"]
+    GLP --> STEER
+    EVALSET --> STEER
+    STEER --> PARETO["Concept vs naturalness Pareto<br/><b>Deliverable 3</b>"]
+
+    META --> CAND["Novel candidates: unlabeled meta-neurons<br/>+ held-out signal · <b>Subsection 4</b>"]
+```
+
 ---
 
 ## 1. Thesis and framing (workshop alignment)
