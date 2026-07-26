@@ -69,12 +69,11 @@ def apply_style() -> None:
 
 
 def save_fig(fig, path: str | Path) -> Path:
-    """Save a figure as PNG (+ PDF sibling) and close it."""
+    """Save a figure as PNG and close it."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
-    fig.savefig(path.with_suffix(".pdf"), bbox_inches="tight")
     import matplotlib.pyplot as plt
 
     plt.close(fig)
