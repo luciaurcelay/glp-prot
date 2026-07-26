@@ -42,7 +42,11 @@ class DiffusionConfig:
 
 @dataclass
 class SamplerConfig:
-    num_steps: int = 20          # 20 for steering/PCA sanity; 1000 for final FD
+    num_steps: int = 20          # steering cleanup & PCA sanity (PLAN §6.3)
+    # Final FD needs far more steps: measured on the 6-block/10M local run,
+    # FD ratio to the lower bound is 2.81x @20 steps, 1.74x @100, 1.55x @1000 —
+    # i.e. 20 steps reports sampler error, not model quality (PLAN §6.4).
+    fd_num_steps: int = 1000
     t_start: float = 1.0         # 1.0 = generate-from-noise; 0.5 = SDEdit/loss-recovered
 
 

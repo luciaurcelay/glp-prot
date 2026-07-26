@@ -30,6 +30,8 @@ def main():
     ap.add_argument("--config", required=True)
     ap.add_argument("--store-dir", help="ActivationStore dir (default: <output_dir>/train_store)")
     ap.add_argument("--n-samples", type=int, default=10000)
+    ap.add_argument("--num-steps", type=int,
+                    help="sampler steps (default cfg.sampler.fd_num_steps = 1000, per PLAN §6.4)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -57,7 +59,7 @@ def main():
     model.load_state_dict(torch.load(out / "glp_final.pt", map_location=device))
     z1 = torch.randn(k, cfg.model.activation_dim, device=device)
     gen_std = sampler.sample(lambda z, t: model(z, t), z1,
-                             num_steps=cfg.sampler.num_steps, t_start=1.0)
+                             num_steps=args.num_steps or cfg.sampler.fd_num_steps, t_start=1.0)
     gen = scaler.destandardize(gen_std.cpu())
 
     fd_gen = frechet_distance(gen, real_eval)
@@ -67,7 +69,8 @@ def main():
     # log metrics + projections; figures are rendered by make_report
     run = RunLogger(out)
     run.log_summary(fd_generated_vs_real=fd_gen, fd_lower_bound=fd_lb,
-                    fd_ratio=fd_gen / max(fd_lb, 1e-9), **pca)
+                    fd_ratio=fd_gen / max(fd_lb, 1e-9),
+                    fd_num_steps=int(args.num_steps or cfg.sampler.fd_num_steps), **pca)
     run.save_arrays("pca_proj", real=proj["real"], gen=proj["gen"])
 
     print("==== Gate G1 generation report ====")
