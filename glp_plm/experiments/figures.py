@@ -103,6 +103,39 @@ def fig_generation_pca(run: RunLogger) -> Optional[str]:
     return str(style.save_fig(fig, run.figures_dir / "generation_pca.png"))
 
 
+@register("fd_vs_steps", needs=["metrics/fd_vs_steps.json"])
+def fig_fd_vs_steps(run: RunLogger) -> Optional[str]:
+    """FD vs sampler steps — shows that a low step count reports sampler error,
+    not model quality, so FD must always be quoted with its step count (PLAN §6.4)."""
+    import json
+
+    import matplotlib.pyplot as plt
+
+    d = json.loads((run.metrics_dir / "fd_vs_steps.json").read_text())
+    sweep = sorted(d["sweep"], key=lambda r: r["steps"])
+    if not sweep:
+        return None
+    xs = [r["steps"] for r in sweep]
+    ys = [r["fd"] for r in sweep]
+    lb = d["lower_bound"]
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(xs, ys, marker="o", markersize=8, color=style.color(0), label="FD(generated, real)")
+    ax.axhline(lb, color=style.BASELINE, lw=1.5, ls="--", label=f"lower bound (real vs real) = {lb:.2f}")
+    for r in sweep:
+        ax.annotate(f"{r['ratio']:.2f}x", (r["steps"], r["fd"]),
+                    textcoords="offset points", xytext=(0, 10),
+                    ha="center", fontsize=9, color=style.SECONDARY)
+    ax.set_xscale("log")
+    ax.set_xticks(xs); ax.set_xticklabels([str(x) for x in xs])
+    ax.set_xlabel("sampler steps")
+    ax.set_ylabel("Fréchet distance")
+    ax.set_title("FD vs sampler steps (labels = ratio to lower bound)")
+    ax.legend()
+    ax.margins(y=0.18)
+    return str(style.save_fig(fig, run.figures_dir / "fd_vs_steps.png"))
+
+
 # ----------------------------- W3 figures ----------------------------------- #
 @register("probing_auc", needs=["metrics/probing.json"])
 def fig_probing_auc(run: RunLogger) -> Optional[str]:

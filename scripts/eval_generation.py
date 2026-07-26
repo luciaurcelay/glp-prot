@@ -8,6 +8,7 @@ standardizes, and compares to held-out real activations via:
 %LR and SAE-recon-FD anchors are W2/G2 (PLAN §6.4).
 """
 import argparse
+import json
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
@@ -32,6 +33,8 @@ def main():
     ap.add_argument("--n-samples", type=int, default=10000)
     ap.add_argument("--num-steps", type=int,
                     help="sampler steps (default cfg.sampler.fd_num_steps = 1000, per PLAN §6.4)")
+    ap.add_argument("--fd-steps", help="comma list, e.g. 20,100,1000: sweep FD vs sampler steps "
+                                       "and write metrics/fd_vs_steps.json")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -57,20 +60,39 @@ def main():
     # sample from noise in standardized space, then de-standardize
     model = GLPDenoiser(cfg.model).to(device).eval()
     model.load_state_dict(torch.load(out / "glp_final.pt", map_location=device))
-    z1 = torch.randn(k, cfg.model.activation_dim, device=device)
-    gen_std = sampler.sample(lambda z, t: model(z, t), z1,
-                             num_steps=args.num_steps or cfg.sampler.fd_num_steps, t_start=1.0)
-    gen = scaler.destandardize(gen_std.cpu())
 
-    fd_gen = frechet_distance(gen, real_eval)
+    def generate(steps: int):
+        z1 = torch.randn(k, cfg.model.activation_dim, device=device,
+                         generator=torch.Generator(device=device).manual_seed(cfg.seed))
+        z = sampler.sample(lambda a, t: model(a, t), z1, num_steps=steps, t_start=1.0)
+        return scaler.destandardize(z.cpu())
+
+    run = RunLogger(out)
     fd_lb = frechet_distance(real_anchor_a, real_anchor_b)
+
+    # optional sweep: FD is meaningless without stating the step count (PLAN §6.4)
+    if args.fd_steps:
+        sweep = []
+        for s in [int(x) for x in args.fd_steps.split(",") if x.strip()]:
+            g = generate(s)
+            fd_s = frechet_distance(g, real_eval)
+            m, _ = pca_overlap(real_eval, g)
+            sweep.append({"steps": s, "fd": fd_s, "ratio": fd_s / max(fd_lb, 1e-9),
+                          "pc_std_ratio": m["pca_pc_std_ratio"]})
+            print(f"[fd-sweep] steps={s:<5} FD {fd_s:8.4f}  ratio {sweep[-1]['ratio']:.2f}x  "
+                  f"spread {m['pca_pc_std_ratio']:.3f}", flush=True)
+        (run.metrics_dir / "fd_vs_steps.json").write_text(
+            json.dumps({"lower_bound": fd_lb, "sweep": sweep}, indent=2))
+
+    steps = args.num_steps or cfg.sampler.fd_num_steps
+    gen = generate(steps)
+    fd_gen = frechet_distance(gen, real_eval)
     pca, proj = pca_overlap(real_eval, gen)
 
     # log metrics + projections; figures are rendered by make_report
-    run = RunLogger(out)
     run.log_summary(fd_generated_vs_real=fd_gen, fd_lower_bound=fd_lb,
                     fd_ratio=fd_gen / max(fd_lb, 1e-9),
-                    fd_num_steps=int(args.num_steps or cfg.sampler.fd_num_steps), **pca)
+                    fd_num_steps=int(steps), **pca)
     run.save_arrays("pca_proj", real=proj["real"], gen=proj["gen"])
 
     print("==== Gate G1 generation report ====")
