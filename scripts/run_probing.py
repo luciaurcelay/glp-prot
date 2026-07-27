@@ -21,6 +21,7 @@ from glp_plm.config import load_config
 from glp_plm.data import swissprot_labels as sl
 from glp_plm.eval import baselines as bl
 from glp_plm.eval import probing_1d as pr
+from glp_plm.eval import probing_f1 as pf
 from glp_plm.eval.meta_neurons import meta_neuron_bank
 from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
@@ -53,6 +54,8 @@ def main():
     ap.add_argument("--max-pos", type=int, default=3000, help="cap positives per concept")
     ap.add_argument("--neg-per-pos", type=float, default=1.0)
     ap.add_argument("--min-pos", type=int, default=100, help="skip concepts below this in either split")
+    ap.add_argument("--metric", choices=["auc", "f1"], default="auc",
+                    help="auc = GLP protocol (PLAN §6.5); f1 = InterPLM domain-adjusted F1 (D5)")
     ap.add_argument("--methods", default=",".join(bl.METHODS))
     ap.add_argument("--max-concepts", type=int, help="cap concepts (smoke tests)")
     ap.add_argument("--n-shards-per-split", type=int,
@@ -70,8 +73,9 @@ def main():
 
     # ---- data ----
     ns = args.n_shards_per_split
-    A_tr, Y_tr, names = sl.load_split(processed, "valid", cfg.data.layer, n_shards=ns)
-    A_te, Y_te, _ = sl.load_split(processed, "test", cfg.data.layer, n_shards=ns)
+    binz = args.metric == "auc"          # F1 needs domain-instance indices
+    A_tr, Y_tr, names = sl.load_split(processed, "valid", cfg.data.layer, n_shards=ns, binarize=binz)
+    A_te, Y_te, _ = sl.load_split(processed, "test", cfg.data.layer, n_shards=ns, binarize=binz)
     # Keep the resident copies in fp16 and standardize only the per-concept subsample.
     # Holding raw+standardized float32 for both splits is ~3.2 GB of steady state,
     # which OOMs alongside everything else on a 16 GB machine.
@@ -114,17 +118,41 @@ def main():
     else:
         concepts, headline = list(names), set()
     concepts = [c for c in concepts
-                if Y_tr[c].sum() >= args.min_pos and Y_te[c].sum() >= args.min_pos]
+                if (Y_tr[c] > 0).sum() >= args.min_pos and (Y_te[c] > 0).sum() >= args.min_pos]
     if args.max_concepts:
         concepts = concepts[:args.max_concepts]
     print(f"[probing] probing {len(concepts)} concepts x {len(methods)} methods")
 
     u_grid = list(cfg.probing.u_grid)
+    # F1 fixes the probing time (conservative for GLP: no selection over u, unlike AUC).
+    # u=0.9 is GLP's released default and won 88/104 concepts under AUC.
+    u_fixed = max(u_grid)
+    DIMS = {"glp": cfg.model.n_blocks * cfg.model.d_mlp, "sae": 10240,
+            "raw_layer": cfg.model.activation_dim, "raw_mlp": 1280}
+
+    def bank(method, split, rows, cols):
+        """(len(rows), len(cols)) float32 features for arbitrary row indices."""
+        A = A_tr if split == "valid" else A_te
+        if method == "glp":
+            z = scaler.standardize(A[rows].float())
+            f = meta_neuron_bank(model, z, u_fixed, device=device).numpy()
+        elif method == "sae":
+            f = bl.sae_bank(sae, A[rows].float()).numpy()
+        elif method == "raw_layer":
+            f = A[rows].float().numpy()
+        elif method == "raw_mlp":
+            M = mlp_tr if split == "valid" else mlp_te
+            f = np.asarray(M[rows], dtype=np.float32)
+        else:
+            raise ValueError(method)
+        return f[:, cols]
+
 
     # Resumable: each (concept, method) is appended as it finishes, so a crash or
     # interruption costs one probe, not the whole sweep.
     run = RunLogger(out)
-    partial = run.metrics_dir / "probing_partial.jsonl"
+    suffix = "" if args.metric == "auc" else f"_{args.metric}"
+    partial = run.metrics_dir / f"probing_partial{suffix}.jsonl"
     results = []
     if partial.exists() and not args.restart:
         results = [json.loads(l) for l in partial.read_text().splitlines() if l.strip()]
@@ -140,6 +168,29 @@ def main():
         i_tr = pr.balanced_indices(y_tr_full, args.max_pos, args.neg_per_pos, seed=cfg.seed)
         i_te = pr.balanced_indices(y_te_full, args.max_pos, args.neg_per_pos, seed=cfg.seed + 1)
         y_tr, y_te = y_tr_full[i_tr], y_te_full[i_te]
+
+        if args.metric == "f1":
+            # F1 is prevalence-sensitive -> evaluate on the FULL split, streamed.
+            # Candidates are still picked with the same top-k budget on the subsample.
+            for method in todo:
+                allc = np.arange(DIMS[method])
+                sub = bank(method, "valid", i_tr, allc)
+                cand = pr.topk_filter(sub, (y_tr > 0).astype(int), cfg.probing.topk)
+                del sub; gc.collect()
+                res = pf.run_concept_f1(
+                    lambda sp, r, c, _m=method: bank(_m, sp, r, c),
+                    A_tr.shape[0], A_te.shape[0], y_tr_full, y_te_full,
+                    cand, concept, method, u=u_fixed if method == "glp" else None)
+                res_d = res.to_dict(); res_d["headline"] = concept in headline
+                results.append(res_d)
+                with open(partial, "a") as f:
+                    f.write(json.dumps(res_d) + "\n")
+                gc.collect()
+                if device == "mps" and hasattr(torch, "mps"):
+                    torch.mps.empty_cache()
+            best = {r["method"]: round(r["test_f1"], 3) for r in results if r["concept"] == concept}
+            print(f"[probing] ({ci}/{len(concepts)}) {concept[:44]:<44} {best}", flush=True)
+            continue
 
         a_tr, a_te = A_tr[i_tr].float(), A_te[i_te].float()   # subsample -> float32
         for method in todo:
@@ -185,13 +236,14 @@ def main():
     # ---- aggregate + persist ----
     agg = {}
     for m in methods:
-        vals = [r["test_auc"] for r in results if r["method"] == m]
+        key = "test_f1" if args.metric == "f1" else "test_auc"
+        vals = [r[key] for r in results if r["method"] == m]
         mean, lo, hi = pr.bootstrap_ci(vals)
-        agg[m] = {"mean_test_auc": mean, "ci_low": lo, "ci_high": hi, "n_concepts": len(vals)}
-        print(f"[probing] {m:<10} mean test AUC {mean:.4f}  95% CI [{lo:.4f}, {hi:.4f}]  (n={len(vals)})")
-    (run.metrics_dir / "probing.json").write_text(json.dumps(
+        agg[m] = {f"mean_{key}": mean, "ci_low": lo, "ci_high": hi, "n_concepts": len(vals)}
+        print(f"[probing] {m:<10} mean {key} {mean:.4f}  95% CI [{lo:.4f}, {hi:.4f}]  (n={len(vals)})")
+    (run.metrics_dir / f"probing{suffix}.json").write_text(json.dumps(
         {"results": results, "aggregate": agg, "u_grid": u_grid, "topk": cfg.probing.topk}, indent=2))
-    run.log_summary(probing_mean_test_auc={m: agg[m]["mean_test_auc"] for m in agg})
+    run.log_summary(**{f"probing_mean_{key}": {m: agg[m][f"mean_{key}"] for m in agg}})
     make_report(out)
 
 

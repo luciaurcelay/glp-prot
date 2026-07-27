@@ -237,11 +237,15 @@ def split_shards(processed_dir: Path, split: str, n_shards: Optional[int] = None
 
 
 def load_split(processed_dir: Path, split: str, layer: int,
-               n_shards: Optional[int] = None):
+               n_shards: Optional[int] = None, binarize: bool = True):
     """Load (activations, labels_df, concept_names) for a split ('valid'/'test').
 
     labels: dense array (n_aa, n_kept_concepts) from aa_concepts.npz restricted to the
     eval set's kept concepts; concept_names from aa_concepts_columns.txt.
+
+    `binarize=True` gives 0/1 (what AUC probing wants). `binarize=False` keeps the
+    integer **domain-instance index** each residue belongs to, which the F1 protocol
+    needs for recall-per-domain (InterPLM counts distinct domains touched).
     """
     from scipy import sparse
 
@@ -265,5 +269,6 @@ def load_split(processed_dir: Path, split: str, layer: int,
         labels.append(y)
     acts = np.concatenate(acts, axis=0)
     labels = np.concatenate(labels, axis=0)
-    labels_df = pd.DataFrame((labels > 0).astype(np.uint8), columns=concept_names)
+    labels_df = pd.DataFrame((labels > 0).astype(np.uint8) if binarize else labels,
+                             columns=concept_names)
     return torch.from_numpy(acts), labels_df, concept_names

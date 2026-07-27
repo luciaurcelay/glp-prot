@@ -1,0 +1,156 @@
+{
+  "results": [
+    {
+      "concept": "Active site_Proton acceptor",
+      "method": "glp",
+      "val_f1": 0.3333333333333333,
+      "test_f1": 0.28800000000000003,
+      "precision": 0.41379310344827586,
+      "recall": 0.22085889570552147,
+      "threshold": 0.6,
+      "feature_index": 6498,
+      "aa_level": true,
+      "n_pos_aa_test": 163,
+      "n_domains_test": 163,
+      "u": 0.9,
+      "headline": true
+    },
+    {
+      "concept": "Active site_Proton acceptor",
+      "method": "sae",
+      "val_f1": 0.44692737430167595,
+      "test_f1": 0.4292237442922375,
+      "precision": 0.8392857142857143,
+      "recall": 0.2883435582822086,
+      "threshold": 0.0,
+      "feature_index": 6974,
+      "aa_level": true,
+      "n_pos_aa_test": 163,
+      "n_domains_test": 163,
+      "u": null,
+      "headline": true
+    },
+    {
+      "concept": "Active site_Proton acceptor",
+      "method": "raw_layer",
+      "val_f1": 0.4519774011299434,
+      "test_f1": 0.45070422535211263,
+      "precision": 0.96,
+      "recall": 0.294478527607362,
+      "threshold": 0.6,
+      "feature_index": 289,
+      "aa_level": true,
+      "n_pos_aa_test": 163,
+      "n_domains_test": 163,
+      "u": null,
+      "headline": true
+    },
+    {
+      "concept": "Active site_Proton acceptor",
+      "method": "raw_mlp",
+      "val_f1": 0.4581005586592179,
+      "test_f1": 0.4528301886792453,
+      "precision": 0.9795918367346939,
+      "recall": 0.294478527607362,
+      "threshold": 0.8,
+      "feature_index": 1177,
+      "aa_level": true,
+      "n_pos_aa_test": 163,
+      "n_domains_test": 163,
+      "u": null,
+      "headline": true
+    },
+    {
+      "concept": "Active site_any",
+      "method": "glp",
+      "val_f1": 0.16058394160583941,
+      "test_f1": 0.14736842105263157,
+      "precision": 0.28994082840236685,
+      "recall": 0.09879032258064516,
+      "threshold": 0.5,
+      "feature_index": 6498,
+      "aa_level": true,
+      "n_pos_aa_test": 496,
+      "n_domains_test": 496,
+      "u": 0.9,
+      "headline": true
+    },
+    {
+      "concept": "Active site_any",
+      "method": "sae",
+      "val_f1": 0.182648401826484,
+      "test_f1": 0.17028985507246377,
+      "precision": 0.8392857142857143,
+      "recall": 0.09475806451612903,
+      "threshold": 0.0,
+      "feature_index": 6974,
+      "aa_level": true,
+      "n_pos_aa_test": 496,
+      "n_domains_test": 496,
+      "u": null,
+      "headline": true
+    },
+    {
+      "concept": "Active site_any",
+      "method": "raw_layer",
+      "val_f1": 0.1851015801354402,
+      "test_f1": 0.17454545454545453,
+      "precision": 0.8888888888888888,
+      "recall": 0.0967741935483871,
+      "threshold": 0.6,
+      "feature_index": 47,
+      "aa_level": true,
+      "n_pos_aa_test": 496,
+      "n_domains_test": 496,
+      "u": null,
+      "headline": true
+    },
+    {
+      "concept": "Active site_any",
+      "method": "raw_mlp",
+      "val_f1": 0.18101545253863136,
+      "test_f1": 0.1678321678321678,
+      "precision": 0.631578947368421,
+      "recall": 0.0967741935483871,
+      "threshold": 0.6,
+      "feature_index": 1205,
+      "aa_level": true,
+      "n_pos_aa_test": 496,
+      "n_domains_test": 496,
+      "u": null,
+      "headline": true
+    }
+  ],
+  "aggregate": {
+    "glp": {
+      "mean_test_f1": 0.2176842105263158,
+      "ci_low": 0.14736842105263157,
+      "ci_high": 0.28800000000000003,
+      "n_concepts": 2
+    },
+    "sae": {
+      "mean_test_f1": 0.29975679968235064,
+      "ci_low": 0.17028985507246377,
+      "ci_high": 0.4292237442922375,
+      "n_concepts": 2
+    },
+    "raw_layer": {
+      "mean_test_f1": 0.3126248399487836,
+      "ci_low": 0.17454545454545453,
+      "ci_high": 0.45070422535211263,
+      "n_concepts": 2
+    },
+    "raw_mlp": {
+      "mean_test_f1": 0.31033117825570655,
+      "ci_low": 0.1678321678321678,
+      "ci_high": 0.4528301886792453,
+      "n_concepts": 2
+    }
+  },
+  "u_grid": [
+    0.1,
+    0.5,
+    0.9
+  ],
+  "topk": 512
+}
