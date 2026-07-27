@@ -29,6 +29,7 @@ def main():
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    cfg.check_supported()
     set_seed(cfg.seed)
     device = get_device(cfg.device)
     out = Path(cfg.output_dir); out.mkdir(parents=True, exist_ok=True)
