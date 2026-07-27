@@ -196,6 +196,47 @@ def fig_probing_per_concept(run: RunLogger) -> Optional[str]:
     return str(style.save_fig(fig, run.figures_dir / "probing_per_concept.png"))
 
 
+@register("probing_f1", needs=["metrics/probing_f1.json"])
+def fig_probing_f1(run: RunLogger) -> Optional[str]:
+    """F1 with its precision/recall decomposition — the mechanism behind the AUC/F1 split.
+
+    At rate-matched operating points recall is near-identical across methods, so any
+    F1 difference is a PRECISION difference.
+    """
+    import json
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    rows = json.loads((run.metrics_dir / "probing_f1.json").read_text())["results"]
+    methods = ["glp", "sae", "raw_mlp", "raw_layer"]
+    methods = [m for m in methods if any(r["method"] == m for r in rows)]
+    if not methods:
+        return None
+    stat = lambda m, k: float(np.mean([r[k] for r in rows if r["method"] == m]))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4))
+    b = ax1.bar(methods, [stat(m, "test_f1") for m in methods],
+                color=[style.color(i) for i in range(len(methods))], width=0.6)
+    ax1.bar_label(b, fmt="%.3f", padding=3, color=style.SECONDARY)
+    ax1.set_ylabel("mean test F1")
+    ax1.set_title(f"Domain-adjusted F1 ({len(rows)//len(methods)} concepts)")
+    ax1.margins(y=0.18)
+
+    x = np.arange(len(methods))
+    w = 0.38
+    p = ax2.bar(x - w / 2, [stat(m, "precision") for m in methods], w,
+                color=style.color(0), label="precision")
+    r = ax2.bar(x + w / 2, [stat(m, "recall") for m in methods], w,
+                color=style.color(2), label="recall")
+    ax2.bar_label(p, fmt="%.2f", padding=2, color=style.SECONDARY, fontsize=9)
+    ax2.bar_label(r, fmt="%.2f", padding=2, color=style.SECONDARY, fontsize=9)
+    ax2.set_xticks(x); ax2.set_xticklabels(methods)
+    ax2.set_title("Recall is rate-matched; F1 gap is precision")
+    ax2.legend(); ax2.margins(y=0.18)
+    return str(style.save_fig(fig, run.figures_dir / "probing_f1.png"))
+
+
 @register("generation_fd", needs=["metrics/summary.json"])
 def fig_generation_fd(run: RunLogger) -> Optional[str]:
     import matplotlib.pyplot as plt
