@@ -32,6 +32,7 @@ diffusion:
 
 sampler:
   num_steps: 20
+  fd_num_steps: 1000   # FD needs ~300+ steps to saturate (PLAN §6.4)
   t_start: 1.0
 
 train:

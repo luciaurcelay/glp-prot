@@ -6,8 +6,8 @@ activations, reusing InterPLM's released SAEs + Swiss-Prot pipeline. See top-lev
 InterPLM / GLP reference code, and `SETUP.md` for environment setup.
 
 ## Status
-Week 1 complete (Gate G1 passed): full data pipeline + Mac PoC run end-to-end. See the
-§9 checklist in `docs/PLAN.md`.
+W1 complete (Gate G1 passed) plus a mid-scale local run and most of W3 probing.
+Results: `docs/results/local_mid_summary.md`; checklist: PLAN §9.
 
 ## Layout
 ```
@@ -27,10 +27,18 @@ glp_plm/
     sampler.py              # reverse Euler; sample / sample_on_manifold (SDEdit)
     scaler.py               # per-dim standardizer, stores {mean, var} (GLP-compatible)
   train/trainer.py          # flow-matching loop, cosine+warmup, grad clip, param-count print
-  eval/                     # frechet (FD), pca_overlap  (loss_recovered = W2)
+  eval/
+    frechet.py              # Frechet distance (+ real-vs-real lower bound)
+    pca_overlap.py          # top-2 PCA, real vs generated
+    meta_neurons.py         # GLP meta-neuron bank at probing u (u = 1 - t)
+    baselines.py            # SAE / raw-layer / raw-MLP (ESM FFN hook) banks
+    probing_1d.py           # GLP AUC protocol: top-512 -> 1-D LogRegCV -> val/test
+    probing_f1.py           # InterPLM domain-adjusted F1, rate-matched two-sided
+    concept_selection.py    # pre-registered §7 concept freeze
+                            # loss_recovered = W2, deferred
   experiments/              # RunLogger (metrics) + figure registry + report (see below)
   utils/                    # device, seeds
-configs/  poc_mac.yaml  esm8m_h100.yaml   # differ only in device/precision/scale/buffer
+configs/  poc_mac.yaml (2-blk/2M) · local_mid.yaml (6-blk/10M) · esm8m_h100.yaml (cluster)
 scripts/  one CLI per phase (see PLAN §11) + make_report.py
 tests/    test_flow_matching_roundtrip.py  test_hook_parity.py
 ```

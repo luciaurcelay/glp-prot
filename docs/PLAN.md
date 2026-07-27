@@ -169,8 +169,9 @@ glp-prot/
 ├── generative_latent_prior/         # git submodule (g-luo/…) — GLP reference code
 ├── configs/
 │   ├── poc_mac.yaml                  # MPS/CPU, fp32, ~2M acts, 2-block GLP
+│   ├── local_mid.yaml                # MPS, fp32, 10M acts, 6-block GLP (the result run)
 │   ├── esm8m_h100.yaml               # full spine: cuda, bf16, streaming
-│   └── esm650m_h100.yaml             # (stretch) 650M scaling point
+│   └── esm650m_h100.yaml             # (stretch, NOT YET WRITTEN) 650M scaling point
 ├── glp_plm/
 │   ├── config.py                     # single dataclass config schema (YAML)
 │   ├── data/
@@ -193,10 +194,11 @@ glp-prot/
 │   │   ├── frechet.py                # FD between two activation sets (+ lower bound)
 │   │   ├── pca_overlap.py            # top-2 PCA, real vs generated
 │   │   ├── loss_recovered.py         # (W2) %Loss-Recovered (adapt interplm.train.fidelity)
-│   │   ├── meta_neurons.py           # (W3) down_proj-input meta-neurons at selected u
-│   │   ├── probing_1d.py             # (W3) GLP protocol: filter→1D LR→val AUC→test AUC
-│   │   ├── probing_f1.py             # (W3) InterPLM domain-adjusted F1
-│   │   ├── concept_selection.py      # (W3) pre-registered concept picker (§7)
+│   │   ├── meta_neurons.py           # down_proj-input meta-neurons at probing u (u = 1 - t)
+│   │   ├── probing_1d.py             # GLP protocol: top-512 filter→1D LR→val AUC→test AUC
+│   │   ├── baselines.py              # SAE / raw-layer / raw-MLP (ESM FFN hook) banks
+│   │   ├── probing_f1.py             # InterPLM domain-adjusted F1, rate-matched two-sided
+│   │   ├── concept_selection.py      # pre-registered concept picker (§7)
 │   │   ├── steering.py               # (W4) SAE clamp + GLP SDEdit cleanup via NNsight
 │   │   ├── naturalness.py            # (W4) pseudo-perplexity, AA-dist shift
 │   │   └── esmfold_plddt.py          # (W4, optional) Tier-2 foldability
@@ -288,7 +290,8 @@ figures are one-function additions — no runner changes.
 
 - **FD:** Frechet distance, 50k generated (noise, 1000 steps) vs 50k held-out real. **Match GLP's sampling: one token per document** (H3), not 50k arbitrary tokens, so magnitudes are comparable to their Table 1. Report three anchors: (i) **lower bound** = FD(train-sample, val-sample); (ii) **SAE-reconstruction FD** (InterPLM SAE reconstructs real activations — a *more favorable* setting than GLP's from-noise); (iii) GLP FD.
 - `⚠` **Realistic gate (R9):** the defensible pass is **GLP FD < SAE-reconstruction FD**. "Approaching the lower bound" is *not* guaranteed — in GLP's own Llama8B, GLP (5.93) sits nearer the SAE (6.91) than the lower bound (2.60). We report the gap honestly, not aspirationally.
-- **PCA overlap:** top-2 PCs, real vs generated; expect convergence ~20 steps.
+- **`⚠` FD is meaningless without its step count (measured).** On the 6-block/10M local run the FD ratio to the lower bound is **2.81× @20 steps, 1.98× @50, 1.74× @100, 1.59× @300, 1.55× @1000** — at low step counts FD reports *sampler error*, not model quality, and it saturates by ~300. The config therefore separates `sampler.num_steps` (20, steering/PCA) from `sampler.fd_num_steps` (1000, FD). Always quote FD with its step count.
+- **PCA overlap:** top-2 PCs, real vs generated; expect convergence ~20 steps. *(PCA does converge fast; FD does not — see above.)*
 - **% Loss Recovered (R4, primary reconstruction metric):** InterPLM-native. Inject GLP-"reconstructed" activations (real interpolated with noise at `t_start=0.5`, 20 steps) at layer L; recompute ESM **masked-LM cross-entropy** and report `%LR = (1 − (CE_recon − CE_orig)/(CE_zero − CE_orig))·100`. **Masking protocol (**`⚠` **confirm against InterPLM code, do not assume):** InterPLM's exact %LR CE definition for a masked LM isn't restated in the Methods we have; match their implementation. If unspecified, default to ESM's standard 15% MLM masking on a fixed held-out set, injecting reconstructed activations at all non-special positions and measuring CE on masked positions only — but treat this as a default to verify, not a fact. Compare GLP vs the released SAE (which reports 98–100% per layer). This equals GLP's "Delta LM Loss" up to framing — we report %LR because it's the metric the ESM-interp community reads.
 
 
@@ -303,6 +306,8 @@ figures are one-function additions — no runner changes.
 - `⚠` **H4 — probing position (port decision, NOT inherited blindly):** GLP probes the **last-token** activation because its concepts are sequence-level. Our Swiss-Prot concepts are **per-residue** (a residue is or isn't in a binding site). So we probe **per-amino-acid activations at annotated positions**, matching InterPLM's per-AA label granularity — we do **not** copy GLP's last-token choice, which would be wrong here. State this divergence explicitly in the paper.
 - **AUC protocol (headline):** per concept — top-k=512 candidates on train, 1-D logistic regression per candidate (L-BFGS 1000 iters, L2, 5-fold CV over {1e-5…1e0}), select by **val AUC**, report **test AUC**; aggregate with 95% bootstrap CIs.
 - **F1 protocol (secondary):** InterPLM domain-adjusted F1 (precision/AA, recall/domain), threshold sweep.
+  - **`⚠ FAIRNESS` — rate-matched, two-sided operating points (approved deviation from D5).** InterPLM sweeps thresholds as a *fraction of each feature's max activation*, which presupposes sparse non-negative ReLU features. On dense signed activations that grid degenerates — measured on our eval set, `thr=0.0` fires on **56%** of residues and `thr=0.5` on **0.07%**, with nothing usable between — and 44% of values are negative, invisible to a one-sided `f > thr`. We instead choose each operating point by **activation rate** (per-feature quantile, top {0.05, 0.2, 1, 5}% of residues), applied identically to every method, and allow either **sign**. The F1 / recall-per-domain *definitions* are unchanged. The result is the same under both schemes, which is what makes it trustworthy. State the deviation in the paper.
+  - **F1 is prevalence-sensitive**, so unlike AUC it is evaluated at natural prevalence on the full split (streamed), never on a balanced subsample.
 - `⚠ FAIRNESS`**:** identical candidate budget (k=512) and train/val/test discipline across all four methods; report per-method candidate counts (GLP Table 12 analog); selection on train, evaluation on test, never peek. Report both the pre-registered headline set and the aggregate over *all* qualifying concepts.
 
 
@@ -362,16 +367,16 @@ The single biggest cherry-picking risk is choosing concepts *after* seeing GLP's
    *Binding/catalytic* — `ft_act_site`, `ft_binding`
    *Topology/localization* — `ft_transmem`, `ft_intramem`, signal/transit
    *Domain/family motifs* — selected Pfam/Swiss-Prot domain concepts
-4. **SAE-tractability spread:** compute each concept's **best InterPLM-SAE val F1** (from released weights). Within each category, deliberately include concepts spanning the F1 range — some the SAE handles well (high F1) *and* some it struggles with (low F1). The low-F1-for-SAE concepts are where a nonlinear encoder could plausibly help; including them by rule (not by result) is what makes a GLP win credible rather than cherry-picked.
-5. **Freeze the headline set:** a fixed **N = 15** concepts (3 per category), chosen to satisfy (2)–(4). Deterministic given the val statistics; seed and log the tie-breaks.
+4. **SAE-tractability spread:** compute each concept's SAE tractability from released weights. *(Implemented as best single-SAE-feature **val AUC** rather than val F1 — it preserves the property that matters (SAE-only, no GLP) and avoids the threshold sweep at selection time. State the substitution in the paper.)* Within each category, deliberately include concepts spanning the F1 range — some the SAE handles well (high F1) *and* some it struggles with (low F1). The low-F1-for-SAE concepts are where a nonlinear encoder could plausibly help; including them by rule (not by result) is what makes a GLP win credible rather than cherry-picked.
+5. **Freeze the headline set:** **3 per category**, chosen to satisfy (2)–(4). Deterministic given the val statistics; seed and log the tie-breaks. *(Realized N depends on the eval set: on the 20k-protein local set only 2 `binding_catalytic` concepts qualify, so the frozen set is **14**, not 15.)*
 
 **Reporting (three levels, so the headline is never a hand-picked subset):**
 
-- **(a) Illustrative table** on the 15 frozen concepts: test AUC (+F1) per method, per concept.
+- **(a) Illustrative table** on the frozen concepts: test AUC (+F1) per method, per concept.
 - **(b) The actual claim** — aggregate test AUC over **all** stability-passing concepts (the full pool, GLP's 113-task-average analog), with 95% bootstrap CIs.
 - **(c) Per-category breakdown** — mean AUC per method per bucket, to show *where* each method wins (supports the "complementary" framing).
 
-This structure means: even if a reviewer distrusts the 15-concept table, (b) is the un-gameable number, and (c) turns a possible "GLP loses on average" into an informative result about which biology each encoder captures.
+This structure means: even if a reviewer distrusts the frozen-concept table, (b) is the un-gameable number, and (c) turns a possible "GLP loses on average" into an informative result about which biology each encoder captures.
 
 ---
 
@@ -382,13 +387,14 @@ This structure means: even if a reviewer distrusts the 15-concept table, (b) is 
 
 | Phase       | Hardware      | Model        | Acts               | GLP          | Precision             | Est. time                             |
 | ----------- | ------------- | ------------ | ------------------ | ------------ | --------------------- | ------------------------------------- |
-| PoC         | Mac (MPS/CPU) | ESM-2-8M     | ~2M (pre-cached)   | 2 blk, ~8M   | fp32 (MPS bf16 flaky) | hours                                 |
+| PoC         | Mac (MPS/CPU) | ESM-2-8M     | ~2M (pre-cached)   | 2 blk, ~8M   | fp32 (MPS bf16 flaky) | ~10 min (measured)                    |
+| **Local mid** | **Mac M4 16 GB** | **ESM-2-8M** | **10M (pre-cached, 6.4 GB)** | **6 blk, 21M** | **fp32** | **~12 min extract + ~20 min train (measured)** |
 | Spine       | 1× H100       | ESM-2-8M     | 50→300M (streamed) | 4→6 blk      | bf16                  | hours→~1 day                          |
 | Stretch     | 1× H100       | ESM-2-650M   | scaled             | 6 blk, ~250M | bf16                  | ~1–2 days                             |
 | Tier-2 fold | 1× H100       | ESMFold (HF) | —                  | —            | fp16                  | +setup + inference (16–24 GB GPU mem) |
 
 
-ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M+. Multi-GPU (if available): parallelize the producer or run the size-sweep across GPUs — **not required** for the core paper.
+**Measured locally (M4):** ESM extraction ~13.9k activations/s; 6-block GLP ~20 steps/s at batch 512. The binding constraint on a 16 GB Mac is **RAM/disk, not compute** — 10M acts = 6.4 GB fp16 is comfortable, 25M = 16 GB is not. ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M+. Multi-GPU (if available): parallelize the producer or run the size-sweep across GPUs — **not required** for the core paper.
 
 ---
 
@@ -411,19 +417,42 @@ ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M
 - [x] **GATE G1:** pipeline runs on Mac ✅; loss decreases (2.33→1.19) ✅; PCA of generated vs real non-garbage ✅ (FD 2.61× lower bound; gen 14.1% vs real 12.6% top-2 PC variance); hook-parity passes ✅.
 - [ ] *(deferred)* streaming `producer_consumer.py` (W2/cluster); `eval/loss_recovered.py` %LR (W2/G2).
 
-**Week 2 — Scale on cluster + generation-quality gate. — [ ] NOT STARTED**
+**Week 1.5 — Mid-scale LOCAL run (unplanned; cluster unavailable). — ✅ COMPLETE**
 
-- [ ] Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320.
-- [ ] Train at 50M → 100M → 300M; watch FD plateau.
-- [ ] Implement + compute FD (vs SAE-recon + lower bound), PCA overlap, **% Loss Recovered** (adapt `interplm.train.fidelity.calculate_loss_recovered`).
+Measurement showed the ESM-2-8M spine is **RAM/disk-bound, not compute-bound**, so most
+of W2/W3 turned out to be local-feasible. Full write-up: `docs/results/local_mid_summary.md`.
+
+- [x] `configs/local_mid.yaml`: 10M activations (6.4 GB fp16), **6-block GLP (21M params)**; loss 2.349 → **1.034**.
+- [x] Eval set scaled 2k → **20k proteins** (2.53M labeled residues, 224 concepts, 110 qualifying, all five §7 categories present).
+- [x] FD at the correct step count: **1.55× the lower bound @1000 steps** (PoC was 2.09×); FD-vs-steps sweep + figure.
+- [x] Streaming/memory rework so stores and feature banks exceed RAM safely (see risk register).
+
+**Week 2 — Scale on cluster + generation-quality gate. — [~] PARTIAL (blocked on cluster)**
+
+- [ ] Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320. *(blocked: no cluster access)*
+- [ ] Train at 50M → 100M → 300M; watch FD plateau. *(blocked: 16 GB RAM caps local at ~10–20M)*
+- [x] FD (vs lower bound) + PCA overlap — implemented and run locally.
+- [ ] **SAE-reconstruction FD anchor** and **% Loss Recovered** (adapt `interplm.train.fidelity.calculate_loss_recovered`) — **both local-feasible, not yet run.**
 - [ ] **GATE G2 (GO/NO-GO):** GLP FD < SAE-reconstruction FD; PCA converged; %LR competitive with the SAE. **If G2 fails → drop steering, ship probing-only paper.**
 
-**Week 3 — Probing (guaranteed) + candidates. — [ ] NOT STARTED**
+**Week 3 — Probing (guaranteed) + candidates. — [~] SUBSTANTIALLY DONE (locally)**
 
-- [ ] Freeze `frozen_concepts.json` (§7) **before** running probes.
-- [ ] Meta-neuron extraction (`u` selected on val); 1-D AUC probing across all four methods; InterPLM F1 secondary; three-level reporting (§7); optional nonlinearity test (§6.5.1).
+- [x] Freeze `frozen_concepts.json` (§7) **before** running probes (14 concepts; committed to `docs/`).
+- [x] Meta-neuron extraction (`u` pooled over the grid, selected on val — `u=0.9` won 88/104, matching GLP's released default).
+- [x] **1-D AUC probing, all four methods, 104 concepts:** GLP **0.947** > raw-MLP 0.916 > SAE 0.900 > raw-layer 0.861; all paired-bootstrap significant. Three-level reporting (§7 a/b/c) produced.
+- [x] **InterPLM F1 (secondary), 14 frozen concepts:** SAE **0.286** > GLP 0.231 > raw-MLP 0.186 > raw-layer 0.134. Recall is rate-matched, so the gap is **precision** (SAE 0.35 vs GLP 0.19).
+- [ ] Extend F1 to all 104 concepts (~3.5 h locally).
+- [ ] Optional nonlinearity falsification test (§6.5.1).
 - [ ] Auto-interp; assemble novel-candidate subsection with structure-free held-out signal.
-- [ ] **Deliverable D2 complete → paper guaranteed submittable.**
+- [~] **Deliverable D2 has a defensible local result**; cluster-scale numbers still pending.
+
+> **Headline finding (see §1 framing).** The two metrics *disagree*, and that is the
+> result: GLP wins **ranking power** (AUC) while the SAE wins **precision at a matched
+> operating point** (F1). Sparse SAE features are 99.0% exactly zero — they fire rarely
+> but correctly; dense GLP meta-neurons rank every residue but must threshold an
+> always-on signal. Note also that **the SAE is not the strongest AUC baseline** (ESM's
+> own FFN neurons beat it, +0.016), so the informative dense-vs-dense comparison is
+> **GLP vs raw-MLP**, where GLP wins AUC by +0.031 on 92/104 and ties on F1.
 
 **Week 4 — Steering + optional stretch. — [ ] NOT STARTED**
 
@@ -449,6 +478,9 @@ ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M
 | **GLP FD doesn't beat SAE (G2 fail)**                                    | Low–Med              | Probing-only paper still complete. Try wider GLP, more blocks, more acts, lower lr.                                                                                                         |
 | **GLP meta-neurons don't beat SAE on AUC**                               | Med                  | Reframe complementary (§1, §7c). Do NOT hinge the paper on winning.                                                                                                                         |
 | **MPS incompatibility**                                                  | Med                  | PoC fp32 on MPS/CPU; bf16 guarded behind `device=='cuda'`.                                                                                                                                  |
+| **Host RAM, not GPU, is the local ceiling** (RESOLVED, recurring) | High locally | Dev Mac has **16 GB**. Three accumulate-in-RAM bugs killed jobs (activation store, raw-MLP bank, per-split standardized copies) plus an **MPS allocator cache** that grew until the OS killed the process. Rules now: stores stream into memmaps and are read lazily; standardize per batch; free banks between methods; `torch.mps.empty_cache()` per concept; long sweeps resumable via `metrics/probing_partial*.jsonl`. |
+| **FD misreported at low sampler steps** (RESOLVED) | — | 20-step FD reports sampler error (2.81× vs 1.55× @1000). `sampler.fd_num_steps=1000` is separate from `num_steps`; always quote FD with its step count. |
+| **Metric semantics differ across representations** (RESOLVED) | Med | InterPLM's fraction-of-max F1 thresholds assume sparse non-negative features and degenerate on dense signed ones. Rate-matched two-sided operating points fix it (§6.5); conclusion unchanged under both schemes. |
 | **ESMFold setup overhead** (Tier-2)                                      | Med if attempted     | Strictly optional, W4-slack-gated; HF port vendors openfold (no `nvcc` compile) but needs 16–24 GB GPU mem; skip if >½ day. (H1: corrected from "no openfold" — it's vendored, not absent.) |
 | **AFDB/DSSP dependency for biophysical candidate signal**                | Med if attempted     | Primary candidate signal is structure-free (§6.7); AFDB path is optional.                                                                                                                   |
 | **Streaming buffer throughput/deadlock**                                 | Low–Med              | Fall back to pre-cached shards at reduced budget (100M ≈ 64 GB).                                                                                                                            |
@@ -462,33 +494,32 @@ ESM-2-8M forward is cheap; producer-consumer mainly prevents disk blowup at 100M
 
 ## 11. Script entrypoints (Claude Code CLI targets)
 
+All scripts take `--config`; the config chooses device/precision/scale. Use the venv
+(`.venv/bin/python`) — see `SETUP.md`. Real invocations, as run:
+
 ```bash
-# W1
-python scripts/download_interplm_saes.py --config configs/poc_mac.yaml # HF: Elana/InterPLM-esm2-8m layers 1-6
-python scripts/build_swissprot_eval.py --config configs/poc_mac.yaml # 50k proteins, per-AA labels, 25k/25k
-python scripts/extract_activations.py --config configs/poc_mac.yaml --store train
-python scripts/extract_activations.py --config configs/poc_mac.yaml --store eval
-python scripts/train_glp.py --config configs/poc_mac.yaml
-python scripts/eval_generation.py --config configs/poc_mac.yaml # FD + PCA (G1)
-pytest tests/test_hook_parity.py tests/test_flow_matching_roundtrip.py
+# --- W1 / local (configs/poc_mac.yaml or configs/local_mid.yaml) ---
+python scripts/download_interplm_saes.py --config configs/local_mid.yaml [--all-layers]
+python scripts/extract_activations.py    --config configs/local_mid.yaml --store train --n-seqs 110000
+python scripts/train_glp.py              --config configs/local_mid.yaml      # + loss/lr figures
+python scripts/eval_generation.py        --config configs/local_mid.yaml [--fd-steps 20,50,100,300,1000]
+python scripts/build_swissprot_eval.py   --config configs/local_mid.yaml --n-prot 20000 --min-required-instances 30
+python scripts/make_report.py            --config configs/local_mid.yaml      # re-render all figures
+pytest tests/ -q                                                              # 6 pass
 
-# W2 (swap config only)
-python scripts/train_glp.py --config configs/esm8m_h100.yaml
-python scripts/eval_generation.py --config configs/esm8m_h100.yaml # FD + PCA + %LR (G2)
+# --- W3 probing (§7: freeze BEFORE probing) ---
+python scripts/freeze_concepts.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed
+python scripts/run_probing.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed --concepts runs/local_mid/swissprot/processed/frozen_concepts.json --n-shards-per-split 1 [--metric auc|f1] [--max-concepts N] [--restart]
+# resumable: every (concept, method) checkpoints to metrics/probing_partial[_f1].jsonl
 
-# W3
-python scripts/freeze_concepts.py --config configs/esm8m_h100.yaml # writes frozen_concepts.json
-python scripts/run_probing.py --config configs/esm8m_h100.yaml --metric auc
-python scripts/run_probing.py --config configs/esm8m_h100.yaml --metric f1
-python scripts/test_nonlinearity.py --config configs/esm8m_h100.yaml # optional (§6.5.1)
-python scripts/auto_interp_metaneurons.py --config configs/esm8m_h100.yaml
+# --- W2 cluster (config swap only, no code changes — D8) ---
+python scripts/train_glp.py       --config configs/esm8m_h100.yaml
+python scripts/eval_generation.py --config configs/esm8m_h100.yaml   # + SAE-recon FD + %LR (G2)
 
-# W4
-python scripts/run_steering.py --config configs/esm8m_h100.yaml --testbed glycine
-python scripts/run_steering.py --config configs/esm8m_h100.yaml --testbed broad
-python scripts/run_steering.py --config configs/esm8m_h100.yaml --tier2-plddt # optional
-python scripts/train_glp.py --config configs/esm650m_h100.yaml # stretch
-python scripts/scaling_sweep.py --config configs/esm8m_h100.yaml # stretch
+# --- stubs, not yet implemented ---
+python scripts/run_steering.py            --config ... --testbed glycine|broad   # W4
+python scripts/auto_interp_metaneurons.py --config ...                           # W3 candidates
+# planned: scripts/test_nonlinearity.py (§6.5.1), scripts/scaling_sweep.py (stretch)
 ```
 
 ---

@@ -91,6 +91,8 @@ class ProbeResult:
 
 
 def _fit_one(x_tr, y_tr, x_te, y_te, seed: int):
+    import warnings
+
     from sklearn.linear_model import LogisticRegressionCV
     from sklearn.metrics import roc_auc_score
     from sklearn.pipeline import make_pipeline
@@ -101,11 +103,18 @@ def _fit_one(x_tr, y_tr, x_te, y_te, seed: int):
         LogisticRegressionCV(Cs=CS_GRID, cv=5, scoring="roc_auc", max_iter=1000,
                              random_state=seed, penalty="l2", n_jobs=1),
     )
-    pipe.fit(x_tr.reshape(-1, 1), y_tr)
+    # Apple's Accelerate BLAS raises spurious over/invalid warnings inside sklearn's
+    # solver on finite data. Unsuppressed this emitted ~1.9M lines (686 MB of log)
+    # across a 104-concept sweep and buried real errors.
+    with warnings.catch_warnings(), np.errstate(divide="ignore", over="ignore",
+                                                under="ignore", invalid="ignore"):
+        warnings.simplefilter("ignore")
+        pipe.fit(x_tr.reshape(-1, 1), y_tr)
+        proba = pipe.predict_proba(x_te.reshape(-1, 1))[:, 1]
     clf = pipe["logisticregressioncv"]
     best_c_idx = int(np.where(np.array(clf.Cs_) == clf.C_[0])[0][0])
     val_auc = float(clf.scores_[1].mean(axis=0)[best_c_idx])
-    test_auc = float(roc_auc_score(y_te, pipe.predict_proba(x_te.reshape(-1, 1))[:, 1]))
+    test_auc = float(roc_auc_score(y_te, proba))
     return val_auc, test_auc
 
 

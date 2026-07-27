@@ -14,14 +14,14 @@ Procedure:
 
 Deviation from §7 worth stating in the paper: tractability is scored as the SAE's
 best single-feature **val AUC** rather than val F1. It preserves the property that
-matters (SAE-only, no GLP) and avoids the F1 threshold sweep; swap in F1 once
-probing_f1 lands.
+matters (SAE-only, no GLP) and avoids running a threshold sweep at selection time.
+(`probing_f1` now exists, so swapping in F1 is possible — but note it would change
+which concepts are frozen, so do it deliberately, not silently.)
 """
 
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -57,7 +57,6 @@ def select_concepts(
     seed: int = 0,
 ) -> Dict:
     """Return the frozen selection + full audit trail (see module docstring)."""
-    rng = np.random.default_rng(seed)
     pool, dropped = [], {}
 
     for name, npos in zip(concept_names, n_pos_test):

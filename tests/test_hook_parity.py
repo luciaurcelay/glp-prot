@@ -21,7 +21,7 @@ MODEL = "facebook/esm2_t6_8M_UR50D"
 
 def _load_interplm_embedder():
     """Import InterPLM's ESM embedder and instantiate it, or skip."""
-    interplm = pytest.importorskip("interplm", reason="InterPLM not installed")
+    pytest.importorskip("interplm", reason="InterPLM not installed")
     pytest.importorskip("torch", reason="torch not installed")
     pytest.importorskip("transformers", reason="transformers not installed")
     from interplm.embedders import get_embedder
@@ -54,7 +54,7 @@ def test_extractor_matches_interplm_embedder():
 
 def test_many_matches_single_concatenation():
     """extract_many over one sequence equals extract_single (both cls/eos-dropped, flat)."""
-    embedder = _load_interplm_embedder()
+    _load_interplm_embedder()          # skips the test if deps/weights are absent
     from glp_plm.data.activation_extractor import ActivationExtractor
 
     extractor = ActivationExtractor(model_name=MODEL, layer=LAYER, device="cpu")

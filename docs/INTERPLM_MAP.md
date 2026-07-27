@@ -13,6 +13,7 @@ Paths are relative to the repo root. Verified against the clones during W1.
 | SAE steering (recon + error, NNsight) | `sae.intervention.get_esm_output_with_intervention(...)` | `sae/intervention.py` |
 | Swiss-Prot per-AA labels | `analysis.concepts.extract_annotations.main(...)` → `aa_concepts.npz` + `uniprotkb_aa_concepts_columns.txt` | `analysis/concepts/extract_annotations.py` |
 | Val/test concept subsets | `analysis.concepts.prepare_eval_set.make_eval_subset(...)` (defaults `min_aa=1500`, `min_domains=25`) | `analysis/concepts/prepare_eval_set.py:15-22` |
+| Domain-adjusted F1 | `analysis.concepts.calculate_f1.calculate_f1`, `compare_activations.calc_metrics_sparse`; `concept_constants.is_aa_level_concept` picks AA- vs domain-level recall | `analysis/concepts/calculate_f1.py:64-86`, `compare_activations.py:106-136` |
 | % Loss Recovered | `train.fidelity.calculate_loss_recovered(...)` (full-sequence CE with activation patching, **not** 15% MLM) | `train/fidelity.py:49` |
 
 ## GLP reference (`generative_latent_prior/glp/…`)
@@ -44,6 +45,13 @@ Paths are relative to the repo root. Verified against the clones during W1.
   (`extract_annotations.py:151,256`) — so the biophysical candidate signal is cheap.
 - **The 1k dense-annotated subset** referenced in InterPLM's README is **not committed**
   upstream — use a UniProt REST slice instead (`glp_plm/data/swissprot_labels.py`).
+- **F1 thresholds don't port to dense features.** InterPLM's sweep is a *fraction of each
+  feature's max activation*, which assumes sparse non-negative ReLU features. On dense
+  signed activations it degenerates (56% of residues fire at thr=0, 0.07% at thr=0.5) and
+  one-sided `f > thr` misses negatively-encoded concepts. We use rate-matched, two-sided
+  operating points instead (`glp_plm/eval/probing_f1.py`); the F1 definitions are unchanged.
+- **F1 is prevalence-sensitive** — evaluate at natural prevalence on the full split, never
+  on the balanced subsample the AUC path uses.
 
 ## Environment / integration gotchas (see `SETUP.md`)
 - **Do not `pip install -e InterPLM`.** Its `setup.py` misses `interplm/train/__init__.py`

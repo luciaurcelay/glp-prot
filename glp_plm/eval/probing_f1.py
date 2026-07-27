@@ -3,7 +3,9 @@
 This is the SAE's *home-turf* metric: precision per amino acid, recall **per domain**,
 best over a threshold sweep. Definitions match InterPLM exactly
 (`interplm/analysis/concepts/calculate_f1.py:64-86` and
-`compare_activations.py:106-136`):
+`compare_activations.py:106-136`), recomputed vectorized over the
+(feature, operating-point) grid rather than called scalar-wise;
+`is_aa_level_concept` is reused directly:
 
     precision        = tp / (tp + fp)                       # per amino acid
     recall           = tp / n_positive_AAs                  # AA-level concepts
@@ -52,12 +54,6 @@ def is_aa_level(concept: str) -> bool:
     from interplm.analysis.concepts.concept_constants import is_aa_level_concept
 
     return bool(is_aa_level_concept(concept))
-
-
-def f1_score(precision: float, recall: float) -> float:
-    from interplm.analysis.concepts.calculate_f1 import calculate_f1
-
-    return float(calculate_f1(precision, recall))
 
 
 @dataclass

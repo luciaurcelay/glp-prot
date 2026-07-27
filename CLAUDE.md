@@ -33,11 +33,14 @@ glp_plm/            our package
                     glp (GLPDenoiser + meta_neurons()), timestep_embed
   diffusion/        flow_matching, sampler (Euler; sample / sample_on_manifold), scaler
   train/            trainer (flow-matching loop, cosine+warmup)
-  eval/             frechet, pca_overlap  (loss_recovered = W2, deferred)
+  eval/             frechet, pca_overlap, meta_neurons, baselines, probing_1d,
+                    probing_f1, concept_selection   (loss_recovered = W2, deferred)
   experiments/      RunLogger (metrics) + figure registry + make_report (auto-renders figures)
-configs/            poc_mac.yaml (MPS/CPU fp32) · esm8m_h100.yaml (differ only in device/precision/scale/buffer)
+configs/            poc_mac.yaml (2-blk/2M) · local_mid.yaml (6-blk/10M, the result run) ·
+                    esm8m_h100.yaml (cluster; differs only in device/precision/scale/buffer)
 scripts/            _bootstrap.py + one CLI per phase (§11)
 tests/              test_hook_parity.py (live), test_flow_matching_roundtrip.py
+docs/results/       committed metrics + the run write-up
 runs/               outputs (gitignored)
 ```
 
@@ -86,5 +89,24 @@ Cluster (W2) is a config swap to `esm8m_h100.yaml` — no code changes (D8 parit
   H100 by swapping config only.
 
 ## Current status
-Week 1 complete, **Gate G1 passed** (see PLAN §9 checklist). Next: W2 cluster scale-up →
-Gate G2 (`esm8m_h100.yaml`, streaming, bf16, FD vs SAE-recon + %LR).
+W1 complete (**Gate G1 passed**) plus a mid-scale **local** run and most of W3 probing —
+see the PLAN §9 checklist and the full write-up in `docs/results/local_mid_summary.md`.
+
+Headline: on 104 pre-registered concepts, GLP meta-neurons lead 1-D probing AUC
+(**0.947** vs raw-MLP 0.916, SAE 0.900, raw-layer 0.861, all paired-significant), while
+the SAE leads InterPLM-native **F1** (0.286 vs GLP 0.231) on precision. The metrics
+disagree by design — that complementarity is the result.
+
+**Still open:** Gate G2 (SAE-reconstruction FD + %Loss-Recovered — both local-feasible,
+not run), F1 on all 104 concepts, W4 steering, cluster scale-up.
+
+## Local-scale gotchas (learned the hard way — don't regress these)
+The dev Mac has **16 GB RAM**, and RAM/disk — not compute — is the ceiling.
+- Never materialize a whole activation store: stores stream into memmaps and are read
+  lazily; standardize **per batch**, not per split.
+- Free feature banks between methods and call `torch.mps.empty_cache()` per concept;
+  the MPS allocator cache otherwise grows until the OS kills the process.
+- Long sweeps must checkpoint — `run_probing.py` resumes from
+  `metrics/probing_partial[_f1].jsonl`.
+- Quote FD **with its sampler step count** (`fd_num_steps=1000`); 20-step FD reports
+  sampler error, not model quality.

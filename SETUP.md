@@ -44,4 +44,28 @@ Instead, both packages are put on `sys.path` explicitly:
 .venv/bin/python scripts/make_report.py            --config configs/poc_mac.yaml   # re-render all figures
 ```
 
-Figures and metrics are written under `runs/<name>/` (`figures/*.png|pdf`, `metrics/`).
+Figures and metrics are written under `runs/<name>/` (`figures/*.png`, `metrics/`).
+`runs/` is gitignored; committed results live in `docs/results/`.
+
+## W3 probing (the result run used `configs/local_mid.yaml`)
+
+```bash
+# labeled eval set (20k densely-annotated Swiss-Prot proteins)
+.venv/bin/python scripts/build_swissprot_eval.py --config configs/local_mid.yaml --n-prot 20000 --min-required-instances 30
+
+# freeze the concept set BEFORE probing (PLAN §7 fairness rule)
+.venv/bin/python scripts/freeze_concepts.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed
+
+# 4-method probing; add --metric f1 for InterPLM domain-adjusted F1
+.venv/bin/python scripts/run_probing.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed --concepts runs/local_mid/swissprot/processed/frozen_concepts.json --n-shards-per-split 1
+```
+
+Probing is **resumable**: every `(concept, method)` is checkpointed to
+`metrics/probing_partial[_f1].jsonl`, so an interruption costs one probe. Pass
+`--restart` to ignore a saved checkpoint.
+
+## Memory notes (16 GB Mac)
+
+RAM, not compute, is the local ceiling. 10M activations = 6.4 GB fp16 is comfortable;
+25M = 16 GB is not. When adding a new feature bank, stream it to a memmap instead of
+accumulating in RAM, and clear the MPS cache inside long loops.
