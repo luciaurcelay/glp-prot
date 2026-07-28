@@ -39,7 +39,7 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
     for ext in out err; do
       [ -f "$base.$ext" ] || continue
       mv "$base.$ext" "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext"
-      ln -sf "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext" "runs/$RUN_NAME/$base.$ext"
+      ln -sf "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext" "runs/$RUN_NAME/$base.$ext" 2>/dev/null || true  # no-op if runs/ already resolves into $GLP_RUNS_ROOT (symlinked wholesale)
     done
   }
   trap finalize_logs EXIT

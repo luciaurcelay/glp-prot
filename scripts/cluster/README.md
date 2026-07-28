@@ -77,12 +77,18 @@ automatically, nothing here needs re-running.
 
 ## Storage layout
 
-`runs/<run>/` (a plain local directory, not a symlink) ends up holding only the
+By design, `runs/<run>/` should be a plain local directory holding only the
 lightweight "browse this" artifacts — everything large or checkpoint-like is
 redirected to cluster storage by `glp_plm.utils.resolve_storage_dir` (per-run) or
 `resolve_shared_dir` (shared across runs), called from inside each pipeline script
 itself (not a separate setup step, so it happens automatically no matter which
-script runs first):
+script runs first). **Verify `runs` isn't itself a symlink on your account**
+(`stat runs` / `readlink runs`) before trusting that design — on this account it
+turned out to be `runs -> $GLP_RUNS_ROOT` wholesale (predates this doc, never
+corrected), which collapses the two trees below into one and made
+`checkpoints/`/`hf_cache/` etc. show up "under `runs/`" despite the "NOT
+symlinked" notes further down. Harmless either way (same data, reachable either
+path) except for one launcher quirk — see the `finalize_logs` entry in Known gaps.
 
 ```
 $GLP_DATA_ROOT/
