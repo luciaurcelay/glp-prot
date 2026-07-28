@@ -46,8 +46,7 @@ automatically.
    pip install --upgrade pip
    PIP_CACHE_DIR="$GLP_DATA_ROOT/pip_cache" pip install -r requirements.txt
    ```
-   Note: if 
-5. **Model + SAE weights** (login node, needs internet; small — ESM-2-8M + the
+4. **Model + SAE weights** (login node, needs internet; small — ESM-2-8M + the
    released InterPLM SAEs, not UniRef50). Lands in `$GLP_RUNS_ROOT/hf_cache`:
    ```bash
    scripts/cluster/prefetch_weights.sh
@@ -55,7 +54,7 @@ automatically.
    Jobs run with `HF_HUB_OFFLINE=1` (set in `env_mn5.sh`), so this is what they
    read from.
 
-6. **Swiss-Prot data** (login node, needs internet). Labeled eval slice + unlabeled
+5. **Swiss-Prot data** (login node, needs internet). Labeled eval slice + unlabeled
    training slice, shared across every run/config (same REST query → same result,
    so no `--config` needed):
    ```bash
