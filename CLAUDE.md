@@ -39,6 +39,7 @@ glp_plm/            our package
 configs/            poc_mac.yaml (2-blk/2M) · local_mid.yaml (6-blk/10M, the result run) ·
                     esm8m_h100.yaml (cluster; differs only in device/precision/scale/buffer)
 scripts/            _bootstrap.py + one CLI per phase (§11)
+  cluster/          MN5 (BSC) SLURM launchers — see scripts/cluster/README.md
 tests/              test_hook_parity.py (live), test_flow_matching_roundtrip.py
 docs/results/       committed metrics + the run write-up
 runs/               outputs (gitignored)
@@ -62,6 +63,11 @@ runs/               outputs (gitignored)
 .venv/bin/python scripts/eval_generation.py        --config configs/poc_mac.yaml   # Gate G1
 ```
 Cluster (W2) is a config swap to `esm8m_h100.yaml` — no code changes (D8 parity contract).
+On MN5 (BSC, account `bsc70`, `acc` partition = H100), use the SLURM launchers in
+`scripts/cluster/` instead of invoking `.venv/bin/python` directly — see
+`scripts/cluster/README.md` for one-time setup (venv, weight prefetch) and the known
+gaps (UniRef50 streaming is still a stub; `run_steering.py`/`auto_interp_metaneurons.py`
+are stubs with no launcher yet).
 
 ## Non-negotiable guardrails (expensive to get wrong)
 1. **Hook parity is sacred.** GLP trains on byte-identical activations to what the SAE saw:

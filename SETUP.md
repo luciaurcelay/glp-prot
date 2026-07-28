@@ -47,6 +47,13 @@ Instead, both packages are put on `sys.path` explicitly:
 Figures and metrics are written under `runs/<name>/` (`figures/*.png`, `metrics/`).
 `runs/` is gitignored; committed results live in `docs/results/`.
 
+## Cluster (MN5, BSC)
+
+Don't hand-run `.venv/bin/python` over SSH for the cluster spine — use the SLURM
+launchers in `scripts/cluster/` (separate venv, on cluster storage, built against
+Python 3.11.5-gcc + CUDA via `module load`). See `scripts/cluster/README.md` for
+one-time setup and `sbatch` invocations.
+
 ## W3 probing (the result run used `configs/local_mid.yaml`)
 
 ```bash

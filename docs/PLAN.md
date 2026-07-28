@@ -427,9 +427,10 @@ of W2/W3 turned out to be local-feasible. Full write-up: `docs/results/local_mid
 - [x] FD at the correct step count: **1.55× the lower bound @1000 steps** (PoC was 2.09×); FD-vs-steps sweep + figure.
 - [x] Streaming/memory rework so stores and feature banks exceed RAM safely (see risk register).
 
-**Week 2 — Scale on cluster + generation-quality gate. — [~] PARTIAL (blocked on cluster)**
+**Week 2 — Scale on cluster + generation-quality gate. — [~] PARTIAL (cluster access now available; no jobs run yet)**
 
-- [ ] Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320. *(blocked: no cluster access)*
+- [x] MN5 (BSC) SLURM launchers for the full pipeline (`scripts/cluster/`, account `bsc70` / `acc` partition). Not yet run: activation-store scale, GLP training, Gate G2.
+- [ ] Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320. *(launchers ready; UniRef50 streaming still a stub — see `scripts/cluster/README.md` known gaps)*
 - [ ] Train at 50M → 100M → 300M; watch FD plateau. *(blocked: 16 GB RAM caps local at ~10–20M)*
 - [x] FD (vs lower bound) + PCA overlap — implemented and run locally.
 - [ ] **SAE-reconstruction FD anchor** and **% Loss Recovered** (adapt `interplm.train.fidelity.calculate_loss_recovered`) — **both local-feasible, not yet run.**

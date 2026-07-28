@@ -9,11 +9,17 @@ __pycache__/
 
 # Runs / artifacts / data (never commit large blobs)
 runs/
+/runs           # also matches when runs/ is a symlink to cluster storage (env_mn5.sh)
 *.pt
 *.safetensors
 *.npz
 *.gz
 /data/          # only the repo-root data dir (NOT the glp_plm/data source package)
+
+# Cluster (MN5) launcher config — path is per-user, not shared (scripts/cluster/README.md)
+scripts/cluster/cluster.env
+*.out
+*.err
 
 # Reference PDFs (kept locally as ground truth, not tracked — 34 MB)
 docs/papers/
