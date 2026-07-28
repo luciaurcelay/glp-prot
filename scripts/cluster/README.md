@@ -8,20 +8,9 @@ account `bsc70`, GPU partition `acc` (H100 nodes, 4 GPU/node, `acc_bsccs`/`acc_d
 
 ## One-time setup
 
-Five steps, each **run once per account** (not per run/job). Check first whether
-yours are already done — this account's are:
-
-| Step | Done for this account? |
-|---|---|
-| 1. Submodules | ✅ (checked into this clone) |
-| 2. `cluster.env` | ✅ `scripts/cluster/cluster.env` exists |
-| 3. Venv | ✅ `$GLP_VENV` = `/home/bsc/bsc070332/envs/glpprot_venv` |
-| 4. Model/SAE weights | check: `ls $GLP_RUNS_ROOT/hf_cache` |
-| 5. Swiss-Prot data | check: `ls $GLP_DATA_ROOT/swissprot/` |
-
-If all five are ✅, skip straight to [Running the pipeline](#running-the-pipeline) —
+Five steps, each **run once per account** (not per run/job). When done, skip straight to [Running the pipeline](#running-the-pipeline) —
 `env_mn5.sh` (sourced by every `submit_*.sh`) activates the existing venv
-automatically, nothing here needs re-running.
+automatically.
 
 1. **Submodules.** A plain `git clone` leaves `InterPLM/`/`generative_latent_prior/`
    empty (`ModuleNotFoundError: No module named 'interplm'` otherwise):
@@ -34,7 +23,7 @@ automatically, nothing here needs re-running.
    ```bash
    export GLP_DATA_ROOT=/gpfs/scratch/bsc70/$USER/glp-prot-data    # ~28TB, periodically purged
    export GLP_RUNS_ROOT=/gpfs/projects/bsc70/$USER/glp-prot-runs   # ~860GB group-wide, durable
-   export GLP_VENV="$GLP_RUNS_ROOT/glpprot_venv"                   # see step 3 — keep off $HOME
+   export GLP_VENV=/home/bsc/bsc070332/envs/glpprot_venv           # now in $HOME, ideally out of here
    mkdir -p "$GLP_DATA_ROOT" "$GLP_RUNS_ROOT"
    ```
    *Why not `$HOME`:* only ~80 GB quota total — `torch` + pip's cache alone can
@@ -43,8 +32,13 @@ automatically, nothing here needs re-running.
    under `$HOME` at `~/envs/glpprot_venv` — pre-dates this guidance; fine to leave,
    just don't copy that path for a new account.)
 
-3. **Venv** (login node, needs internet). Skip if `$GLP_VENV/bin/python` already
-   exists:
+3. **Venv** (login node, needs internet). If `$GLP_VENV` already exists:
+
+   ```bash
+   source scripts/cluster/env_mn5.sh
+   ```
+   Otherwise:
+   
    ```bash
    module load intel impi mkl hdf5 python/3.11.5-gcc cuda/12.4
    python -m venv "$GLP_VENV"
@@ -52,20 +46,19 @@ automatically, nothing here needs re-running.
    pip install --upgrade pip
    PIP_CACHE_DIR="$GLP_DATA_ROOT/pip_cache" pip install -r requirements.txt
    ```
-
-4. **Model + SAE weights** (login node, needs internet; small — ESM-2-8M + the
+   Note: if 
+5. **Model + SAE weights** (login node, needs internet; small — ESM-2-8M + the
    released InterPLM SAEs, not UniRef50). Lands in `$GLP_RUNS_ROOT/hf_cache`:
    ```bash
    scripts/cluster/prefetch_weights.sh
    ```
    Jobs run with `HF_HUB_OFFLINE=1` (set in `env_mn5.sh`), so this is what they
-   read from — compute nodes never need their own internet access.
+   read from.
 
-5. **Swiss-Prot data** (login node, needs internet). Labeled eval slice + unlabeled
+6. **Swiss-Prot data** (login node, needs internet). Labeled eval slice + unlabeled
    training slice, shared across every run/config (same REST query → same result,
    so no `--config` needed):
    ```bash
-   source scripts/cluster/env_mn5.sh
    python scripts/prefetch_data.py --n-seqs 200000 --n-prot 20000
    ```
    `--n-seqs`/`--n-prot` are baked into the output filenames — match whatever
@@ -77,8 +70,8 @@ automatically, nothing here needs re-running.
 
 ## Storage layout
 
-`runs/<run>/` (a plain local directory, not a symlink) ends up holding only the
-lightweight "browse this" artifacts — everything large or checkpoint-like is
+`runs/<run>/` (a plain local directory in the repo) ends up holding only the
+lightweight output artifacts. Everything large or checkpoint-like is
 redirected to cluster storage by `glp_plm.utils.resolve_storage_dir` (per-run) or
 `resolve_shared_dir` (shared across runs), called from inside each pipeline script
 itself (not a separate setup step, so it happens automatically no matter which
