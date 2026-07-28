@@ -8,63 +8,72 @@ account `bsc70`, GPU partition `acc` (H100 nodes, 4 GPU/node, `acc_bsccs`/`acc_d
 
 ## One-time setup
 
-0. **Init the submodules** — a plain `git clone` leaves `InterPLM/`/
-   `generative_latent_prior/` empty, which fails as `ModuleNotFoundError: No module
-   named 'interplm'`:
+Five steps, each **run once per account** (not per run/job). Check first whether
+yours are already done — this account's are:
+
+| Step | Done for this account? |
+|---|---|
+| 1. Submodules | ✅ (checked into this clone) |
+| 2. `cluster.env` | ✅ `scripts/cluster/cluster.env` exists |
+| 3. Venv | ✅ `$GLP_VENV` = `/home/bsc/bsc070332/envs/glpprot_venv` |
+| 4. Model/SAE weights | check: `ls $GLP_RUNS_ROOT/hf_cache` |
+| 5. Swiss-Prot data | check: `ls $GLP_DATA_ROOT/swissprot/` |
+
+If all five are ✅, skip straight to [Running the pipeline](#running-the-pipeline) —
+`env_mn5.sh` (sourced by every `submit_*.sh`) activates the existing venv
+automatically, nothing here needs re-running.
+
+1. **Submodules.** A plain `git clone` leaves `InterPLM/`/`generative_latent_prior/`
+   empty (`ModuleNotFoundError: No module named 'interplm'` otherwise):
    ```bash
    git submodule update --init --recursive
    ```
 
-1. **Fill in `scripts/cluster/cluster.env`** (gitignored, per-user) with two
-   storage paths, one for data and one for runs, and create them. `$HOME` has only
-   ~80 GB quota (as of 2026-07-27, ~6 GB free) — don't put `GLP_VENV` there either;
-   `torch` + pip's download cache can fill it and turn into confusing half-installed
-   `pip` errors instead of a clear "disk full". Point `GLP_VENV` at `$GLP_RUNS_ROOT`
-   and set `PIP_CACHE_DIR="$GLP_DATA_ROOT/pip_cache"`. `bsc70` **project** quota:
-   ~860 GB free group-wide; `bsc70` **scratch**: ~28 TB free (periodically purged).
+2. **`scripts/cluster/cluster.env`** (gitignored, per-user). Three exports, then
+   create the two directories:
    ```bash
-   mkdir -p "$(grep GLP_DATA_ROOT scripts/cluster/cluster.env | cut -d= -f2)" \
-            "$(grep GLP_RUNS_ROOT scripts/cluster/cluster.env | cut -d= -f2)"
+   export GLP_DATA_ROOT=/gpfs/scratch/bsc70/$USER/glp-prot-data    # ~28TB, periodically purged
+   export GLP_RUNS_ROOT=/gpfs/projects/bsc70/$USER/glp-prot-runs   # ~860GB group-wide, durable
+   export GLP_VENV="$GLP_RUNS_ROOT/glpprot_venv"                   # see step 3 — keep off $HOME
+   mkdir -p "$GLP_DATA_ROOT" "$GLP_RUNS_ROOT"
    ```
+   *Why not `$HOME`:* only ~80 GB quota total — `torch` + pip's cache alone can
+   blow through it, and the failure mode is a confusing half-installed `pip` error
+   rather than a clear "disk full". (This account's `GLP_VENV` is actually still
+   under `$HOME` at `~/envs/glpprot_venv` — pre-dates this guidance; fine to leave,
+   just don't copy that path for a new account.)
 
-2. **Build the venv** (login node, needs internet — same `requirements.txt` as the
-   Mac PoC, Python 3.11 + CUDA modules for the H100 nodes). Defaults to
-   `$REPO_ROOT/.venv`; if you want it elsewhere (e.g. off `$HOME`'s tight quota),
-   set `GLP_VENV` in `cluster.env` to match:
+3. **Venv** (login node, needs internet). Skip if `$GLP_VENV/bin/python` already
+   exists:
    ```bash
    module load intel impi mkl hdf5 python/3.11.5-gcc cuda/12.4
-   python -m venv "${GLP_VENV:-.venv}"
-   source "${GLP_VENV:-.venv}/bin/activate"
+   python -m venv "$GLP_VENV"
+   source "$GLP_VENV/bin/activate"
    pip install --upgrade pip
-   # optional: keep pip's download cache off $HOME (tight quota) once cluster.env is set:
-   #   export PIP_CACHE_DIR="$GLP_DATA_ROOT/pip_cache"
-   pip install -r requirements.txt
+   PIP_CACHE_DIR="$GLP_DATA_ROOT/pip_cache" pip install -r requirements.txt
    ```
 
-3. **Prefetch model + SAE weights** (login node, needs internet; small — ESM-2-8M
-   + released InterPLM SAEs, not UniRef50). Lands in the HF cache under
-   `$GLP_RUNS_ROOT/hf_cache` (durable project storage, not scratch):
+4. **Model + SAE weights** (login node, needs internet; small — ESM-2-8M + the
+   released InterPLM SAEs, not UniRef50). Lands in `$GLP_RUNS_ROOT/hf_cache`:
    ```bash
    scripts/cluster/prefetch_weights.sh
    ```
-   Jobs run with `HF_HUB_OFFLINE=1` (set in `env_mn5.sh`) so they never depend on
-   compute-node internet access — this step is what populates the cache they read.
+   Jobs run with `HF_HUB_OFFLINE=1` (set in `env_mn5.sh`), so this is what they
+   read from — compute nodes never need their own internet access.
 
-4. **Prefetch Swiss-Prot data** (login node, needs internet) — the labeled eval
-   slice and the unlabeled training slice, written to `$GLP_DATA_ROOT/swissprot/`.
-   This is shared across every run/config (same REST query -> same result, so no
-   `--config` needed), not nested per-run:
+5. **Swiss-Prot data** (login node, needs internet). Labeled eval slice + unlabeled
+   training slice, shared across every run/config (same REST query → same result,
+   so no `--config` needed):
    ```bash
    source scripts/cluster/env_mn5.sh
    python scripts/prefetch_data.py --n-seqs 200000 --n-prot 20000
    ```
-   `scripts/extract_activations.py` / `scripts/build_swissprot_eval.py` skip
-   re-fetching if these files already exist, so this just warms the cache ahead of
-   the (internet-less) compute-node jobs — as long as `--n-seqs`/`--n-prot` match
-   what you'll pass those scripts (baked into the filenames). Pass `--with-uniref50`
-   to also pull the full ~12 GB UniRef50 FASTA into `$GLP_DATA_ROOT/uniref50/` — an
-   explicit go-ahead per `CLAUDE.md`; nothing consumes it yet (`producer_consumer.py`
-   is still a stub), this just lands it in its reserved spot.
+   `--n-seqs`/`--n-prot` are baked into the output filenames — match whatever
+   you'll later pass `submit_extract_activations.sh`/`submit_build_swissprot_eval.sh`,
+   or this just warms the cache without being used. Add `--with-uniref50` to also
+   pull the full ~12 GB UniRef50 FASTA into `$GLP_DATA_ROOT/uniref50/` — an explicit
+   go-ahead per `CLAUDE.md`; nothing consumes it yet (`producer_consumer.py` is
+   still a stub), this just pre-lands it.
 
 ## Storage layout
 

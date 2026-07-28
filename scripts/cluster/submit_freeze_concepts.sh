@@ -24,4 +24,20 @@ RUN_NAME="$(basename "$OUT_DIR")"
 # Data-sized, not symlinked under runs/ — reached directly at $GLP_DATA_ROOT/<run>/.
 EVAL_DIR="$GLP_DATA_ROOT/$RUN_NAME/swissprot/processed"
 
+# #SBATCH --output/--error can't reference $RUN_NAME (unknown until now), so Slurm
+# writes them to the submission dir first; relocate to $GLP_RUNS_ROOT/<run>/ (off
+# $HOME) on exit, success or failure, with a symlink back under runs/<run>/.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  finalize_logs() {
+    local base="${SLURM_JOB_NAME:-glp-freeze-concepts}-${SLURM_JOB_ID}"
+    mkdir -p "$GLP_RUNS_ROOT/$RUN_NAME" "runs/$RUN_NAME"
+    for ext in out err; do
+      [ -f "$base.$ext" ] || continue
+      mv "$base.$ext" "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext"
+      ln -sf "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext" "runs/$RUN_NAME/$base.$ext"
+    done
+  }
+  trap finalize_logs EXIT
+fi
+
 python scripts/freeze_concepts.py --config "$CONFIG" --eval-dir "$EVAL_DIR"

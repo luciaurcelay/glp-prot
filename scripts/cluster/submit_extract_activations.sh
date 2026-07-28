@@ -34,6 +34,25 @@ N_PROT="${3:-20000}"          # must match whatever --n-prot build_swissprot_eva
 # auto-detected shared path below. Leave empty ONLY if the training corpus is genuinely
 # disjoint (e.g. a real UniRef50 stream). The default Swiss-Prot queries overlap the
 # eval set ~98% — see docs/PLAN.md §10 risk register.
+OUT_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")"
+RUN_NAME="$(basename "$OUT_DIR")"
+
+# #SBATCH --output/--error can't reference $RUN_NAME (unknown until now), so Slurm
+# writes them to the submission dir first; relocate to $GLP_RUNS_ROOT/<run>/ (off
+# $HOME) on exit, success or failure, with a symlink back under runs/<run>/.
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  finalize_logs() {
+    local base="${SLURM_JOB_NAME:-glp-extract}-${SLURM_JOB_ID}"
+    mkdir -p "$GLP_RUNS_ROOT/$RUN_NAME" "runs/$RUN_NAME"
+    for ext in out err; do
+      [ -f "$base.$ext" ] || continue
+      mv "$base.$ext" "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext"
+      ln -sf "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext" "runs/$RUN_NAME/$base.$ext"
+    done
+  }
+  trap finalize_logs EXIT
+fi
+
 EVAL_TSV="${4:-}"
 if [[ -z "$EVAL_TSV" ]]; then
   # Shared, not per-run (glp_plm.utils.resolve_shared_dir) — same file regardless of
