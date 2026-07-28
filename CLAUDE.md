@@ -36,7 +36,7 @@ glp_plm/            our package
   eval/             frechet, pca_overlap, meta_neurons, baselines, probing_1d,
                     probing_f1, concept_selection   (loss_recovered = W2, deferred)
   experiments/      RunLogger (metrics) + figure registry + make_report (auto-renders figures)
-configs/            poc_mac.yaml (2-blk/2M) · local_mid.yaml (6-blk/10M, the result run) ·
+configs/            poc_mac.yaml (2-blk/2M) · local_clean.yaml (6-blk/10M, CANONICAL) ·
                     esm8m_h100.yaml (cluster; differs only in device/precision/scale/buffer)
 scripts/            _bootstrap.py + one CLI per phase (§11)
   cluster/          MN5 (BSC) SLURM launchers — see scripts/cluster/README.md
@@ -95,13 +95,19 @@ are stubs with no launcher yet).
   H100 by swapping config only.
 
 ## Current status
-W1 complete (**Gate G1 passed**) plus a mid-scale **local** run and most of W3 probing —
-see the PLAN §9 checklist and the full write-up in `docs/results/local_mid_summary.md`.
+W1 complete (**Gate G1 passed**) plus a mid-scale **local** run (`configs/local_clean.yaml`)
+and most of W3 probing — see the PLAN §9 checklist and `docs/results/run_summary.md`.
 
-Headline: on 104 pre-registered concepts, GLP meta-neurons lead 1-D probing AUC
-(**0.947** vs raw-MLP 0.916, SAE 0.900, raw-layer 0.861, all paired-significant), while
-the SAE leads InterPLM-native **F1** (0.286 vs GLP 0.231) on precision. The metrics
-disagree by design — that complementarity is the result.
+Headline: on 104 pre-registered concepts GLP meta-neurons lead 1-D probing AUC
+(**0.945** vs raw-MLP 0.916, SAE 0.900, raw-layer 0.861 — all paired-significant). On
+InterPLM-native **F1** the SAE is more precise (0.347 vs 0.241) and leads numerically
+(0.286 vs 0.264), but **not significantly** at n=14; GLP beats both raw baselines there.
+Don't overclaim either direction — extend F1 to all 104 concepts to settle it.
+
+**Never train on eval proteins.** `extract_activations.py --exclude-from <eval tsv>` is
+mandatory: the default REST queries overlap ~98%, which silently hands GLP activations
+it will be probed on (measured effect was small, -0.002 AUC, but the SAE gets no such
+advantage so the comparison is asymmetric).
 
 **Still open:** Gate G2 (SAE-reconstruction FD + %Loss-Recovered — both local-feasible,
 not run), F1 on all 104 concepts, W4 steering, cluster scale-up.

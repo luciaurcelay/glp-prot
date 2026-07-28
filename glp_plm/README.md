@@ -7,7 +7,7 @@ InterPLM / GLP reference code, and `SETUP.md` for environment setup.
 
 ## Status
 W1 complete (Gate G1 passed) plus a mid-scale local run and most of W3 probing.
-Results: `docs/results/local_mid_summary.md`; checklist: PLAN §9.
+Results: `docs/results/run_summary.md`; checklist: PLAN §9.
 
 ## Layout
 ```
@@ -38,7 +38,7 @@ glp_plm/
                             # loss_recovered = W2, deferred
   experiments/              # RunLogger (metrics) + figure registry + report (see below)
   utils/                    # device, seeds
-configs/  poc_mac.yaml (2-blk/2M) · local_mid.yaml (6-blk/10M) · esm8m_h100.yaml (cluster)
+configs/  poc_mac.yaml (2-blk/2M) · local_clean.yaml (6-blk/10M, canonical) · esm8m_h100.yaml (cluster)
 scripts/  one CLI per phase (see PLAN §11) + make_report.py
 tests/    test_flow_matching_roundtrip.py  test_hook_parity.py
 ```

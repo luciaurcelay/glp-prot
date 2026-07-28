@@ -169,7 +169,8 @@ glp-prot/
 ├── generative_latent_prior/         # git submodule (g-luo/…) — GLP reference code
 ├── configs/
 │   ├── poc_mac.yaml                  # MPS/CPU, fp32, ~2M acts, 2-block GLP
-│   ├── local_mid.yaml                # MPS, fp32, 10M acts, 6-block GLP (the result run)
+│   ├── local_clean.yaml              # MPS, fp32, 10M acts, 6-block GLP — CANONICAL run
+│   │                                 #   (eval proteins excluded from training)
 │   ├── esm8m_h100.yaml               # full spine: cuda, bf16, streaming
 │   └── esm650m_h100.yaml             # (stretch, NOT YET WRITTEN) 650M scaling point
 ├── glp_plm/
@@ -241,7 +242,7 @@ figures are one-function additions — no runner changes.
 
 **Two stores:**
 
-- **Training store** (unlabeled): UniRef50 subset, for GLP training.
+- **Training store** (unlabeled): UniRef50 subset, for GLP training. **Must exclude every protein in the eval store** — see the risk register; the naive Swiss-Prot queries overlap ~98%.
 - **Eval store** (labeled): InterPLM's 50k Swiss-Prot proteins, 25k/25k val/test, per-AA concept labels, for probing + steering. Reuse InterPLM's split.
 
 **Format:** `fp16`, `[N, d]`. Eval store adds `(protein_id, position, {concept: 0/1})`.
@@ -420,12 +421,14 @@ This structure means: even if a reviewer distrusts the frozen-concept table, (b)
 **Week 1.5 — Mid-scale LOCAL run (unplanned; cluster unavailable). — ✅ COMPLETE**
 
 Measurement showed the ESM-2-8M spine is **RAM/disk-bound, not compute-bound**, so most
-of W2/W3 turned out to be local-feasible. Full write-up: `docs/results/local_mid_summary.md`.
+of W2/W3 turned out to be local-feasible. Canonical run is `configs/local_clean.yaml`;
+full write-up in `docs/results/run_summary.md`.
 
-- [x] `configs/local_mid.yaml`: 10M activations (6.4 GB fp16), **6-block GLP (21M params)**; loss 2.349 → **1.034**.
+- [x] 10M activations (6.4 GB fp16) from 110k Swiss-Prot sequences, **all 20k eval proteins excluded** (verified 0 overlap); **6-block GLP (21M params)**; loss 2.390 → **1.037**.
 - [x] Eval set scaled 2k → **20k proteins** (2.53M labeled residues, 224 concepts, 110 qualifying, all five §7 categories present).
 - [x] FD at the correct step count: **1.55× the lower bound @1000 steps** (PoC was 2.09×); FD-vs-steps sweep + figure.
-- [x] Streaming/memory rework so stores and feature banks exceed RAM safely (see risk register).
+- [x] Streaming/memory rework so stores and feature banks exceed RAM safely; periodic checkpoint+resume for training and probing (see risk register).
+- [x] **Train/eval contamination found and fixed.** The two REST queries overlapped 98.4%; excluded and re-run. Measured effect on GLP AUC: **−0.0024, CI [−0.0055, +0.0007] — not significant.** All AUC conclusions survived.
 
 **Week 2 — Scale on cluster + generation-quality gate. — [~] PARTIAL (cluster access now available; no jobs run yet)**
 
@@ -440,20 +443,23 @@ of W2/W3 turned out to be local-feasible. Full write-up: `docs/results/local_mid
 
 - [x] Freeze `frozen_concepts.json` (§7) **before** running probes (14 concepts; committed to `docs/`).
 - [x] Meta-neuron extraction (`u` pooled over the grid, selected on val — `u=0.9` won 88/104, matching GLP's released default).
-- [x] **1-D AUC probing, all four methods, 104 concepts:** GLP **0.947** > raw-MLP 0.916 > SAE 0.900 > raw-layer 0.861; all paired-bootstrap significant. Three-level reporting (§7 a/b/c) produced.
-- [x] **InterPLM F1 (secondary), 14 frozen concepts:** SAE **0.286** > GLP 0.231 > raw-MLP 0.186 > raw-layer 0.134. Recall is rate-matched, so the gap is **precision** (SAE 0.35 vs GLP 0.19).
+- [x] **1-D AUC probing, all four methods, 104 concepts:** GLP **0.945** > raw-MLP 0.916 > SAE 0.900 > raw-layer 0.861; all paired-bootstrap significant (GLP−SAE +0.045, GLP−rawMLP +0.029). Three-level reporting (§7 a/b/c) produced.
+- [x] **InterPLM F1 (secondary), 14 frozen concepts:** SAE 0.286 > GLP **0.264** > raw-MLP 0.186 > raw-layer 0.134. Recall is rate-matched, so gaps are **precision** (SAE 0.347 vs GLP 0.241). ⚠ SAE−GLP is **NOT significant** at n=14 (CI [−0.008, +0.060]); GLP−rawMLP **is** (+0.078, 12/14).
 - [ ] Extend F1 to all 104 concepts (~3.5 h locally).
 - [ ] Optional nonlinearity falsification test (§6.5.1).
 - [ ] Auto-interp; assemble novel-candidate subsection with structure-free held-out signal.
 - [~] **Deliverable D2 has a defensible local result**; cluster-scale numbers still pending.
 
-> **Headline finding (see §1 framing).** The two metrics *disagree*, and that is the
-> result: GLP wins **ranking power** (AUC) while the SAE wins **precision at a matched
-> operating point** (F1). Sparse SAE features are 99.0% exactly zero — they fire rarely
-> but correctly; dense GLP meta-neurons rank every residue but must threshold an
-> always-on signal. Note also that **the SAE is not the strongest AUC baseline** (ESM's
-> own FFN neurons beat it, +0.016), so the informative dense-vs-dense comparison is
-> **GLP vs raw-MLP**, where GLP wins AUC by +0.031 on 92/104 and ties on F1.
+> **Headline finding (see §1 framing).** GLP meta-neurons lead **decisively on ranking
+> power** (AUC 0.945 vs 0.916/0.900/0.861, every paired comparison significant over 104
+> pre-registered concepts). The SAE retains a **precision** advantage (0.347 vs 0.241 at
+> matched firing rate) and leads numerically on F1, but that gap is **not significant at
+> n=14** — so do not claim "the SAE wins on F1" from current evidence. Sparse SAE
+> features are 99.0% exactly zero: they fire rarely but correctly, while dense GLP
+> meta-neurons rank every residue but must threshold an always-on signal. Note also that
+> **the SAE is not the strongest AUC baseline** — ESM's own FFN neurons beat it (+0.016)
+> — so the informative dense-vs-dense control is **GLP vs raw-MLP**, where GLP wins AUC
+> by +0.029 (91/104) *and* F1 by +0.078 (12/14).
 
 **Week 4 — Steering + optional stretch. — [ ] NOT STARTED**
 
@@ -479,6 +485,7 @@ of W2/W3 turned out to be local-feasible. Full write-up: `docs/results/local_mid
 | **GLP FD doesn't beat SAE (G2 fail)**                                    | Low–Med              | Probing-only paper still complete. Try wider GLP, more blocks, more acts, lower lr.                                                                                                         |
 | **GLP meta-neurons don't beat SAE on AUC**                               | Med                  | Reframe complementary (§1, §7c). Do NOT hinge the paper on winning.                                                                                                                         |
 | **MPS incompatibility**                                                  | Med                  | PoC fp32 on MPS/CPU; bf16 guarded behind `device=='cuda'`.                                                                                                                                  |
+| **Train/eval protein contamination** (RESOLVED) | High if unchecked | The default training and eval REST queries both match `reviewed:true` Swiss-Prot and overlapped **98.4%**, giving GLP activations it is later probed on while the SAE (UniRef50-trained) gets none. Always pass `extract_activations.py --exclude-from <eval tsv>`. Measured effect was small (−0.002 AUC, not significant) but the comparison is asymmetric, so exclusion is mandatory. Residual: GLP trains on Swiss-Prot vs the SAE's UniRef50 — disjoint proteins, different distributions. |
 | **Host RAM, not GPU, is the local ceiling** (RESOLVED, recurring) | High locally | Dev Mac has **16 GB**. Three accumulate-in-RAM bugs killed jobs (activation store, raw-MLP bank, per-split standardized copies) plus an **MPS allocator cache** that grew until the OS killed the process. Rules now: stores stream into memmaps and are read lazily; standardize per batch; free banks between methods; `torch.mps.empty_cache()` per concept; long sweeps resumable via `metrics/probing_partial*.jsonl`. |
 | **FD misreported at low sampler steps** (RESOLVED) | — | 20-step FD reports sampler error (2.81× vs 1.55× @1000). `sampler.fd_num_steps=1000` is separate from `num_steps`; always quote FD with its step count. |
 | **Metric semantics differ across representations** (RESOLVED) | Med | InterPLM's fraction-of-max F1 thresholds assume sparse non-negative features and degenerate on dense signed ones. Rate-matched two-sided operating points fix it (§6.5); conclusion unchanged under both schemes. |
@@ -499,18 +506,19 @@ All scripts take `--config`; the config chooses device/precision/scale. Use the 
 (`.venv/bin/python`) — see `SETUP.md`. Real invocations, as run:
 
 ```bash
-# --- W1 / local (configs/poc_mac.yaml or configs/local_mid.yaml) ---
-python scripts/download_interplm_saes.py --config configs/local_mid.yaml [--all-layers]
-python scripts/extract_activations.py    --config configs/local_mid.yaml --store train --n-seqs 110000
-python scripts/train_glp.py              --config configs/local_mid.yaml      # + loss/lr figures
-python scripts/eval_generation.py        --config configs/local_mid.yaml [--fd-steps 20,50,100,300,1000]
-python scripts/build_swissprot_eval.py   --config configs/local_mid.yaml --n-prot 20000 --min-required-instances 30
-python scripts/make_report.py            --config configs/local_mid.yaml      # re-render all figures
+# --- W1 / local (configs/poc_mac.yaml or configs/local_clean.yaml) ---
+python scripts/download_interplm_saes.py --config configs/local_clean.yaml [--all-layers]
+python scripts/extract_activations.py    --config configs/local_clean.yaml --store train --n-seqs 110000 \
+                                         --exclude-from <eval>/swissprot_annotated_eval.tsv   # MANDATORY
+python scripts/train_glp.py              --config configs/local_clean.yaml      # + loss/lr figures
+python scripts/eval_generation.py        --config configs/local_clean.yaml [--fd-steps 20,50,100,300,1000]
+python scripts/build_swissprot_eval.py   --config configs/local_clean.yaml --n-prot 20000 --min-required-instances 30
+python scripts/make_report.py            --config configs/local_clean.yaml      # re-render all figures
 pytest tests/ -q                                                              # 6 pass
 
 # --- W3 probing (§7: freeze BEFORE probing) ---
-python scripts/freeze_concepts.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed
-python scripts/run_probing.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed --concepts runs/local_mid/swissprot/processed/frozen_concepts.json --n-shards-per-split 1 [--metric auc|f1] [--max-concepts N] [--restart]
+python scripts/freeze_concepts.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed
+python scripts/run_probing.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed --concepts runs/local_clean/swissprot/processed/frozen_concepts.json --n-shards-per-split 1 [--metric auc|f1] [--max-concepts N] [--restart]
 # resumable: every (concept, method) checkpoints to metrics/probing_partial[_f1].jsonl
 
 # --- W2 cluster (config swap only, no code changes — D8) ---

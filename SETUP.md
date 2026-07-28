@@ -54,17 +54,17 @@ launchers in `scripts/cluster/` (separate venv, on cluster storage, built agains
 Python 3.11.5-gcc + CUDA via `module load`). See `scripts/cluster/README.md` for
 one-time setup and `sbatch` invocations.
 
-## W3 probing (the result run used `configs/local_mid.yaml`)
+## W3 probing (the canonical run used `configs/local_clean.yaml`)
 
 ```bash
 # labeled eval set (20k densely-annotated Swiss-Prot proteins)
-.venv/bin/python scripts/build_swissprot_eval.py --config configs/local_mid.yaml --n-prot 20000 --min-required-instances 30
+.venv/bin/python scripts/build_swissprot_eval.py --config configs/local_clean.yaml --n-prot 20000 --min-required-instances 30
 
 # freeze the concept set BEFORE probing (PLAN §7 fairness rule)
-.venv/bin/python scripts/freeze_concepts.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed
+.venv/bin/python scripts/freeze_concepts.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed
 
 # 4-method probing; add --metric f1 for InterPLM domain-adjusted F1
-.venv/bin/python scripts/run_probing.py --config configs/local_mid.yaml --eval-dir runs/local_mid/swissprot/processed --concepts runs/local_mid/swissprot/processed/frozen_concepts.json --n-shards-per-split 1
+.venv/bin/python scripts/run_probing.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed --concepts runs/local_clean/swissprot/processed/frozen_concepts.json --n-shards-per-split 1
 ```
 
 Probing is **resumable**: every `(concept, method)` is checkpointed to

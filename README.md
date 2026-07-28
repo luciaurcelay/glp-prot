@@ -22,11 +22,15 @@ W1 complete (**Gate G1 passed**), plus a mid-scale local run and most of W3 prob
 all on an Apple M4 — the ESM-2-8M spine turned out to be RAM-bound, not compute-bound.
 
 **First result (Deliverable D2).** On 104 pre-registered Swiss-Prot concepts, 1-D
-probing test AUC: **GLP 0.947** > raw-MLP 0.916 > SAE 0.900 > raw-layer 0.861 (all
-paired-bootstrap significant). On InterPLM's domain-adjusted **F1** the order reverses:
-**SAE 0.286** > GLP 0.231 — sparse features fire rarely but precisely, dense ones rank
-better. The two metrics measure different things, and that complementarity is the
-finding. Full write-up: [`docs/results/local_mid_summary.md`](docs/results/local_mid_summary.md).
+probing test AUC: **GLP 0.945** > raw-MLP 0.916 > SAE 0.900 > raw-layer 0.861 — all
+paired-bootstrap significant. On InterPLM's domain-adjusted **F1** the SAE is more
+*precise* (0.347 vs 0.241) and leads numerically (0.286 vs 0.264), though that gap is
+**not** significant at n=14; GLP significantly beats both raw baselines there too.
+Sparse features fire rarely but correctly; dense ones rank better.
+Full write-up: [`docs/results/run_summary.md`](docs/results/run_summary.md).
+
+Training excludes every eval protein (verified 0 overlap) — an earlier run overlapped
+98.4%, which turned out to be worth only −0.002 AUC.
 
 Next: Gate G2 (SAE-recon FD + %Loss-Recovered), then W4 steering.
 
