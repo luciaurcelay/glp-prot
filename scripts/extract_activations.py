@@ -24,14 +24,23 @@ def main():
     ap.add_argument("--store", default="train", help="store name (subdir under output_dir)")
     ap.add_argument("--n-seqs", type=int, default=10000, help="sequences to pull for the training store")
     ap.add_argument("--embed-batch-size", type=int, default=16)
+    ap.add_argument("--exclude-from", help="UniProt TSV whose accessions to EXCLUDE from "
+                                           "training (point at the eval set - see below)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    cfg.check_supported()
     out = Path(cfg.output_dir)
     fasta = out / "swissprot" / f"train_slice_{args.n_seqs}.fasta"
     store_dir = out / f"{args.store}_store"
 
-    sl.fetch_uniprot_fasta_slice(fasta, n_seqs=args.n_seqs)
+    # Training must not contain the proteins we later probe on: the two REST queries
+    # otherwise overlap ~98%, giving GLP activations it has already fit while the SAE
+    # (trained on UniRef50) gets no such advantage.
+    exclude = sl.read_accessions(Path(args.exclude_from)) if args.exclude_from else None
+    if exclude:
+        print(f"[extract_activations] excluding {len(exclude):,} eval accessions")
+    sl.fetch_uniprot_fasta_slice(fasta, n_seqs=args.n_seqs, exclude=exclude)
     seqs = sl.read_fasta(fasta)
     print(f"[extract_activations] {len(seqs)} sequences; target ~{cfg.data.n_train_activations:,} activations")
 

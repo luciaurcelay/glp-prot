@@ -26,9 +26,11 @@ def main():
     ap.add_argument("--config", required=True)
     ap.add_argument("--store-dir", help="ActivationStore dir (default: <output_dir>/train_store)")
     ap.add_argument("--activations", help="raw (N,d) .pt fallback instead of a store dir")
+    ap.add_argument("--restart", action="store_true", help="ignore any periodic checkpoint")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    cfg.check_supported()
     set_seed(cfg.seed)
     device = get_device(cfg.device)
     out = Path(cfg.output_dir); out.mkdir(parents=True, exist_ok=True)
@@ -58,8 +60,10 @@ def main():
         lr_initial_factor=cfg.train.lr_initial_factor,
         lr_final_factor=cfg.train.lr_final_factor, grad_clip=cfg.train.grad_clip,
         device=device, log_every_n_steps=cfg.train.log_every_n_steps, seed=cfg.seed,
-        run_logger=run_logger, scaler=scaler)
+        run_logger=run_logger, scaler=scaler,
+        ckpt_path=out / 'glp_ckpt.pt', resume=not args.restart)
     torch.save(model.state_dict(), out / "glp_final.pt")
+    (out / 'glp_ckpt.pt').unlink(missing_ok=True)   # final model supersedes it
     run_logger.log_summary(final_loss=run_logger.load_series("train")[-1]["loss"],
                            n_params=model.num_parameters(), n_blocks=cfg.model.n_blocks)
     make_report(out)

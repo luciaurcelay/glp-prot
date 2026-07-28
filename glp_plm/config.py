@@ -112,6 +112,26 @@ class Config:
         self.model.resolve()
         return self
 
+    def check_supported(self) -> None:
+        """Fail loudly on config knobs that are declared but NOT yet implemented.
+
+        `store_mode: stream` and `precision: bf16` appear in the cluster config, but the
+        streaming producer-consumer and mixed precision are still W2 work. Silently
+        ignoring them would mean a 300M-activation run tries to pre-cache ~192 GB, and
+        a "bf16" run quietly executes in fp32 — so raise instead.
+        """
+        if self.data.store_mode not in ("precache",):
+            raise NotImplementedError(
+                f"data.store_mode={self.data.store_mode!r} is not implemented yet "
+                "(only 'precache'). Streaming is a W2 task — see "
+                "glp_plm/data/producer_consumer.py and PLAN §6.1."
+            )
+        if self.precision not in ("fp32",):
+            raise NotImplementedError(
+                f"precision={self.precision!r} is not implemented yet (only 'fp32'). "
+                "Mixed precision is a W2 task — see PLAN §6.2."
+            )
+
 
 # ------------------------------------------------------------------ #
 #  YAML <-> dataclass (no omegaconf dependency; stdlib + pyyaml only) #

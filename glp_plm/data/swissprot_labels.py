@@ -32,42 +32,59 @@ SUBSET_URLS = [
 ]
 
 
+def read_accessions(tsv: Path) -> set:
+    """Accessions in a UniProt TSV (the `Entry` column) — used to exclude eval proteins."""
+    import csv
+    with open(tsv) as f:
+        r = csv.DictReader(f, delimiter="\t")
+        key = next(c for c in r.fieldnames if c.lower() in ("entry", "accession"))
+        return {row[key] for row in r if row.get(key)}
+
+
 def fetch_uniprot_fasta_slice(dest: Path, n_seqs: int,
-                              query: str = "(reviewed:true) AND (length:[80 TO 400])") -> Path:
+                              query: str = "(reviewed:true) AND (length:[80 TO 400])",
+                              exclude: Optional[set] = None) -> Path:
     """Download up to `n_seqs` Swiss-Prot sequences as FASTA via the UniProt REST API.
 
-    Used for the unlabeled GLP *training* store on the PoC (docs/INTERPLM_MAP.md) — a small
-    Swiss-Prot slice standing in for UniRef50 (no 12 GB download). Uses the paginated
-    `search` endpoint (500/page) and stops once `n_seqs` are collected.
+    Used for the unlabeled GLP *training* store — a small Swiss-Prot slice standing in
+    for UniRef50 (no 12 GB download). Paginated `search` endpoint, 500/page.
+
+    `exclude` drops accessions (e.g. every protein in the labeled eval set). Without it
+    the training and eval queries overlap almost completely — measured 98.4% — which
+    hands GLP activations it will later be probed on, an advantage the SAE (trained on
+    UniRef50) does not get. Always exclude the eval set.
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() and dest.stat().st_size > 0:
         return dest
 
+    exclude = exclude or set()
     base = "https://rest.uniprot.org/uniprotkb/search"
     params = {"format": "fasta", "query": query, "size": "500"}
     url = base + "?" + urllib.parse.urlencode(params)
-    collected, out = 0, []
-    while url and collected < n_seqs:
+    kept, skipped = [], 0
+    while url and len(kept) < n_seqs:
         req = urllib.request.Request(url, headers={"User-Agent": "glp-plm/0.1"})
         with urllib.request.urlopen(req) as resp:
             body = resp.read().decode("utf-8")
             link = resp.headers.get("Link", "")
-        out.append(body)
-        collected += body.count(">")
+        for rec in body.split("\n>"):
+            rec = rec.lstrip(">")
+            if not rec.strip():
+                continue
+            m = re.match(r"\w+\|([^|]+)\|", rec)
+            if m and m.group(1) in exclude:
+                skipped += 1
+                continue
+            kept.append(">" + rec.rstrip("\n"))
+            if len(kept) >= n_seqs:
+                break
         m = re.search(r'<([^>]+)>;\s*rel="next"', link)
         url = m.group(1) if m else None
-    text = "".join(out)
-    # trim to exactly n_seqs records
-    records = text.split("\n>")
-    if len(records) > n_seqs:
-        records = records[:n_seqs]
-    text = "\n>".join(records)
-    if not text.startswith(">"):
-        text = ">" + text.lstrip(">")
-    dest.write_text(text)
-    print(f"[swissprot] wrote ~{min(collected, n_seqs)} sequences to {dest}")
+    dest.write_text("\n".join(kept) + "\n")
+    print(f"[swissprot] wrote {len(kept)} sequences to {dest}"
+          + (f" (excluded {skipped} eval proteins)" if exclude else ""))
     return dest
 
 
@@ -224,7 +241,9 @@ def embed_shards(processed_dir: Path, shard_ids: List[int], model_name: str,
         seq_col = next(c for c in df.columns if c.lower() == "sequence")
         seqs = [str(s) for s in df[seq_col].tolist()]
         acts = extractor.extract_many(seqs, batch_size=8)      # (sum_len, d), cls/eos dropped
-        acts = acts.detach().cpu().numpy().astype("float32")
+        # fp16 to match the training store; float32 doubles the eval store for no
+        # benefit (8 -> 16 GB at InterPLM's full 50k proteins). Consumers cast up.
+        acts = acts.detach().cpu().numpy().astype("float16")
         np.save(shard / f"activations_layer{layer}.npy", acts)
         print(f"[swissprot] shard {i}: {acts.shape[0]} aa activations at layer {layer}")
 

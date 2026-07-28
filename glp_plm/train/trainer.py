@@ -9,6 +9,7 @@ so it is unit-testable on synthetic data and swaps to real activations later.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Iterable, Optional
 
 import torch
@@ -44,6 +45,9 @@ def fit(
     logger=print,
     run_logger=None,
     scaler=None,
+    ckpt_path=None,
+    ckpt_every: int = 2000,
+    resume: bool = True,
 ) -> dict:
     """Train `model` (a GLPDenoiser) on `activations`. Returns a small history dict.
 
@@ -54,6 +58,11 @@ def fit(
 
     If `run_logger` (experiments.RunLogger) is given, appends {step, loss, lr} to the
     "train" series each step so figures.training_loss can plot it.
+
+    `ckpt_path` enables periodic {model, optimizer, step} checkpoints every
+    `ckpt_every` steps and, with `resume=True`, picks up from the last one. Without
+    this a killed run loses everything — a 19.5k-step run died at step 16k during
+    development, and cluster runs are far longer.
     """
     torch.manual_seed(seed)
     model = model.to(device).train()
@@ -67,11 +76,26 @@ def fit(
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
     gen = torch.Generator(device="cpu").manual_seed(seed)
 
+    start_step = 0
+    if ckpt_path is not None and resume and Path(ckpt_path).exists():
+        state = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(state["model"])
+        opt.load_state_dict(state["optimizer"])
+        start_step = int(state["step"])
+        logger(f"[trainer] resuming from {ckpt_path} at step {start_step}/{total_steps}")
+        if run_logger is not None:      # don't duplicate the series we already logged
+            run_logger.reset_series("train")
+            for r in state.get("history", []):
+                run_logger.log_step("train", r)
+
     history = {"loss": [], "lr": []}
     step = 0
     for epoch in range(num_epochs):
         perm = torch.randperm(n, generator=gen)
         for b in range(steps_per_epoch):
+            if step < start_step:               # fast-forward without recomputing
+                step += 1
+                continue
             idx = perm[b * batch_size:(b + 1) * batch_size]
             # index -> float32 -> device, one batch at a time (store may exceed RAM)
             z0 = activations[idx].float()
@@ -99,4 +123,9 @@ def fit(
                 logger(f"[trainer] epoch {epoch} step {step}/{total_steps} "
                        f"loss {loss.item():.4f} lr {lr * mult:.2e}")
             step += 1
+            if ckpt_path is not None and step % ckpt_every == 0:
+                torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(),
+                            "step": step,
+                            "history": (run_logger.load_series("train") if run_logger else [])},
+                           ckpt_path)
     return history
