@@ -418,7 +418,7 @@ This structure means: even if a reviewer distrusts the frozen-concept table, (b)
 - [x] **GATE G1:** pipeline runs on Mac ✅; loss decreases (2.33→1.19) ✅; PCA of generated vs real non-garbage ✅ (FD 2.61× lower bound; gen 14.1% vs real 12.6% top-2 PC variance); hook-parity passes ✅.
 - [ ] *(deferred)* streaming `producer_consumer.py` (W2/cluster); `eval/loss_recovered.py` %LR (W2/G2).
 
-**Week 1.5 — Mid-scale LOCAL run (unplanned; cluster unavailable). — ✅ COMPLETE**
+**Week 1.5 — Mid-scale LOCAL run (unplanned; cluster was unavailable at the time). — ✅ COMPLETE**
 
 Measurement showed the ESM-2-8M spine is **RAM/disk-bound, not compute-bound**, so most
 of W2/W3 turned out to be local-feasible. Canonical run is `configs/local_clean.yaml`;
