@@ -25,7 +25,7 @@ from glp_plm.eval import probing_f1 as pf
 from glp_plm.eval.meta_neurons import meta_neuron_bank
 from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
-from glp_plm.utils import get_device, set_seed
+from glp_plm.utils import get_device, resolve_storage_dir, set_seed
 
 
 def _raw_mlp_cached(processed: Path, split_shards, layer, model_name, device, cache: Path,
@@ -48,8 +48,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--eval-dir", required=True, help="…/swissprot/processed (labeled eval store)")
-    ap.add_argument("--ckpt", help="GLP checkpoint (default <output_dir>/glp_final.pt)")
-    ap.add_argument("--scaler", help="rep_statistics.pt (default <output_dir>/rep_statistics.pt)")
+    ap.add_argument("--ckpt", help="GLP checkpoint (default <output_dir>/checkpoints/glp_final.pt)")
+    ap.add_argument("--scaler", help="rep_statistics.pt (default <output_dir>/checkpoints/rep_statistics.pt)")
     ap.add_argument("--concepts", help="frozen_concepts.json; default = all qualifying")
     ap.add_argument("--max-pos", type=int, default=3000, help="cap positives per concept")
     ap.add_argument("--neg-per-pos", type=float, default=1.0)
@@ -68,6 +68,7 @@ def main():
     set_seed(cfg.seed)
     device = get_device(cfg.device)
     out = Path(cfg.output_dir)
+    ckpt_dir = resolve_storage_dir(out, "checkpoints", "GLP_RUNS_ROOT", symlink=False)
     processed = Path(args.eval_dir)
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
 
@@ -85,12 +86,12 @@ def main():
           flush=True)
 
     from glp_plm.diffusion.scaler import Scaler
-    scaler = Scaler.load(args.scaler or out / "rep_statistics.pt")
+    scaler = Scaler.load(args.scaler or ckpt_dir / "rep_statistics.pt")
 
     model = None
     if "glp" in methods:
         model = GLPDenoiser(cfg.model).to(device).eval()
-        model.load_state_dict(torch.load(args.ckpt or out / "glp_final.pt", map_location=device))
+        model.load_state_dict(torch.load(args.ckpt or ckpt_dir / "glp_final.pt", map_location=device))
     sae = None
     if "sae" in methods:
         from interplm.sae.inference import load_sae_from_hf

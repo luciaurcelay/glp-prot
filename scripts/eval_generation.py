@@ -23,7 +23,7 @@ from glp_plm.eval.frechet import frechet_distance
 from glp_plm.eval.pca_overlap import pca_overlap
 from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
-from glp_plm.utils import get_device, set_seed
+from glp_plm.utils import get_device, resolve_storage_dir, set_seed
 
 
 def main():
@@ -41,10 +41,12 @@ def main():
     set_seed(cfg.seed)
     device = get_device(cfg.device)
     out = Path(cfg.output_dir)
-    store_dir = Path(args.store_dir) if args.store_dir else out / "train_store"
+    ckpt_dir = resolve_storage_dir(out, "checkpoints", "GLP_RUNS_ROOT", symlink=False)
+    store_dir = Path(args.store_dir) if args.store_dir else \
+        resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
 
     store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
-    scaler = Scaler.load(out / "rep_statistics.pt")
+    scaler = Scaler.load(ckpt_dir / "rep_statistics.pt")
 
     # Draw only the rows we need out of the memmap (the store can exceed RAM):
     # a held-out real slice for FD + a DISJOINT slice as the lower-bound anchor.
@@ -59,7 +61,7 @@ def main():
 
     # sample from noise in standardized space, then de-standardize
     model = GLPDenoiser(cfg.model).to(device).eval()
-    model.load_state_dict(torch.load(out / "glp_final.pt", map_location=device))
+    model.load_state_dict(torch.load(ckpt_dir / "glp_final.pt", map_location=device))
 
     def generate(steps: int):
         z1 = torch.randn(k, cfg.model.activation_dim, device=device,

@@ -65,9 +65,9 @@ runs/               outputs (gitignored)
 Cluster (W2) is a config swap to `esm8m_h100.yaml` — no code changes (D8 parity contract).
 On MN5 (BSC, account `bsc70`, `acc` partition = H100), use the SLURM launchers in
 `scripts/cluster/` instead of invoking `.venv/bin/python` directly — see
-`scripts/cluster/README.md` for one-time setup (venv, weight prefetch) and the known
-gaps (UniRef50 streaming is still a stub; `run_steering.py`/`auto_interp_metaneurons.py`
-are stubs with no launcher yet).
+`scripts/cluster/README.md` for one-time setup (submodules first!) and known gaps
+(UniRef50 streaming stub; no steering launcher yet; login-node PYTHONHOME/quota/ulimit
+gotchas — all written up there, don't re-derive).
 
 ## Non-negotiable guardrails (expensive to get wrong)
 1. **Hook parity is sacred.** GLP trains on byte-identical activations to what the SAE saw:

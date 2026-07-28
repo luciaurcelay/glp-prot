@@ -1,8 +1,28 @@
-# Core (used by scaffolded model/diffusion/train + tests)
-torch>=2.2
-numpy
+# Runtime deps for glp_plm (Mac PoC and MN5 cluster both use this file).
+# torch is pulled from the CUDA wheel index when available; on Mac this line is a
+# no-op fallback to the PyPI CPU/MPS build. Pinned to cu118 (not cu124/126+) because
+# the MN5 H100 nodes' actual driver only supports up to CUDA 12.2 as of 2026-07-28
+# ("RuntimeError: ... driver ... too old (found version 12020)") — cu118 wheels only
+# go up to torch 2.7.1, hence the upper bound below.
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch>=2.7,<2.8
+numpy>=2.2,<2.3
+scipy
+pandas
+scikit-learn
+transformers>=4.57
+biopython
+huggingface-hub>=0.28
+h5py
+einops
 pyyaml
+tqdm
+typed-argument-parser
+matplotlib
 pytest
-# Data/eval pipeline (W1+): reuse InterPLM as a dependency (PLAN §5).
-# Install the InterPLM submodule editable:  pip install -e InterPLM
-# InterPLM brings: transformers, huggingface_hub, nnsight, scikit-learn, scipy, pandas, einops
+wandb
+
+# Do NOT `pip install -e InterPLM` — its setup.py drops interplm/train/__init__.py
+# (missing upstream), which interplm.sae.inference needs. InterPLM and glp_plm are
+# put on sys.path instead: scripts/_bootstrap.py, tests/conftest.py, or ad-hoc
+# PYTHONPATH="$(pwd):$(pwd)/InterPLM".

@@ -29,13 +29,17 @@ source scripts/cluster/env_mn5.sh
 
 CONFIG="${1:-configs/esm8m_h100.yaml}"
 N_SEQS="${2:-200000}"
-# 3rd arg: the labeled eval TSV whose proteins must NOT be trained on. Leave empty ONLY
-# if the training corpus is genuinely disjoint (e.g. a real UniRef50 stream). The default
-# Swiss-Prot queries overlap the eval set ~98% — see docs/PLAN.md §10 risk register.
-EVAL_TSV="${3:-}"
+N_PROT="${3:-20000}"          # must match whatever --n-prot build_swissprot_eval.py used
+# 4th arg: the labeled eval TSV whose proteins must NOT be trained on, overriding the
+# auto-detected shared path below. Leave empty ONLY if the training corpus is genuinely
+# disjoint (e.g. a real UniRef50 stream). The default Swiss-Prot queries overlap the
+# eval set ~98% — see docs/PLAN.md §10 risk register.
+EVAL_TSV="${4:-}"
 if [[ -z "$EVAL_TSV" ]]; then
-  RUN_DIR="$(python -c "from glp_plm.config import load_config; print(load_config('$CONFIG').output_dir)")"
-  CAND="$RUN_DIR/swissprot/swissprot_annotated_eval.tsv"
+  # Shared, not per-run (glp_plm.utils.resolve_shared_dir) — same file regardless of
+  # which run's output_dir this is, keyed by n_prot so different eval-slice sizes
+  # don't collide.
+  CAND="$GLP_DATA_ROOT/swissprot/swissprot_annotated_eval_${N_PROT}.tsv"
   [[ -f "$CAND" ]] && EVAL_TSV="$CAND"
 fi
 

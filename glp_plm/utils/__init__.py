@@ -1,9 +1,11 @@
-"""Utilities: device selection and seeding."""
+"""Utilities: device selection, seeding, and cluster storage redirection."""
 
 from __future__ import annotations
 
 import os
 import random
+import sys
+from pathlib import Path
 
 
 def get_device(prefer: str | None = None) -> str:
@@ -21,6 +23,67 @@ def get_device(prefer: str | None = None) -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def resolve_storage_dir(output_dir: str | Path, subdir: str, root_env: str, *,
+                         symlink: bool = True) -> Path:
+    """Resolve `<output_dir>/<subdir>`, redirected to cluster storage when `root_env`
+    (e.g. GLP_DATA_ROOT, GLP_RUNS_ROOT) is set — see scripts/cluster/README.md.
+
+    Off-cluster (Mac PoC, `root_env` unset) this is just `<output_dir>/<subdir>`,
+    created locally: identical to the pre-cluster behavior, no code-path divergence.
+
+    On cluster, the real directory is `$<root_env>/<basename(output_dir)>/<subdir>`
+    — done unconditionally here (not a separate setup step) so the first script that
+    touches a given subdir is always the one that redirects it; nothing can skip it
+    and silently write large data onto the quota-capped repo filesystem.
+
+    When `symlink` is true (default), `<output_dir>/<subdir>` becomes an idempotent
+    symlink to the real directory, so the path stays browsable locally (matches how
+    metrics/figures work — small, worth browsing). Pass `symlink=False` to redirect
+    without creating that link — used for checkpoints, the activation store, and the
+    embedded Swiss-Prot eval shards: all data-sized, kept off the local `runs/` tree
+    on purpose and reached directly under `$<root_env>/<run>/` instead.
+    """
+    output_dir = Path(output_dir)
+    root = os.environ.get(root_env)
+    if not root:
+        d = output_dir / subdir
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    target = Path(root) / output_dir.name / subdir
+    target.mkdir(parents=True, exist_ok=True)
+    if not symlink:
+        return target
+
+    link = output_dir / subdir
+    if link.is_symlink():
+        pass  # already redirected (may point elsewhere on purpose)
+    elif link.exists():
+        print(f"WARNING: {link} exists and is not a symlink — leaving it alone; "
+              f"it will NOT be redirected to ${root_env}.", file=sys.stderr)
+        return link
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(target)
+    return link
+
+
+def resolve_shared_dir(subdir: str, root_env: str) -> Path:
+    """Resolve a subdir shared across ALL runs — for content that doesn't depend on
+    which run downloaded it (raw Swiss-Prot REST pulls, UniRef50), unlike
+    `resolve_storage_dir`'s per-run subdirs (activation stores, embedded eval
+    shards, checkpoints). No per-run nesting and no local symlink (nothing to
+    browse it *as*, since it isn't any one run's).
+
+    Lives at `$<root_env>/<subdir>` when that env var is set (cluster storage
+    split — see scripts/cluster/README.md), else `./data/<subdir>` off-cluster.
+    """
+    root = os.environ.get(root_env, "data")
+    d = Path(root) / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def set_seed(seed: int) -> None:

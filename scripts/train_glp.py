@@ -3,8 +3,8 @@
 
 Reads the memmap store built by scripts/extract_activations.py (default
 cfg.output_dir/train_store), standardizes with its fitted Scaler, trains the
-GLPDenoiser via flow matching, saves ckpt + scaler. `--activations <.pt>` is also
-accepted as a raw-tensor fallback.
+GLPDenoiser via flow matching, saves ckpt + scaler under cfg.output_dir/checkpoints.
+`--activations <.pt>` is also accepted as a raw-tensor fallback.
 """
 import argparse
 from pathlib import Path
@@ -18,7 +18,7 @@ from glp_plm.diffusion.scaler import Scaler
 from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
 from glp_plm.train.trainer import fit
-from glp_plm.utils import get_device, set_seed
+from glp_plm.utils import get_device, resolve_storage_dir, set_seed
 
 
 def main():
@@ -34,6 +34,10 @@ def main():
     set_seed(cfg.seed)
     device = get_device(cfg.device)
     out = Path(cfg.output_dir); out.mkdir(parents=True, exist_ok=True)
+    # Redirected to $GLP_RUNS_ROOT on cluster, NOT symlinked back under runs/ (kept
+    # off the local tree on purpose — only metrics/figures live there; see
+    # resolve_storage_dir's docstring).
+    ckpt_dir = resolve_storage_dir(out, "checkpoints", "GLP_RUNS_ROOT", symlink=False)
 
     # Keep activations LAZY (fp16, memmap-backed) and standardize per batch — a 25M
     # store is 16 GB and this machine has 16 GB RAM, so nothing here may materialize
@@ -41,16 +45,17 @@ def main():
     if args.activations:
         raw = torch.load(args.activations, map_location="cpu")
         scaler = Scaler.fit(raw[:min(len(raw), 500_000)].float())
-        scaler.save(out / "rep_statistics.pt")
+        scaler.save(ckpt_dir / "rep_statistics.pt")
     else:
-        store_dir = Path(args.store_dir) if args.store_dir else out / "train_store"
+        store_dir = Path(args.store_dir) if args.store_dir else \
+            resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
         store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
         raw = store.load()                      # lazy memmap view, fp16
         try:
             scaler = store.load_scaler()
         except FileNotFoundError:
             scaler = store.fit_scaler()
-        scaler.save(out / "rep_statistics.pt")
+        scaler.save(ckpt_dir / "rep_statistics.pt")
     print(f"[train_glp] training on {raw.shape[0]:,} activations (d={raw.shape[1]}) on {device}")
 
     run_logger = RunLogger(out)
@@ -61,13 +66,13 @@ def main():
         lr_final_factor=cfg.train.lr_final_factor, grad_clip=cfg.train.grad_clip,
         device=device, log_every_n_steps=cfg.train.log_every_n_steps, seed=cfg.seed,
         run_logger=run_logger, scaler=scaler,
-        ckpt_path=out / 'glp_ckpt.pt', resume=not args.restart)
-    torch.save(model.state_dict(), out / "glp_final.pt")
-    (out / 'glp_ckpt.pt').unlink(missing_ok=True)   # final model supersedes it
+        ckpt_path=ckpt_dir / 'glp_ckpt.pt', resume=not args.restart)
+    torch.save(model.state_dict(), ckpt_dir / "glp_final.pt")
+    (ckpt_dir / 'glp_ckpt.pt').unlink(missing_ok=True)   # final model supersedes it
     run_logger.log_summary(final_loss=run_logger.load_series("train")[-1]["loss"],
                            n_params=model.num_parameters(), n_blocks=cfg.model.n_blocks)
     make_report(out)
-    print(f"[train_glp] saved checkpoint to {out / 'glp_final.pt'}")
+    print(f"[train_glp] saved checkpoint to {ckpt_dir / 'glp_final.pt'}")
 
 
 if __name__ == "__main__":

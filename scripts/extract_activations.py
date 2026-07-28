@@ -16,6 +16,7 @@ from glp_plm.config import load_config
 from glp_plm.data.activation_extractor import ActivationExtractor
 from glp_plm.data.activation_store import ActivationStore
 from glp_plm.data import swissprot_labels as sl
+from glp_plm.utils import resolve_shared_dir, resolve_storage_dir
 
 
 def main():
@@ -31,8 +32,13 @@ def main():
     cfg = load_config(args.config)
     cfg.check_supported()
     out = Path(cfg.output_dir)
-    fasta = out / "swissprot" / f"train_slice_{args.n_seqs}.fasta"
-    store_dir = out / f"{args.store}_store"
+    # The raw Swiss-Prot FASTA is identical for any run pulling the same --n-seqs —
+    # shared across runs (like UniRef50), not nested per-run. The embedded store
+    # below IS run/model-specific, so that stays redirected per-run as before.
+    fasta = resolve_shared_dir("swissprot", "GLP_DATA_ROOT") / f"train_slice_{args.n_seqs}.fasta"
+    # Data-sized (a fp16 memmap store) — not symlinked back under runs/, reached
+    # directly at $GLP_DATA_ROOT/<run>/<store>_store (see resolve_storage_dir docstring).
+    store_dir = resolve_storage_dir(out, f"{args.store}_store", "GLP_DATA_ROOT", symlink=False)
 
     # Training must not contain the proteins we later probe on: the two REST queries
     # otherwise overlap ~98%, giving GLP activations it has already fit while the SAE

@@ -7,11 +7,16 @@
 #   scripts/cluster/submit_pipeline.sh [config] [n_seqs_for_extract] [n_prot_for_eval]
 #
 # Prerequisite one-time steps (not chained here — run once, on a login node):
-#   scripts/cluster/setup_venv.sh
-#   scripts/cluster/prefetch_weights.sh
+#   build the venv (see scripts/cluster/README.md), then scripts/cluster/prefetch_weights.sh
 #
-# Stages: extract_activations -> build_swissprot_eval -> train_glp -> eval_generation
+# Stages: build_swissprot_eval -> extract_activations -> train_glp -> eval_generation
 #         -> freeze_concepts -> run_probing (auc) -> make_report
+#
+# build_swissprot_eval runs FIRST and extract_activations second (not the reverse) —
+# extract_activations' --exclude-from needs the eval TSV build_swissprot_eval writes,
+# to keep training/eval disjoint (docs/results/run_summary.md §7: an earlier run got
+# this backwards and trained on 98.4% of its own eval set). Skip prefetching that TSV
+# yourself first (scripts/prefetch_data.py) and this is the only thing that supplies it.
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -28,11 +33,11 @@ submit() {
 
 echo "[pipeline] config=$CONFIG n_seqs=$N_SEQS n_prot=$N_PROT"
 
-PREV_JOB=$(submit scripts/cluster/submit_extract_activations.sh "$CONFIG" "$N_SEQS")
-echo "[pipeline] extract_activations       -> job $PREV_JOB"
-
 PREV_JOB=$(submit scripts/cluster/submit_build_swissprot_eval.sh "$CONFIG" "$N_PROT")
 echo "[pipeline] build_swissprot_eval      -> job $PREV_JOB"
+
+PREV_JOB=$(submit scripts/cluster/submit_extract_activations.sh "$CONFIG" "$N_SEQS" "$N_PROT")
+echo "[pipeline] extract_activations       -> job $PREV_JOB"
 
 PREV_JOB=$(submit scripts/cluster/submit_train_glp.sh "$CONFIG")
 echo "[pipeline] train_glp                 -> job $PREV_JOB"

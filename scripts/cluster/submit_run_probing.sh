@@ -24,7 +24,9 @@ source scripts/cluster/env_mn5.sh
 CONFIG="${1:-configs/esm8m_h100.yaml}"
 METRIC="${2:-auc}"
 OUT_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")"
-EVAL_DIR="$OUT_DIR/swissprot/processed"
+RUN_NAME="$(basename "$OUT_DIR")"
+# Data-sized, not symlinked under runs/ — reached directly at $GLP_DATA_ROOT/<run>/.
+EVAL_DIR="$GLP_DATA_ROOT/$RUN_NAME/swissprot/processed"
 CONCEPTS="$EVAL_DIR/frozen_concepts.json"
 
 python scripts/run_probing.py --config "$CONFIG" --eval-dir "$EVAL_DIR" \

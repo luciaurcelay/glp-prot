@@ -9,12 +9,15 @@ __pycache__/
 
 # Runs / artifacts / data (never commit large blobs)
 runs/
-/runs           # also matches when runs/ is a symlink to cluster storage (env_mn5.sh)
+# /runs (no trailing slash) also matches when runs/ is a symlink to cluster
+# storage (env_mn5.sh) — a trailing-slash pattern only matches directories, not symlinks
+/runs
 *.pt
 *.safetensors
 *.npz
 *.gz
-/data/          # only the repo-root data dir (NOT the glp_plm/data source package)
+# only the repo-root data dir (NOT the glp_plm/data source package)
+/data/
 
 # Cluster (MN5) launcher config — path is per-user, not shared (scripts/cluster/README.md)
 scripts/cluster/cluster.env

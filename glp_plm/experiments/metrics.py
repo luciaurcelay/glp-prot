@@ -15,17 +15,41 @@ Artifacts:
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
+
+from glp_plm.utils import resolve_storage_dir
+
+
+def _git_provenance() -> Dict[str, Any]:
+    """Best-effort {git_commit, git_dirty} for summary.json; {} outside a git repo."""
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        dirty = bool(subprocess.check_output(
+            ["git", "status", "--porcelain"], stderr=subprocess.DEVNULL, text=True
+        ).strip())
+        return {"git_commit": commit, "git_dirty": dirty}
+    except Exception:
+        return {}
 
 
 class RunLogger:
     def __init__(self, run_dir: str | Path):
         self.dir = Path(run_dir)
-        self.metrics_dir = self.dir / "metrics"
-        self.figures_dir = self.dir / "figures"
-        self.metrics_dir.mkdir(parents=True, exist_ok=True)
-        self.figures_dir.mkdir(parents=True, exist_ok=True)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        # Redirected to $GLP_RUNS_ROOT on cluster (symlinked back under run_dir so
+        # they stay browsable there); plain local dirs off-cluster (Mac PoC).
+        self.metrics_dir = resolve_storage_dir(self.dir, "metrics", "GLP_RUNS_ROOT")
+        self.figures_dir = resolve_storage_dir(self.dir, "figures", "GLP_RUNS_ROOT")
+        # Stamped on every construction (each pipeline script makes its own RunLogger),
+        # so summary.json reflects the commit as of the most recent stage that touched
+        # this run — provenance for "which code produced these numbers" (2026-07-28).
+        prov = _git_provenance()
+        if prov:
+            self.log_summary(**prov)
 
     # ---- scalar time-series ----
     def series_path(self, phase: str) -> Path:

@@ -1,5 +1,16 @@
 # Setup (Apple-Silicon PoC)
 
+## 0. Get the submodules
+
+`InterPLM/` and `generative_latent_prior/` are git submodules, not vendored code — a
+plain `git clone` leaves both as empty directories. Needed before anything below,
+on Mac or cluster alike:
+```bash
+git submodule update --init --recursive
+```
+(`git submodule status` shows a leading `-` on an uninitialized submodule; no prefix
+once it's checked out.)
+
 InterPLM requires **Python 3.11** (the repo's system Python 3.9 is too old).
 
 ```bash

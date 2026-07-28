@@ -1,0 +1,55 @@
+# Cluster replication of local_clean.yaml (docs/results/run_summary.md) — a
+# same-hyperparameter rerun on MN5/H100 to check the result reproduces off-Mac,
+# ahead of scaling up to esm8m_h100.yaml. Differs from local_clean.yaml ONLY in
+# device + output_dir (D8 parity contract) — precision/store_mode are left at
+# fp32/precache since bf16/stream aren't implemented yet (Config.check_supported).
+# Use scripts/cluster/run_mid_replicate.sh to run it (decontaminated recipe:
+# build_swissprot_eval before extract_activations --exclude-from).
+
+device: cuda
+precision: fp32
+seed: 0
+output_dir: runs/mid_mn5
+
+model:
+  activation_dim: 320
+  d_model: null         # -> 640
+  d_mlp: null           # -> 1280; meta-neurons = 6 * 1280 = 7,680
+  n_blocks: 6
+
+data:
+  model_name: facebook/esm2_t6_8M_UR50D
+  layer: 4
+  n_train_activations: 10000000
+  store_mode: precache
+  activation_dtype: float16
+  train_fasta: null
+  eval_uniprot_tsv: null
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20
+  fd_num_steps: 1000
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5
+  batch_size: 512
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 50
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]
+  topk: 512
+  seed: 42

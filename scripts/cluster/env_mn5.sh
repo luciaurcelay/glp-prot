@@ -4,8 +4,19 @@
 #
 # Responsibilities:
 #   - load the module stack (Python 3.11 + CUDA; InterPLM needs 3.11 — SETUP.md)
-#   - activate the venv living on cluster storage (built by setup_venv.sh)
-#   - point HF_HOME + runs/ at cluster storage instead of the quota-capped $HOME
+#   - activate the venv (defaults to $REPO_ROOT/.venv, same layout as local dev;
+#     override with GLP_VENV in cluster.env if yours lives elsewhere, e.g. off $HOME)
+#   - point HF_HOME (pretrained ESM-2 + SAE weights — small, but not worth
+#     re-downloading if scratch gets purged) at GLP_RUNS_ROOT (projects — small but
+#     precious), instead of the quota-capped $HOME. Per-run storage (checkpoints,
+#     activation stores, Swiss-Prot data) is redirected to GLP_RUNS_ROOT/GLP_DATA_ROOT
+#     by glp_plm.utils.resolve_storage_dir, called from within each pipeline script
+#     itself (not here) — see that function's docstring. runs/ stays a plain local
+#     dir; only metrics/figures get symlinked into it — checkpoints, the activation
+#     store, and the embedded Swiss-Prot eval shards are all data-sized and
+#     deliberately don't (kept off the small $HOME/repo quota either way, but out of
+#     the local runs/ tree — reachable directly via $GLP_RUNS_ROOT/<run>/checkpoints
+#     or $GLP_DATA_ROOT/<run>/{train_store,swissprot/processed}).
 #   - put the repo root + InterPLM/ on PYTHONPATH (belt-and-suspenders on top of
 #     scripts/_bootstrap.py, which every script already imports)
 set -euo pipefail
@@ -17,37 +28,44 @@ if [ -f scripts/cluster/cluster.env ]; then
   # shellcheck disable=SC1091
   source scripts/cluster/cluster.env
 fi
-: "${GLP_DATA_ROOT:?GLP_DATA_ROOT is not set. Copy scripts/cluster/cluster.env.example to scripts/cluster/cluster.env and fill it in.}"
+: "${GLP_DATA_ROOT:?GLP_DATA_ROOT is not set. Fill it in in scripts/cluster/cluster.env.}"
+: "${GLP_RUNS_ROOT:?GLP_RUNS_ROOT is not set. Fill it in in scripts/cluster/cluster.env.}"
 
 module purge
-module load python/3.11.5-gcc
-module load cuda/12.4
+# python/3.11.5-gcc's Lmod hierarchy doesn't declare its own prereqs (`module
+# spider` claims it loads standalone; it doesn't) — the real chain, found by
+# trial and error on 2026-07-28: intel -> impi -> mkl -> hdf5 -> python -> cuda.
+# Skipping any of these leaves the venv's python unable to find libpython3.11.so.1.0.
+module load intel impi mkl hdf5 python/3.11.5-gcc cuda/12.4
 
-VENV="$GLP_DATA_ROOT/venv"
+# The python module ALSO exports PYTHONHOME/PYTHONPATH pointing at its own shared
+# site-packages (a pre-installed torch-adjacent stack: fsspec/mpmath/sympy/networkx/
+# filelock/Jinja2, as legacy easy_install .egg dirs) — found by trial and error on
+# 2026-07-28 chasing a phantom `ModuleNotFoundError: filelock` even after installing
+# it. Left in place this silently breaks venv isolation two ways: PYTHONHOME set at
+# all makes CPython ignore the venv's pyvenv.cfg outright, and appending the module's
+# old PYTHONPATH (as this line used to do) puts its .egg dirs on sys.path — pip finds
+# them and reports "already satisfied", but .egg installs only become importable via
+# `site.addsitedir()`'s .pth processing, which a raw PYTHONPATH entry skips, so the
+# import fails anyway. Clear both before activating so the venv is actually isolated.
+unset PYTHONHOME PYTHONPATH
+
+VENV="${GLP_VENV:-$REPO_ROOT/.venv}"
 if [ ! -x "$VENV/bin/python" ]; then
-  echo "No venv at $VENV — run scripts/cluster/setup_venv.sh once first (needs internet; run on a login node, not inside a job)." >&2
+  echo "No venv at $VENV — build one first (see scripts/cluster/README.md; needs internet, run on a login node, not inside a job)." >&2
   exit 1
 fi
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
 
-export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/InterPLM:${PYTHONPATH:-}"
+export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/InterPLM"
 
-export HF_HOME="$GLP_DATA_ROOT/hf_cache"
+export HF_HOME="$GLP_RUNS_ROOT/hf_cache"
 mkdir -p "$HF_HOME"
 # Compute nodes on MN5 are not assumed to have internet; weights/SAEs should be
 # fetched once from a login node via prefetch_weights.sh, then jobs run offline.
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 
-mkdir -p "$GLP_DATA_ROOT/runs"
-if [ -L runs ]; then
-  : # already a symlink; leave it (may point elsewhere on purpose)
-elif [ -e runs ]; then
-  echo "WARNING: $REPO_ROOT/runs already exists and is not a symlink — leaving it alone." \
-       "Outputs will land in cluster storage under \$GLP_DATA_ROOT/runs only if you" \
-       "point --config output_dir there yourself, since the local runs/ is taking precedence." >&2
-else
-  ln -s "$GLP_DATA_ROOT/runs" runs
-fi
+mkdir -p "$GLP_RUNS_ROOT" "$GLP_DATA_ROOT" runs
 
-echo "[env_mn5] repo=$REPO_ROOT  data_root=$GLP_DATA_ROOT  python=$(command -v python)  device_check=$(python -c 'import torch;print(torch.cuda.is_available())' 2>/dev/null || echo 'n/a')"
+echo "[env_mn5] repo=$REPO_ROOT  data_root=$GLP_DATA_ROOT  runs_root=$GLP_RUNS_ROOT  python=$(command -v python)  device_check=$(python -c 'import torch;print(torch.cuda.is_available())' 2>/dev/null || echo 'n/a')"
