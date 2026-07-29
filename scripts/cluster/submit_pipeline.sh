@@ -14,7 +14,7 @@
 #
 # build_swissprot_eval runs FIRST and extract_activations second (not the reverse) —
 # extract_activations' --exclude-from needs the eval TSV build_swissprot_eval writes,
-# to keep training/eval disjoint (docs/results/run_summary.md §7: an earlier run got
+# to keep training/eval disjoint (runs/local_clean/run_summary.md §7: an earlier run got
 # this backwards and trained on 98.4% of its own eval set). Skip prefetching that TSV
 # yourself first (scripts/prefetch_data.py) and this is the only thing that supplies it.
 set -euo pipefail

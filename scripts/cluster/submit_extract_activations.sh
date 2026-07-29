@@ -5,7 +5,6 @@
 #SBATCH --partition=acc
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=40
-#SBATCH --mem=64G
 #SBATCH --time=08:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
@@ -15,13 +14,11 @@
 # Override config/qos/time at submit time, e.g.:
 #   sbatch --qos=acc_debug --time=00:30:00 scripts/cluster/submit_extract_activations.sh configs/poc_mac.yaml
 #
-# ⚠ KNOWN GAP (see docs/PLAN.md §9 W2, docs/INTERPLM_MAP.md): extract_activations.py
-# currently only pulls a Swiss-Prot REST slice (same code path as the Mac PoC/local_mid
-# runs), not a true UniRef50 streaming producer-consumer — that's still a stub
-# (glp_plm/data/producer_consumer.py). --n-seqs below is sized to approximate
-# configs/esm8m_h100.yaml's n_train_activations=50,000,000 budget from Swiss-Prot alone;
-# if UniRef50 streaming is implemented later, swap this script's invocation instead of
-# changing configs/esm8m_h100.yaml (D8 parity contract).
+# Data source is config-only: set `data.train_fasta: uniref50` in $CONFIG to sample
+# from the local UniRef50 pull instead of Swiss-Prot REST (glp_plm/config.py).
+# ⚠ Still `store_mode: precache`, not true streaming (glp_plm/data/producer_consumer.py
+# stub) — fine at 50-300M acts on MN5 scratch, but `store_mode: stream` is
+# unimplemented and will raise if set.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"

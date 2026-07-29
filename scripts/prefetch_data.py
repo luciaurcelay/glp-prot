@@ -11,7 +11,7 @@ internet access, compute nodes are not assumed to have any (scripts/cluster/READ
     -> $GLP_DATA_ROOT/swissprot/swissprot_annotated_eval_<n_prot>.tsv
   - the unlabeled Swiss-Prot training slice (same REST query extract_activations.py
     uses), excluding every eval accession (avoids train/eval contamination — see
-    CLAUDE.md / docs/results/) -> $GLP_DATA_ROOT/swissprot/train_slice_<n_seqs>.fasta
+    CLAUDE.md / runs/local_clean/run_summary.md §7) -> $GLP_DATA_ROOT/swissprot/train_slice_<n_seqs>.fasta
   - optionally, full UniRef50 (~12 GB compressed, --with-uniref50 — an explicit
     go-ahead per CLAUDE.md; not consumed by anything yet, producer_consumer.py is
     still a stub) -> $GLP_DATA_ROOT/uniref50/uniref50.fasta.gz
@@ -58,7 +58,7 @@ def main():
     print(f"[prefetch_data] eval tsv    -> {eval_tsv}")
 
     # Exclude every eval accession from the training slice — 98.4% train/eval
-    # overlap was measured without this (docs/results/).
+    # overlap was measured without this (runs/local_clean/run_summary.md §7).
     exclude = sl.read_accessions(eval_tsv)
     train_fasta = swissprot_dir / f"train_slice_{args.n_seqs}.fasta"
     sl.fetch_uniprot_fasta_slice(train_fasta, n_seqs=args.n_seqs, exclude=exclude)

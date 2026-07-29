@@ -7,7 +7,7 @@ InterPLM / GLP reference code, and `SETUP.md` for environment setup.
 
 ## Status
 W1 complete (Gate G1 passed) plus a mid-scale local run and most of W3 probing.
-Results: `docs/results/run_summary.md`; checklist: PLAN §9.
+Results: `runs/local_clean/run_summary.md` (gitignored — see CLAUDE.md repo layout); checklist: PLAN §9.
 
 ## Layout
 ```

@@ -9,7 +9,7 @@
 device: cuda
 precision: fp32
 seed: 0
-output_dir: runs/mid_mn5
+output_dir: runs/full_mn5
 
 model:
   activation_dim: 320

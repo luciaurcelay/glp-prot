@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Extract the unlabeled GLP training activation store (PLAN §11, W1 Step 4).
 
-Pull a small Swiss-Prot slice via UniProt REST (no UniRef50 for the PoC), embed at the
-hooked layer with the InterPLM-wrapping extractor, write fp16 memmap shards, and fit
-the standardizer. Output: cfg.output_dir/train_store/{activations.dat, meta.json,
+Source is `data.train_fasta`: null -> Swiss-Prot REST slice (default); "uniref50" ->
+shared local pull (`scripts/prefetch_data.py --with-uniref50`); any other string ->
+that path. Embeds at the hooked layer, writes fp16 memmap shards, fits the
+standardizer. Output: cfg.output_dir/train_store/{activations.dat, meta.json,
 rep_statistics.pt}.
 """
 import argparse
@@ -32,10 +33,6 @@ def main():
     cfg = load_config(args.config)
     cfg.check_supported()
     out = Path(cfg.output_dir)
-    # The raw Swiss-Prot FASTA is identical for any run pulling the same --n-seqs —
-    # shared across runs (like UniRef50), not nested per-run. The embedded store
-    # below IS run/model-specific, so that stays redirected per-run as before.
-    fasta = resolve_shared_dir("swissprot", "GLP_DATA_ROOT") / f"train_slice_{args.n_seqs}.fasta"
     # Data-sized (a fp16 memmap store) — not symlinked back under runs/, reached
     # directly at $GLP_DATA_ROOT/<run>/<store>_store (see resolve_storage_dir docstring).
     store_dir = resolve_storage_dir(out, f"{args.store}_store", "GLP_DATA_ROOT", symlink=False)
@@ -46,8 +43,17 @@ def main():
     exclude = sl.read_accessions(Path(args.exclude_from)) if args.exclude_from else None
     if exclude:
         print(f"[extract_activations] excluding {len(exclude):,} eval accessions")
-    sl.fetch_uniprot_fasta_slice(fasta, n_seqs=args.n_seqs, exclude=exclude)
-    seqs = sl.read_fasta(fasta)
+
+    if cfg.data.train_fasta:
+        fasta_path = (resolve_shared_dir("uniref50", "GLP_DATA_ROOT") / "uniref50.fasta.gz"
+                     if cfg.data.train_fasta == "uniref50" else Path(cfg.data.train_fasta))
+        seqs = sl.read_fasta_slice(fasta_path, n_seqs=args.n_seqs, exclude=exclude, seed=cfg.seed)
+    else:
+        # The raw Swiss-Prot FASTA is identical for any run pulling the same --n-seqs —
+        # shared across runs (like UniRef50), not nested per-run.
+        fasta = resolve_shared_dir("swissprot", "GLP_DATA_ROOT") / f"train_slice_{args.n_seqs}.fasta"
+        sl.fetch_uniprot_fasta_slice(fasta, n_seqs=args.n_seqs, exclude=exclude)
+        seqs = sl.read_fasta(fasta)
     print(f"[extract_activations] {len(seqs)} sequences; target ~{cfg.data.n_train_activations:,} activations")
 
     extractor = ActivationExtractor(cfg.data.model_name, layer=cfg.data.layer, device=cfg.device)

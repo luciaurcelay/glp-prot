@@ -55,8 +55,9 @@ Instead, both packages are put on `sys.path` explicitly:
 .venv/bin/python scripts/make_report.py            --config configs/poc_mac.yaml   # re-render all figures
 ```
 
-Figures and metrics are written under `runs/<name>/` (`figures/*.png`, `metrics/`).
-`runs/` is gitignored; committed results live in `docs/results/`.
+Figures and metrics are written under `runs/<name>/` (`figures/*.png`, `metrics/`,
+plus a per-run `run_summary.md` write-up). `runs/` is gitignored — results are not
+committed to git; each run's own directory is the source of truth.
 
 ## Cluster (MN5, BSC)
 

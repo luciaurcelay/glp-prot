@@ -7,11 +7,19 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 
-# Runs / artifacts / data (never commit large blobs)
-runs/
-# /runs (no trailing slash) also matches when runs/ is a symlink to cluster
-# storage (env_mn5.sh) — a trailing-slash pattern only matches directories, not symlinks
-/runs
+# Runs / artifacts / data (never commit large blobs) — except each run's
+# write-up (run_summary.md), which we do want in git history.
+# Needs the 4-line form below, not a single `runs/` rule: gitignore can't
+# re-include a file whose parent directory is itself excluded, so each level
+# under runs/ has to be excluded-then-reincluded explicitly.
+# NOTE: when runs/ is a symlink to cluster storage (env_mn5.sh), `git status`/
+# `git add -A` won't auto-discover files through it (git doesn't follow
+# symlinks while walking the working tree) — add explicitly instead:
+#   git add runs/<run>/run_summary.md
+runs/*
+!runs/*/
+runs/*/*
+!runs/*/run_summary.md
 *.pt
 *.safetensors
 *.npz

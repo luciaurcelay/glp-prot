@@ -41,8 +41,7 @@ configs/            poc_mac.yaml (2-blk/2M) · local_clean.yaml (6-blk/10M, CANO
 scripts/            _bootstrap.py + one CLI per phase (§11)
   cluster/          MN5 (BSC) SLURM launchers — see scripts/cluster/README.md
 tests/              test_hook_parity.py (live), test_flow_matching_roundtrip.py
-docs/results/       committed metrics + the run write-up
-runs/               outputs (gitignored)
+runs/               outputs (gitignored) — runs/<run>/{metrics,figures,run_summary.md}
 ```
 
 ## Environment (see SETUP.md)
@@ -96,7 +95,7 @@ gotchas — all written up there, don't re-derive).
 
 ## Current status
 W1 complete (**Gate G1 passed**) plus a mid-scale **local** run (`configs/local_clean.yaml`)
-and most of W3 probing — see the PLAN §9 checklist and `docs/results/run_summary.md`.
+and most of W3 probing — see the PLAN §9 checklist and `runs/local_clean/run_summary.md`.
 
 Headline: on 104 pre-registered concepts GLP meta-neurons lead 1-D probing AUC
 (**0.945** vs raw-MLP 0.916, SAE 0.900, raw-layer 0.861 — all paired-significant). On

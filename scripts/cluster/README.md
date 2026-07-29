@@ -56,7 +56,9 @@ automatically.
 
 5. **Swiss-Prot data** (login node, needs internet). Labeled eval slice + unlabeled
    training slice, shared across every run/config (same REST query → same result,
-   so no `--config` needed):
+   so no `--config` needed). Needs the venv active and `GLP_DATA_ROOT` set — already
+   true if you're continuing the same shell from step 3, otherwise `source
+   scripts/cluster/env_mn5.sh` first:
    ```bash
    python scripts/prefetch_data.py --n-seqs 200000 --n-prot 20000
    ```
@@ -69,12 +71,17 @@ automatically.
 
 ## Storage layout
 
-`runs/<run>/` (a plain local directory in the repo) ends up holding only the
+By design, `runs/<run>/` is a plain local directory in the repo holding only the
 lightweight output artifacts. Everything large or checkpoint-like is
 redirected to cluster storage by `glp_plm.utils.resolve_storage_dir` (per-run) or
 `resolve_shared_dir` (shared across runs), called from inside each pipeline script
 itself (not a separate setup step, so it happens automatically no matter which
-script runs first):
+script runs first). **Check `runs` isn't itself a symlink on your account first**
+(`stat runs`) — on this account it turned out to be `runs -> $GLP_RUNS_ROOT`
+wholesale (predates this doc), which collapses the two trees below into one, so
+e.g. `checkpoints/` shows up "under `runs/`" too despite the "NOT symlinked" notes
+below. Harmless (same data, reachable either path) except for one launcher quirk —
+see `finalize_logs` in Known gaps.
 
 ```
 $GLP_DATA_ROOT/
@@ -138,7 +145,7 @@ scripts/cluster/submit_pipeline.sh configs/esm8m_h100.yaml 200000 20000
 ```
 (Runs on the login node, just calling `sbatch` seven times with `--dependency=afterok`.)
 
-To replicate the canonical `local_clean` Mac result (`docs/results/run_summary.md`
+To replicate the canonical `local_clean` Mac result (`runs/local_clean/run_summary.md`
 §10) on `configs/mid_mn5.yaml` before trusting a scale-up, use `run_mid_replicate.sh`
 instead — one `sbatch` job running the whole chain sequentially:
 ```bash
@@ -146,7 +153,7 @@ sbatch scripts/cluster/run_mid_replicate.sh
 ```
 `build_swissprot_eval` must run before `extract_activations` (not just "run individually
 in any order") — the latter's `--exclude-from` needs the former's eval TSV to keep
-training/eval disjoint (`docs/results/run_summary.md` §7). Running them out of order,
+training/eval disjoint (`runs/local_clean/run_summary.md` §7). Running them out of order,
 or `extract_activations` alone without having prefetched/built the eval TSV first,
 silently trains on the eval set — `submit_extract_activations.sh` prints a WARNING if
 it can't find one, but doesn't fail the job.
@@ -174,6 +181,15 @@ sbatch --qos=acc_debug --time=00:30:00 scripts/cluster/submit_extract_activation
 
 ## Known gaps (don't be surprised)
 
+- **`finalize_logs` (the `.out`/`.err` relocation trap in every `submit_*.sh` +
+  `run_mid_replicate.sh`) is a no-op, not an error, if `runs/$RUN_NAME/...` and
+  `$GLP_RUNS_ROOT/$RUN_NAME/...` are already the same file** (e.g. `runs` symlinked
+  wholesale — see Storage layout above). The trailing `ln -sf ... || true` is
+  intentional: without it, under `set -e`, that failure used to abort the trap
+  mid-loop and strand `.err` in the submit dir (`$HOME`) permanently while `.out`
+  moved fine (2026-07-28, job 43929721). If a job's `.out`/`.err` are still sitting
+  in the repo root well after it *finished* (not mid-run), that's a real miss worth
+  investigating, not this.
 - **`extract_activations.py` doesn't stream UniRef50 yet.** It only pulls a
   Swiss-Prot REST slice (the same code path as the Mac PoC / `local_clean` run),
   sized up via `--n-seqs`. `glp_plm/data/producer_consumer.py` (true streaming

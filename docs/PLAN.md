@@ -242,7 +242,7 @@ figures are one-function additions — no runner changes.
 
 **Two stores:**
 
-- **Training store** (unlabeled): UniRef50 subset, for GLP training. **Must exclude every protein in the eval store** — see the risk register; the naive Swiss-Prot queries overlap ~98%.
+- **Training store** (unlabeled): Swiss-Prot REST slice by default; switch to UniRef50 via `data.train_fasta: uniref50` (reservoir-sampled — `glp_plm/data/swissprot_labels.read_fasta_slice`). **Must exclude every protein in the eval store** (risk register). For UniRef50 this exclusion only matches each record's **cluster representative** accession (the header ID) — a Swiss-Prot eval protein that's a non-representative *member* of some other cluster isn't caught. Approximate, not exact — see risk register.
 - **Eval store** (labeled): InterPLM's 50k Swiss-Prot proteins, 25k/25k val/test, per-AA concept labels, for probing + steering. Reuse InterPLM's split.
 
 **Format:** `fp16`, `[N, d]`. Eval store adds `(protein_id, position, {concept: 0/1})`.
@@ -406,6 +406,17 @@ This structure means: even if a reviewer distrusts the frozen-concept table, (b)
 > Progress checklist. `[x]` done · `[~]` partial/in-progress · `[ ]` not started.
 > Status as of end of W1 (Mac PoC). See `docs/INTERPLM_MAP.md` and `SETUP.md` for details.
 
+> **Minimal-viable-paper priority order** (if the remaining weeks are tight, do these in
+> this order; everything else is upside, not requirement): **(1) Gate G2** — build
+> SAE-reconstruction FD + %LR (neither exists yet, see W2 below) and run locally; this
+> gates whether steering is in scope at all. **(2) Extend F1 probing to all 104 concepts**
+> — pure run, no new code, resolves the n=14 non-significance. **(3) §6.5.1 nonlinearity
+> falsification test** — cheap (3–5 concepts), needs a new script, settles the
+> repackaging-vs-real-structure question before write-up. **(4) If G2 passes:** steering
+> Testbed 1 (glycine) only + Pareto — skip Tier-2 pLDDT (heavy GPU dependency, stretch).
+> **(5)** figures + freeze. Cluster scale-up, auto-interp/novel-candidates, and the mini
+> scaling curve are explicitly **not** MVP — cut them first under time pressure.
+
 **Week 1 — Pipeline + Mac PoC. — ✅ COMPLETE (Gate G1 passed)**
 
 - [x] Python 3.11 env + InterPLM importable (`SETUP.md`; path-bootstrap, not pip-editable).
@@ -422,7 +433,8 @@ This structure means: even if a reviewer distrusts the frozen-concept table, (b)
 
 Measurement showed the ESM-2-8M spine is **RAM/disk-bound, not compute-bound**, so most
 of W2/W3 turned out to be local-feasible. Canonical run is `configs/local_clean.yaml`;
-full write-up in `docs/results/run_summary.md`.
+full write-up in `runs/local_clean/run_summary.md` (`runs/` is gitignored — not `docs/`,
+which now holds only reference docs, not run outputs).
 
 - [x] 10M activations (6.4 GB fp16) from 110k Swiss-Prot sequences, **all 20k eval proteins excluded** (verified 0 overlap); **6-block GLP (21M params)**; loss 2.390 → **1.037**.
 - [x] Eval set scaled 2k → **20k proteins** (2.53M labeled residues, 224 concepts, 110 qualifying, all five §7 categories present).
@@ -430,13 +442,14 @@ full write-up in `docs/results/run_summary.md`.
 - [x] Streaming/memory rework so stores and feature banks exceed RAM safely; periodic checkpoint+resume for training and probing (see risk register).
 - [x] **Train/eval contamination found and fixed.** The two REST queries overlapped 98.4%; excluded and re-run. Measured effect on GLP AUC: **−0.0024, CI [−0.0055, +0.0007] — not significant.** All AUC conclusions survived.
 
-**Week 2 — Scale on cluster + generation-quality gate. — [~] PARTIAL (cluster access now available; no jobs run yet)**
+**Week 2 — Scale on cluster + generation-quality gate. — [~] PARTIAL (launchers verified end-to-end on MN5; esm8m_h100.yaml scale-up not yet run)**
 
-- [x] MN5 (BSC) SLURM launchers for the full pipeline (`scripts/cluster/`, account `bsc70` / `acc` partition). Not yet run: activation-store scale, GLP training, Gate G2.
+- [x] MN5 (BSC) SLURM launchers for the full pipeline (`scripts/cluster/`, account `bsc70` / `acc` partition).
+- [x] End-to-end smoke run on MN5: `run_mid_replicate.sh` (`configs/mid_mn5.yaml`, `local_clean`-equivalent hyperparameters) completed all 7 stages without error (job 43929721, 2026-07-28) — confirms the launcher chain, storage-split (`resolve_storage_dir`/`resolve_shared_dir`), and venv/module setup work on H100 nodes. *Not yet checked: whether the resulting metrics reproduce `local_clean`'s numbers* — that comparison is still open.
 - [ ] Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320. *(launchers ready; UniRef50 streaming still a stub — see `scripts/cluster/README.md` known gaps)*
 - [ ] Train at 50M → 100M → 300M; watch FD plateau. *(blocked: 16 GB RAM caps local at ~10–20M)*
 - [x] FD (vs lower bound) + PCA overlap — implemented and run locally.
-- [ ] **SAE-reconstruction FD anchor** and **% Loss Recovered** (adapt `interplm.train.fidelity.calculate_loss_recovered`) — **both local-feasible, not yet run.**
+- [ ] **SAE-reconstruction FD anchor** and **% Loss Recovered** (adapt `interplm.train.fidelity.calculate_loss_recovered`) — **both local-feasible, not yet implemented**, not just unrun: `glp_plm/eval/frechet.py` currently only computes GLP-vs-real FD + the lower-bound anchor (its own docstring defers the SAE-recon anchor to "W2/G2"); there is no `glp_plm/eval/loss_recovered.py` yet. Highest-priority remaining item — see MVP order above.
 - [ ] **GATE G2 (GO/NO-GO):** GLP FD < SAE-reconstruction FD; PCA converged; %LR competitive with the SAE. **If G2 fails → drop steering, ship probing-only paper.**
 
 **Week 3 — Probing (guaranteed) + candidates. — [~] SUBSTANTIALLY DONE (locally)**
@@ -445,9 +458,9 @@ full write-up in `docs/results/run_summary.md`.
 - [x] Meta-neuron extraction (`u` pooled over the grid, selected on val — `u=0.9` won 88/104, matching GLP's released default).
 - [x] **1-D AUC probing, all four methods, 104 concepts:** GLP **0.945** > raw-MLP 0.916 > SAE 0.900 > raw-layer 0.861; all paired-bootstrap significant (GLP−SAE +0.045, GLP−rawMLP +0.029). Three-level reporting (§7 a/b/c) produced.
 - [x] **InterPLM F1 (secondary), 14 frozen concepts:** SAE 0.286 > GLP **0.264** > raw-MLP 0.186 > raw-layer 0.134. Recall is rate-matched, so gaps are **precision** (SAE 0.347 vs GLP 0.241). ⚠ SAE−GLP is **NOT significant** at n=14 (CI [−0.008, +0.060]); GLP−rawMLP **is** (+0.078, 12/14).
-- [ ] Extend F1 to all 104 concepts (~3.5 h locally).
-- [ ] Optional nonlinearity falsification test (§6.5.1).
-- [ ] Auto-interp; assemble novel-candidate subsection with structure-free held-out signal.
+- [ ] Extend F1 to all 104 concepts (~3.5 h locally) — no new code, `run_probing.py --metric f1` already implements this; just point it at the full qualifying set instead of the 14-concept frozen headline subset.
+- [ ] Nonlinearity falsification test (§6.5.1) — cheap (3–5 concepts), promoted to MVP (see priority order above); needs a new `scripts/test_nonlinearity.py` (not started — listed as "planned" in §11, doesn't exist yet).
+- [ ] *(stretch, not MVP)* Auto-interp; assemble novel-candidate subsection with structure-free held-out signal. `scripts/auto_interp_metaneurons.py` exists but is a `NotImplementedError` stub.
 - [~] **Deliverable D2 has a defensible local result**; cluster-scale numbers still pending.
 
 > **Headline finding (see §1 framing).** GLP meta-neurons lead **decisively on ranking
@@ -463,8 +476,8 @@ full write-up in `docs/results/run_summary.md`.
 
 **Week 4 — Steering + optional stretch. — [ ] NOT STARTED**
 
-- [ ] Glycine testbed → reproduce InterPLM Fig 7 + GLP curve; then broader features. Concept-vs-pPPL Pareto (orthogonalized positions).
-- [ ] If slack: ESM-2-650M scaling point; ESMFold pLDDT Tier-2; mini scaling curve.
+- [ ] Glycine testbed → reproduce InterPLM Fig 7 + GLP curve; then broader features. Concept-vs-pPPL Pareto (orthogonalized positions). **Gated on Gate G2 passing** (§10 risk register: if G2 fails, drop this and ship probing-only). `scripts/run_steering.py` exists but is currently a `NotImplementedError` stub — needs the clamp-recombine + GLP SDEdit-cleanup logic (§6.6) before Testbed 1 can run. MVP scope = Testbed 1 + Pareto only.
+- [ ] *(stretch, not MVP)* If slack: ESM-2-650M scaling point; ESMFold pLDDT Tier-2; mini scaling curve.
 
 **Week 5 — Write-up + buffer. — [ ] NOT STARTED**
 
@@ -486,6 +499,7 @@ full write-up in `docs/results/run_summary.md`.
 | **GLP meta-neurons don't beat SAE on AUC**                               | Med                  | Reframe complementary (§1, §7c). Do NOT hinge the paper on winning.                                                                                                                         |
 | **MPS incompatibility**                                                  | Med                  | PoC fp32 on MPS/CPU; bf16 guarded behind `device=='cuda'`.                                                                                                                                  |
 | **Train/eval protein contamination** (RESOLVED) | High if unchecked | The default training and eval REST queries both match `reviewed:true` Swiss-Prot and overlapped **98.4%**, giving GLP activations it is later probed on while the SAE (UniRef50-trained) gets none. Always pass `extract_activations.py --exclude-from <eval tsv>`. Measured effect was small (−0.002 AUC, not significant) but the comparison is asymmetric, so exclusion is mandatory. Residual: GLP trains on Swiss-Prot vs the SAE's UniRef50 — disjoint proteins, different distributions. |
+| **UniRef50 cluster-membership leakage** (unmeasured) | Low | Training on UniRef50 (`data.train_fasta: uniref50`) excludes eval accessions by matching each record's **representative** ID only — a Swiss-Prot eval protein that's a non-representative member of another cluster isn't detected (no member-mapping fetched). Eval is ~20k proteins against 50M+ clusters, so risk is low, but unmeasured — quantify before trusting a UniRef50-trained run's probing numbers (same spirit as the Swiss-Prot leak measurement, §9 W1.5). |
 | **Host RAM, not GPU, is the local ceiling** (RESOLVED, recurring) | High locally | Dev Mac has **16 GB**. Three accumulate-in-RAM bugs killed jobs (activation store, raw-MLP bank, per-split standardized copies) plus an **MPS allocator cache** that grew until the OS killed the process. Rules now: stores stream into memmaps and are read lazily; standardize per batch; free banks between methods; `torch.mps.empty_cache()` per concept; long sweeps resumable via `metrics/probing_partial*.jsonl`. |
 | **FD misreported at low sampler steps** (RESOLVED) | — | 20-step FD reports sampler error (2.81× vs 1.55× @1000). `sampler.fd_num_steps=1000` is separate from `num_steps`; always quote FD with its step count. |
 | **Metric semantics differ across representations** (RESOLVED) | Med | InterPLM's fraction-of-max F1 thresholds assume sparse non-negative features and degenerate on dense signed ones. Rate-matched two-sided operating points fix it (§6.5); conclusion unchanged under both schemes. |

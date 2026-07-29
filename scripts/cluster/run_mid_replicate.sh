@@ -8,7 +8,7 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #
-# Replicate the canonical local_clean result (docs/results/run_summary.md, §10
+# Replicate the canonical local_clean result (runs/local_clean/run_summary.md, §10
 # "Reproduce") on MN5 as runs/mid_mn5, to check it reproduces off the Mac before
 # trusting a scale-up to esm8m_h100.yaml. Despite the file/run names (this predates
 # the local_mid -> local_clean rename after the train/eval contamination fix,
@@ -80,4 +80,4 @@ python scripts/run_probing.py          --config "$CONFIG" \
     --n-shards-per-split 1
 python scripts/make_report.py          --config "$CONFIG"
 
-echo "[run_mid_replicate] done — compare runs/$RUN_NAME/metrics/ against docs/results/run_summary.md"
+echo "[run_mid_replicate] done — compare runs/$RUN_NAME/run_summary.md against runs/local_clean/run_summary.md"

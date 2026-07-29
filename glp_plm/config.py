@@ -61,7 +61,8 @@ class DataConfig:
     # "precache" (Mac) writes memmap shards; "stream" (cluster) uses producer-consumer.
     store_mode: str = "precache"
     activation_dtype: str = "float16"   # store format (PLAN §6.1)
-    # Data sources (docs/INTERPLM_MAP.md). For the PoC a small Swiss-Prot slice is fine.
+    # Training source: null -> Swiss-Prot REST slice; "uniref50" -> shared local pull
+    # (scripts/prefetch_data.py --with-uniref50); any other string -> that path.
     train_fasta: Optional[str] = None
     eval_uniprot_tsv: Optional[str] = None
     # Swiss-Prot eval split by shard ranges (docs/INTERPLM_MAP.md, prepare_eval_set).

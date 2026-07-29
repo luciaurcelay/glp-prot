@@ -10,7 +10,7 @@ activations — from LLM activations to **protein-LM (ESM-2) activations**, reus
 - **`docs/PLAN.md`** — the authoritative spec (thesis, decisions, week-by-week checklist).
 - **`docs/INTERPLM_MAP.md`** — reuse map: what to call in the InterPLM/GLP clones (`file:line`) + gotchas.
 - **`SETUP.md`** — Python 3.11 env + how to run the pipeline.
-- **`docs/results/`** — committed results (runs/ itself is gitignored).
+- **`runs/<run>/run_summary.md`** — per-run write-up (`runs/` is gitignored, not committed).
 - **`glp_plm/README.md`** — the package layout.
 
 ## Submodules (ground truth over the papers)
@@ -27,7 +27,7 @@ paired-bootstrap significant. On InterPLM's domain-adjusted **F1** the SAE is mo
 *precise* (0.347 vs 0.241) and leads numerically (0.286 vs 0.264), though that gap is
 **not** significant at n=14; GLP significantly beats both raw baselines there too.
 Sparse features fire rarely but correctly; dense ones rank better.
-Full write-up: [`docs/results/run_summary.md`](docs/results/run_summary.md).
+Full write-up: `runs/local_clean/run_summary.md` (gitignored — not on GitHub, local/cluster only).
 
 Training excludes every eval protein (verified 0 overlap) — an earlier run overlapped
 98.4%, which turned out to be worth only −0.002 AUC.

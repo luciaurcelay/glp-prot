@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import random
 import re
 import urllib.parse
 import urllib.request
@@ -101,6 +102,73 @@ def read_fasta(path: Path) -> List[str]:
     if cur:
         seqs.append("".join(cur))
     return seqs
+
+
+_UNIREF_ID = re.compile(r"^>UniRef\d+_(\S+)")
+
+
+def read_fasta_slice(path: Path, n_seqs: int, exclude: Optional[set] = None,
+                     seed: int = 0) -> List[str]:
+    """Reservoir-sample `n_seqs` sequences from a local (optionally gzipped) FASTA,
+    e.g. a UniRef50 pull (`scripts/prefetch_data.py --with-uniref50`). One-pass random
+    sampling (Algorithm R), matching InterPLM's "5M random sequences from UniRef50"
+    (not first-N, which would be biased by cluster-ID order).
+
+    `exclude` (eval accessions — never train on eval proteins) is matched against the
+    `>UniRef<N>_<id>` representative ID in each header; warns if it never matches.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found — run scripts/prefetch_data.py --with-uniref50 first."
+        )
+    exclude = exclude or set()
+    rng = random.Random(seed)
+    opener = gzip.open if str(path).endswith(".gz") else open
+    mode = "rt" if str(path).endswith(".gz") else "r"
+
+    reservoir: List[str] = []
+    cur: List[str] = []
+    skip_current = False
+    seen = 0
+    skipped = 0
+    header_matches = 0
+
+    def _flush():
+        nonlocal seen
+        if not cur or skip_current:
+            return
+        seq = "".join(cur)
+        seen += 1
+        if len(reservoir) < n_seqs:
+            reservoir.append(seq)
+        else:
+            j = rng.randint(0, seen - 1)
+            if j < n_seqs:
+                reservoir[j] = seq
+
+    with opener(path, mode) as f:
+        for line in f:
+            if line.startswith(">"):
+                _flush()
+                cur = []
+                m = _UNIREF_ID.match(line)
+                header_matches += bool(m)
+                skip_current = bool(m and m.group(1) in exclude)
+                skipped += skip_current
+            else:
+                cur.append(line.strip())
+        _flush()
+
+    if exclude and header_matches == 0:
+        print(f"[swissprot] WARNING: {path} has {seen:,} records but 0 matched the "
+              f"'>UniRef<N>_<id>' header pattern — exclude-list of {len(exclude):,} "
+              "accessions had NO effect. Check the file format before trusting this "
+              "run's train/eval disjointness.")
+
+    print(f"[swissprot] reservoir-sampled {len(reservoir):,} of {seen:,} sequences from {path}"
+          + (f" (skipped {skipped:,} excluded accessions)" if exclude else ""))
+    return reservoir
 
 
 # UniProt REST field IDs matching InterPLM's Option B query (README:163). The TSV
