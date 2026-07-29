@@ -183,6 +183,12 @@ carries the next step forward: real UniRef50 at 100M activations. See its header
 comment for what changed and why (still fp32/precache — bf16/streaming aren't
 implemented yet).
 
+That run completed 2026-07-29 (job 43965559, `runs/uniref50_100m/`): loss and probing
+AUC both improved over `local_clean`, but the FD generation-quality ratio (3.79x vs
+1.55x) needs verification before trusting it as a regression — the real-vs-real FD
+lower bound shrank 5.6x on UniRef50, so the absolute FD gap actually got smaller even
+though the ratio got worse. See `runs/uniref50_100m/run_summary.md` for the numbers.
+
 To train on **100M activations pooled from a 5M-sequence UniRef50 reservoir sample**
 (matching InterPLM's own SAE training distribution, PLAN line 95):
 ```bash

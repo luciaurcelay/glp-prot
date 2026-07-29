@@ -2,7 +2,6 @@
 #SBATCH --job-name=glp-pipeline
 #SBATCH --account=bsc70
 #SBATCH --qos=acc_debug
-#SBATCH --partition=acc
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=40
 #SBATCH --time=02:00:00

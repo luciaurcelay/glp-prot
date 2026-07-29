@@ -6,8 +6,14 @@ activations, reusing InterPLM's released SAEs + Swiss-Prot pipeline. See top-lev
 InterPLM / GLP reference code, and `SETUP.md` for environment setup.
 
 ## Status
-W1 complete (Gate G1 passed) plus a mid-scale local run and most of W3 probing.
-Results: `runs/local_clean/run_summary.md` (gitignored — see CLAUDE.md repo layout); checklist: PLAN §9.
+W1 complete (Gate G1 passed) plus a mid-scale local run and most of W3 probing. First
+cluster run at scale also done (`uniref50_100m`, 100M real UniRef50 activations,
+MN5/H100): loss converges lower (0.897 vs 1.037) and probing AUC improves (0.953 vs
+0.945) over the local run, but the FD generation-quality ratio needs a second look
+(the real-vs-real lower bound shrank 5.6x on UniRef50 — see run_summary.md before
+trusting the ratio as a regression).
+Results: `runs/local_clean/run_summary.md`, `runs/uniref50_100m/run_summary.md`
+(gitignored — see CLAUDE.md repo layout); checklist: PLAN §9.
 
 ## Layout
 ```

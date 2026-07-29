@@ -13,6 +13,7 @@ from typing import List, Optional
 from glp_plm.experiments import figures as _figs
 from glp_plm.experiments import style
 from glp_plm.experiments.metrics import RunLogger
+from glp_plm.experiments.summary import write_run_summary
 
 
 def make_report(run_dir: str | Path, verbose: bool = True) -> List[str]:
@@ -38,6 +39,7 @@ def make_report(run_dir: str | Path, verbose: bool = True) -> List[str]:
         idx.write_text("# Figures\n\n" + "\n".join(f"- ![{Path(m).stem}]({Path(m).name})" for m in made) + "\n")
     if verbose:
         print(f"[report] {len(made)} figure(s) in {run.figures_dir}")
+    write_run_summary(run_dir, verbose=verbose)
     return made
 
 
