@@ -1,26 +1,41 @@
-# Full ESM-2-8M spine run on 1x H100 (PLAN §8/§9, GATE G2).
-# DIFFERS FROM poc_mac.yaml ONLY IN: device, precision, output_dir, data scale +
-# store_mode, and train.batch_size (D8 parity contract — no code changes).
+# Canonical cluster config (PLAN §8/§9, GATE G2) — the single source of truth for the
+# 6-block/d=320 GLP spine on MN5/H100. Unifies what used to be three near-duplicate
+# files (mid_mn5.yaml, uniref50_100m.yaml, and this one): all three carried identical
+# model/diffusion/sampler/train/probing blocks and differed only in data source, scale,
+# and output_dir. mid_mn5.yaml's job (prove the cluster launchers reproduce the local
+# `local_clean` result at 10M Swiss-Prot acts) is done — job 43929721, 2026-07-28,
+# PLAN §9 — so it's retired; this file now carries the next step, real UniRef50 at
+# 100M acts, forward.
+#
+# precision/store_mode stay fp32/precache, NOT bf16/stream: Config.check_supported()
+# raises on both (glp_plm/config.py) since mixed precision + the streaming
+# producer-consumer are still W2 work (glp_plm/data/producer_consumer.py is a stub).
+# 100M fp16 activations = 64 GB, which fits MN5 scratch precached — see
+# scripts/cluster/README.md known gaps. batch_size stays at 512 (the value validated
+# by the mid_mn5 replication run) rather than GLP's LLM-scale reference batch of 4096,
+# which has never been tried at this d=320 width — bumping it is future re-tuning work
+# (PLAN §9 "Re-tune lr/batch for d=320"), not assumed safe here.
 
 device: cuda
-precision: bf16
+precision: fp32
 seed: 0
-output_dir: runs/esm8m_h100
+output_dir: runs/uniref50_100m
 
 model:
   activation_dim: 320
   d_model: null         # -> 640
-  d_mlp: null           # -> 1280
-  n_blocks: 6           # spine 4->6 (PLAN §6.2); start here, scan down for the mini curve
+  d_mlp: null           # -> 1280; meta-neurons = 6 * 1280 = 7,680
+  n_blocks: 6
 
 data:
   model_name: facebook/esm2_t6_8M_UR50D
   layer: 4
-  n_train_activations: 50000000   # start 50M -> 100M -> 300M, watch FD plateau (PLAN §6.1)
-  store_mode: stream              # cluster: producer-consumer streaming
+  n_train_activations: 100000000   # next scale point after mid_mn5's 10M; scan on to 300M later (PLAN §6.1)
+  store_mode: precache             # `stream` unimplemented — see header
   activation_dtype: float16
-  train_fasta: null               # UniRef50 subset (streamed) — ask before downloading
-  eval_uniprot_tsv: null          # full Swiss-Prot 50k eval set (docs/INTERPLM_MAP.md)
+  train_fasta: uniref50            # reservoir-sampled from the local UniRef50 pull (read_fasta_slice) — real
+                                    # UniRef50, not the Swiss-Prot REST stand-in mid_mn5/local_clean used
+  eval_uniprot_tsv: null
   n_shards: 8
   valid_shard_range: [0, 3]
   test_shard_range: [4, 7]
@@ -37,13 +52,13 @@ sampler:
 
 train:
   lr: 5.0e-5
-  batch_size: 4096      # GLP reference batch (train_llama8b_static.yaml)
+  batch_size: 512       # validated at this scale by the mid_mn5 replication — see header
   num_epochs: 1
   warmup_ratio: 0.01
   lr_initial_factor: 0.01
   lr_final_factor: 0.1
   grad_clip: 1.0
-  log_every_n_steps: 10
+  log_every_n_steps: 50
 
 probing:
   u_grid: [0.1, 0.5, 0.9]

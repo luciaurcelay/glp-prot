@@ -38,7 +38,7 @@ glp_plm/
                             # loss_recovered = W2, deferred
   experiments/              # RunLogger (metrics) + figure registry + report (see below)
   utils/                    # device, seeds
-configs/  poc_mac.yaml (2-blk/2M) · local_clean.yaml (6-blk/10M, canonical) · esm8m_h100.yaml (cluster)
+configs/  esm8m_h100.yaml (single canonical config — MN5/H100, 6-blk/d=320, real UniRef50 @ 100M acts)
 scripts/  one CLI per phase (see PLAN §11) + make_report.py
 tests/    test_flow_matching_roundtrip.py  test_hook_parity.py
 ```
@@ -49,7 +49,7 @@ figures to `runs/<name>/figures/` (train → `training_loss`, `lr_schedule`; eva
 `generation_pca`, `generation_fd`). A figure is one registered function that declares the
 metric artifacts it needs, so `make_report` renders whatever the current phase produced —
 new figures (W2 `%LR`, W3 probing AUC, W4 steering Pareto) slot in without touching the
-runner. Re-render anytime: `python scripts/make_report.py --config configs/poc_mac.yaml`.
+runner. Re-render anytime: `python scripts/make_report.py --config configs/esm8m_h100.yaml`.
 
 ## Design points (verified against the reference code — see `docs/INTERPLM_MAP.md`)
 - **Meta-neuron** = input to `down_proj` = `SiLU(gate_proj(x)·time_proj(t_emb))·up_proj(x)`.

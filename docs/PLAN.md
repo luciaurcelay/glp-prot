@@ -168,11 +168,13 @@ glp-prot/
 ├── InterPLM/                         # git submodule (ElanaPearl/InterPLM) — reused via sys.path
 ├── generative_latent_prior/         # git submodule (g-luo/…) — GLP reference code
 ├── configs/
-│   ├── poc_mac.yaml                  # MPS/CPU, fp32, ~2M acts, 2-block GLP
-│   ├── local_clean.yaml              # MPS, fp32, 10M acts, 6-block GLP — CANONICAL run
-│   │                                 #   (eval proteins excluded from training)
-│   ├── esm8m_h100.yaml               # full spine: cuda, bf16, streaming
-│   └── esm650m_h100.yaml             # (stretch, NOT YET WRITTEN) 650M scaling point
+│   └── esm8m_h100.yaml               # single canonical config: cuda, fp32/precache (bf16/
+│                                     #   streaming still W2), 6-block GLP, real UniRef50 @
+│                                     #   100M acts. Historical Mac PoC configs (poc_mac.yaml,
+│                                     #   local_clean.yaml) and the mid_mn5.yaml replication
+│                                     #   step are retired — folded in 2026-07-29, see its
+│                                     #   header + scripts/cluster/README.md "Config unification".
+│                                     #   esm650m_h100.yaml (stretch, 650M scaling point) NOT YET WRITTEN.
 ├── glp_plm/
 │   ├── config.py                     # single dataclass config schema (YAML)
 │   ├── data/
@@ -222,7 +224,7 @@ renders figures to `runs/<name>/figures/` from a registry (each figure declares 
 artifacts it needs), so `make_report` produces whatever the current phase enables and new
 figures are one-function additions — no runner changes.
 
-**Interface contract:** every phase is one script + one `config.yaml`. `poc_mac.yaml → esm8m_h100.yaml` changes only `device`, scale knobs, buffer mode, precision — no code changes (D8 parity).
+**Interface contract:** every phase is one script + one `config.yaml`. Scaling up (10M → 100M → 300M acts, historically also Mac → cluster) changes only `device`, scale knobs, buffer mode, precision, in `configs/esm8m_h100.yaml` — no code changes (D8 parity).
 
 **Hook-parity test (shipped,** `tests/test_hook_parity.py`**):** assert that `activation_extractor` output for a fixed sequence **equals** `ESM(model_name="facebook/esm2_t6_8M_UR50D").embed_single_sequence(seq, layer=4)` **exactly** (the embedder already drops cls/eos, so no "up to" caveat). This is the single most important guard in the repo (R5). It skips cleanly until InterPLM + ESM-2-8M weights are present, then must pass.
 
@@ -445,9 +447,9 @@ which now holds only reference docs, not run outputs).
 **Week 2 — Scale on cluster + generation-quality gate. — [~] PARTIAL (launchers verified end-to-end on MN5; esm8m_h100.yaml scale-up not yet run)**
 
 - [x] MN5 (BSC) SLURM launchers for the full pipeline (`scripts/cluster/`, account `bsc70` / `acc` partition).
-- [x] End-to-end smoke run on MN5: `run_mid_replicate.sh` (`configs/mid_mn5.yaml`, `local_clean`-equivalent hyperparameters) completed all 7 stages without error (job 43929721, 2026-07-28) — confirms the launcher chain, storage-split (`resolve_storage_dir`/`resolve_shared_dir`), and venv/module setup work on H100 nodes. *Not yet checked: whether the resulting metrics reproduce `local_clean`'s numbers* — that comparison is still open.
-- [ ] Swap to `esm8m_h100.yaml`; streaming; bf16. Re-tune lr/batch for d=320. *(launchers ready; UniRef50 streaming still a stub — see `scripts/cluster/README.md` known gaps)*
-- [ ] Train at 50M → 100M → 300M; watch FD plateau. *(blocked: 16 GB RAM caps local at ~10–20M)*
+- [x] End-to-end smoke run on MN5: `run_mid_replicate.sh` (`configs/mid_mn5.yaml`, `local_clean`-equivalent hyperparameters) completed all 7 stages without error (job 43929721, 2026-07-28) — confirms the launcher chain, storage-split (`resolve_storage_dir`/`resolve_shared_dir`), and venv/module setup work on H100 nodes. Milestone complete; `mid_mn5.yaml`/`run_mid_replicate.sh` retired and folded into `configs/esm8m_h100.yaml` (2026-07-29, `scripts/cluster/README.md` "Config unification").
+- [ ] Swap `esm8m_h100.yaml` to real UniRef50 at 100M acts *(done, 2026-07-29 — `data.train_fasta: uniref50`, `n_train_activations: 100000000`)*; bf16 + true streaming still pending (`Config.check_supported` rejects both; `producer_consumer.py` still a stub). Re-tune lr/batch for d=320 once those land.
+- [ ] Train at 100M → 300M; watch FD plateau. *(100M queued via `configs/esm8m_h100.yaml`; 300M needs streaming — see above)*
 - [x] FD (vs lower bound) + PCA overlap — implemented and run locally.
 - [ ] **SAE-reconstruction FD anchor** and **% Loss Recovered** (adapt `interplm.train.fidelity.calculate_loss_recovered`) — **both local-feasible, not yet implemented**, not just unrun: `glp_plm/eval/frechet.py` currently only computes GLP-vs-real FD + the lower-bound anchor (its own docstring defers the SAE-recon anchor to "W2/G2"); there is no `glp_plm/eval/loss_recovered.py` yet. Highest-priority remaining item — see MVP order above.
 - [ ] **GATE G2 (GO/NO-GO):** GLP FD < SAE-reconstruction FD; PCA converged; %LR competitive with the SAE. **If G2 fails → drop steering, ship probing-only paper.**

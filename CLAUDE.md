@@ -36,8 +36,10 @@ glp_plm/            our package
   eval/             frechet, pca_overlap, meta_neurons, baselines, probing_1d,
                     probing_f1, concept_selection   (loss_recovered = W2, deferred)
   experiments/      RunLogger (metrics) + figure registry + make_report (auto-renders figures)
-configs/            poc_mac.yaml (2-blk/2M) · local_clean.yaml (6-blk/10M, CANONICAL) ·
-                    esm8m_h100.yaml (cluster; differs only in device/precision/scale/buffer)
+configs/            esm8m_h100.yaml — the single canonical config (6-blk/d=320, MN5/H100,
+                    fp32/precache, real UniRef50 @ 100M acts). Historical Mac PoC configs
+                    (poc_mac.yaml, local_clean.yaml, mid_mn5.yaml) are retired — see its
+                    header comment and scripts/cluster/README.md "Config unification".
 scripts/            _bootstrap.py + one CLI per phase (§11)
   cluster/          MN5 (BSC) SLURM launchers — see scripts/cluster/README.md
 tests/              test_hook_parity.py (live), test_flow_matching_roundtrip.py
@@ -55,17 +57,16 @@ runs/               outputs (gitignored) — runs/<run>/{metrics,figures,run_sum
 ## Running things
 ```bash
 .venv/bin/python -m pytest tests/ -q                                   # 6 pass (hook-parity live)
-.venv/bin/python scripts/download_interplm_saes.py --config configs/poc_mac.yaml
-.venv/bin/python scripts/extract_activations.py    --config configs/poc_mac.yaml --store train
-.venv/bin/python scripts/build_swissprot_eval.py   --config configs/poc_mac.yaml
-.venv/bin/python scripts/train_glp.py              --config configs/poc_mac.yaml
-.venv/bin/python scripts/eval_generation.py        --config configs/poc_mac.yaml   # Gate G1
 ```
-Cluster (W2) is a config swap to `esm8m_h100.yaml` — no code changes (D8 parity contract).
-On MN5 (BSC, account `bsc70`, `acc` partition = H100), use the SLURM launchers in
-`scripts/cluster/` instead of invoking `.venv/bin/python` directly — see
+The project moved to **cluster-only** (2026-07-29 — the local Mac PoC configs are
+retired, see repo layout above); the venv above is for tests/local dev, not for running
+the pipeline. On MN5 (BSC, account `bsc70`, `acc` partition = H100), use the SLURM
+launchers in `scripts/cluster/` — default to `sbatch scripts/cluster/submit_pipeline.sh`
+(one job, all seven stages, `python` calls sequentially — designed to work under the
+`acc_debug` QOS's one-job-at-a-time limit; override `--qos`/`--time` for a real run past
+smoke-test scale) rather than invoking `.venv/bin/python` directly. See
 `scripts/cluster/README.md` for one-time setup (submodules first!) and known gaps
-(UniRef50 streaming stub; no steering launcher yet; login-node PYTHONHOME/quota/ulimit
+(UniRef50 true streaming stub; no steering launcher yet; login-node PYTHONHOME/quota/ulimit
 gotchas — all written up there, don't re-derive).
 
 ## Non-negotiable guardrails (expensive to get wrong)
@@ -84,14 +85,15 @@ gotchas — all written up there, don't re-derive).
 - **Verify before you build.** Check claims against the actual clone files and cite
   `file:line`; prefer reusing InterPLM code over reimplementing.
 - **Ask before:** any large download (UniRef50 ~12 GB), any large/long training run, or any
-  irreversible/destructive op. Small downloads (weights, small REST slices) and the Mac PoC
-  are fine.
+  irreversible/destructive op. Small downloads (weights, small REST slices) are fine.
 - **Git:** committing directly to `main` is fine for ordinary work; branch only for a large/
   significant new feature. Commit independently when it makes sense (a coherent unit of work
   is done) — you don't need to ask each time. Push only when asked. End commit messages with
   `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
-- **Local-first:** develop/run the PoC locally on Apple Silicon (MPS/CPU, fp32), then move to
-  H100 by swapping config only.
+- **Cluster-only now:** W1/W1.5 developed/ran the PoC locally on Apple Silicon (MPS/CPU,
+  fp32); that path is retired (2026-07-29) now that RAM/disk headroom is no longer the
+  binding constraint — everything from W2 on runs on MN5 via `configs/esm8m_h100.yaml`
+  and `scripts/cluster/`.
 
 ## Current status
 W1 complete (**Gate G1 passed**) plus a mid-scale **local** run (`configs/local_clean.yaml`)
@@ -112,7 +114,10 @@ advantage so the comparison is asymmetric).
 not run), F1 on all 104 concepts, W4 steering, cluster scale-up.
 
 ## Local-scale gotchas (learned the hard way — don't regress these)
-The dev Mac has **16 GB RAM**, and RAM/disk — not compute — is the ceiling.
+From the retired Mac PoC phase (dev Mac had **16 GB RAM**, RAM/disk — not compute — was
+the ceiling); kept because the underlying code-level invariants (streaming, per-batch
+standardization, checkpointing) are still load-bearing on cluster too, not Mac-only
+workarounds — only the MPS-specific cache-clearing line below doesn't apply there.
 - Never materialize a whole activation store: stores stream into memmaps and are read
   lazily; standardize **per batch**, not per split.
 - Free feature banks between methods and call `torch.mps.empty_cache()` per concept;

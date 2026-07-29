@@ -123,12 +123,43 @@ warning instead of being clobbered.
 
 ## Running the pipeline
 
-Submit from the repo root. Every `submit_*.sh` takes `configs/esm8m_h100.yaml` as
-its default first arg (override with e.g. `configs/poc_mac.yaml` for a smoke test),
-and sources `scripts/cluster/env_mn5.sh`, which loads the module stack, activates the
-repo venv, and points `HF_HOME` at `$GLP_RUNS_ROOT/hf_cache`. The per-run storage
-split above is handled separately, inside each pipeline script.
+Submit from the repo root. Every launcher takes `configs/esm8m_h100.yaml` — the single
+canonical config, see Config unification below — as its default first arg, and sources
+`scripts/cluster/env_mn5.sh`, which loads the module stack, activates the repo venv, and
+points `HF_HOME` at `$GLP_RUNS_ROOT/hf_cache`. The per-run storage split above is
+handled separately, inside each pipeline script.
 
+**One job, all seven stages** (`submit_pipeline.sh`) is the default way to run this —
+sequential plain `python` calls inside a single `sbatch` job, not seven separate
+submissions:
+```bash
+sbatch scripts/cluster/submit_pipeline.sh [config] [n_seqs] [n_prot] \
+    [min_required_instances] [n_samples] [metric] [n_shards_per_split]
+```
+This exists (replacing an earlier version that called `sbatch` seven times with
+`--dependency=afterok`, and the one-off `run_mid_replicate.sh`, both retired
+2026-07-29) because MN5 is congested enough that `acc_debug` is the QOS that actually
+gets a job started, and `acc_debug` rejects a second job from the same user while one
+is still queued — a seven-job fan-out doesn't work under it even with dependencies,
+since all seven sit in the queue immediately on submission. One job sidesteps that.
+`acc_debug` is also time-capped, though (the script defaults to the same 2h that
+worked for `run_mid_replicate.sh` at 10M activations) — for a real 100M+ run, override
+QOS/time, e.g.:
+```bash
+sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_pipeline.sh \
+    configs/esm8m_h100.yaml 5000000 20000
+```
+Reserve the `acc_debug` default for smoke tests at small `n_seqs`.
+
+`build_swissprot_eval` must run before `extract_activations` (not just "run
+individually in any order") — the latter's `--exclude-from` needs the former's eval
+TSV to keep training/eval disjoint (PLAN §9/§10). Running them out of order, or
+`extract_activations` alone without having prefetched/built the eval TSV first,
+silently trains on the eval set.
+
+**Per-stage launchers** are still there if you want to rerun just one stage (e.g. after
+a crash) without repeating the whole chain — each is its own `sbatch` job, `acc_bsccs`
+by default:
 ```bash
 sbatch scripts/cluster/submit_build_swissprot_eval.sh      # labeled Swiss-Prot eval store
 sbatch scripts/cluster/submit_extract_activations.sh       # unlabeled GLP training store
@@ -138,65 +169,81 @@ sbatch scripts/cluster/submit_freeze_concepts.sh           # §7 fairness: freez
 sbatch scripts/cluster/submit_run_probing.sh               # Deliverable 2 (add "f1" arg for F1)
 sbatch scripts/cluster/submit_make_report.sh               # re-render figures
 ```
+These still chain fine with `--dependency=afterok` one at a time if you're not on
+`acc_debug` (e.g. `acc_bsccs`, which does allow multiple queued jobs).
 
-Or chain the whole thing as SLURM-dependent jobs in one call:
-```bash
-scripts/cluster/submit_pipeline.sh configs/esm8m_h100.yaml 200000 20000
-```
-(Runs on the login node, just calling `sbatch` seven times with `--dependency=afterok`.)
+### Config unification (2026-07-29)
 
-To replicate the canonical `local_clean` Mac result (`runs/local_clean/run_summary.md`
-§10) on `configs/mid_mn5.yaml` before trusting a scale-up, use `run_mid_replicate.sh`
-instead — one `sbatch` job running the whole chain sequentially:
+There used to be three near-identical configs (`mid_mn5.yaml`, `uniref50_100m.yaml`,
+and this one) differing only in data source/scale/output_dir. `mid_mn5.yaml` (and its
+`run_mid_replicate.sh` launcher) proved the cluster launchers reproduce the local
+`local_clean` result at 10M Swiss-Prot activations — done, job 43929721, 2026-07-28 —
+so both are retired. `configs/esm8m_h100.yaml` is now the single canonical config and
+carries the next step forward: real UniRef50 at 100M activations. See its header
+comment for what changed and why (still fp32/precache — bf16/streaming aren't
+implemented yet).
+
+To train on **100M activations pooled from a 5M-sequence UniRef50 reservoir sample**
+(matching InterPLM's own SAE training distribution, PLAN line 95):
 ```bash
-sbatch scripts/cluster/run_mid_replicate.sh
+# one-time, needs internet (login node) — ~12 GB compressed, per CLAUDE.md's
+# "ask before large downloads" rule; only needed once, shared across runs
+source scripts/cluster/env_mn5.sh
+python scripts/prefetch_data.py --n-seqs 200000 --n-prot 20000 --with-uniref50
+
+# then queue the pipeline as one job — 5,000,000 = the sequence pool size (--n-seqs,
+# reservoir-sampled by read_fasta_slice down to whatever n_train_activations needs),
+# 20000 = --n-prot for the eval set; override qos/time since 2h/acc_debug won't cover
+# a 100M-activation run end-to-end (see above)
+sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_pipeline.sh \
+    configs/esm8m_h100.yaml 5000000 20000
 ```
-`build_swissprot_eval` must run before `extract_activations` (not just "run individually
-in any order") — the latter's `--exclude-from` needs the former's eval TSV to keep
-training/eval disjoint (`runs/local_clean/run_summary.md` §7). Running them out of order,
-or `extract_activations` alone without having prefetched/built the eval TSV first,
-silently trains on the eval set — `submit_extract_activations.sh` prints a WARNING if
-it can't find one, but doesn't fail the job.
 
 Override QOS/time/account per submission with normal `sbatch` flags, e.g.:
 ```bash
-sbatch --qos=acc_debug --time=00:30:00 scripts/cluster/submit_train_glp.sh configs/poc_mac.yaml
+sbatch --qos=acc_debug --time=00:30:00 scripts/cluster/submit_train_glp.sh configs/esm8m_h100.yaml
 ```
 
 ## Smoke-testing without waiting on a big pull
 
-`extract_activations.py` fetches its Swiss-Prot slice via a **live UniProt REST
-call**, and compute nodes are not assumed to have internet (see prefetch note
-above) — but it skips the fetch entirely if the destination FASTA already
-exists. So to test the pipeline on a small subset without needing network
-inside the job: pre-fetch that file from a login node (which has internet),
-then submit as normal. `n_seqs` must match the value you'll pass to
-`--n-seqs`/`submit_extract_activations.sh`, since it's baked into the filename:
+The canonical config's `data.train_fasta: uniref50` reads from the local UniRef50 pull
+via reservoir sampling (`read_fasta_slice`), which needs `uniref50.fasta.gz` prefetched
+first (`prefetch_data.py --with-uniref50`, one-time, ~12 GB — see one-time setup step
+5). A small `--n-seqs` still does a full pass over that file (reservoir sampling is
+one-pass but not proportional-cost), so it saves you the download/rate-limit risk and
+lets you exercise the full pipeline end-to-end on a tiny store — not a fast scan:
 
 ```bash
 source scripts/cluster/env_mn5.sh   # activates the venv
-python scripts/prefetch_data.py --n-seqs 500 --n-prot 2000
-sbatch --qos=acc_debug --time=00:30:00 scripts/cluster/submit_extract_activations.sh configs/poc_mac.yaml 500 2000
+python scripts/prefetch_data.py --n-seqs 500 --n-prot 2000 --with-uniref50
+sbatch --qos=acc_debug --time=00:30:00 scripts/cluster/submit_extract_activations.sh configs/esm8m_h100.yaml 500 2000
 ```
+
+To smoke-test the *original* Swiss-Prot-REST training path instead (fast — a live
+UniProt REST call, paginated, skipped if the destination FASTA already exists), point
+at a config with `data.train_fasta: null` — there is no such config checked in right
+now (the canonical one uses real UniRef50); copy `configs/esm8m_h100.yaml` and flip
+that one field if you need this path exercised.
 
 ## Known gaps (don't be surprised)
 
-- **`finalize_logs` (the `.out`/`.err` relocation trap in every `submit_*.sh` +
-  `run_mid_replicate.sh`) is a no-op, not an error, if `runs/$RUN_NAME/...` and
-  `$GLP_RUNS_ROOT/$RUN_NAME/...` are already the same file** (e.g. `runs` symlinked
-  wholesale — see Storage layout above). The trailing `ln -sf ... || true` is
-  intentional: without it, under `set -e`, that failure used to abort the trap
-  mid-loop and strand `.err` in the submit dir (`$HOME`) permanently while `.out`
-  moved fine (2026-07-28, job 43929721). If a job's `.out`/`.err` are still sitting
-  in the repo root well after it *finished* (not mid-run), that's a real miss worth
-  investigating, not this.
-- **`extract_activations.py` doesn't stream UniRef50 yet.** It only pulls a
-  Swiss-Prot REST slice (the same code path as the Mac PoC / `local_clean` run),
-  sized up via `--n-seqs`. `glp_plm/data/producer_consumer.py` (true streaming
-  producer-consumer over UniRef50, PLAN §6.1/§9 W2) is still a stub. Getting to the
-  full 50→300M activation budget in `esm8m_h100.yaml` needs that implemented, or a
-  much larger Swiss-Prot REST pull (rate-limit risk) — check with whoever's driving
-  the paper before assuming `submit_extract_activations.sh` alone reaches 50M+ acts.
+- **`finalize_logs` (the `.out`/`.err` relocation trap in every `submit_*.sh`) is a
+  no-op, not an error, if `runs/$RUN_NAME/...` and `$GLP_RUNS_ROOT/$RUN_NAME/...` are
+  already the same file** (e.g. `runs` symlinked wholesale — see Storage layout
+  above). The trailing `ln -sf ... || true` is intentional: without it, under
+  `set -e`, that failure used to abort the trap mid-loop and strand `.err` in the
+  submit dir (`$HOME`) permanently while `.out` moved fine (2026-07-28, job
+  43929721). If a job's `.out`/`.err` are still sitting in the repo root well after
+  it *finished* (not mid-run), that's a real miss worth investigating, not this.
+- **`extract_activations.py` doesn't truly *stream* UniRef50 (as in, unbounded, off a
+  live source) yet.** `data.train_fasta: uniref50` (the canonical config's setting)
+  does work today — it reservoir-samples `--n-seqs` sequences out of a **local**
+  prefetched `uniref50.fasta.gz` (`read_fasta_slice`), one pass, capped at
+  `n_train_activations` activations. What's still a stub is
+  `glp_plm/data/producer_consumer.py` — true producer-consumer streaming that would
+  let a run exceed what fits precached on scratch (PLAN §6.1/§9 W2). 100M activations
+  (64 GB fp16) fits fine precached; going past a few hundred M will need that
+  implemented — check with whoever's driving the paper before assuming otherwise.
 - **UniRef50 is not downloaded by anything here.** Per `CLAUDE.md`, that's an
   "ask first" large download (~12 GB compressed) — `prefetch_weights.sh`
   deliberately does not fetch it.

@@ -1,4 +1,9 @@
-# Setup (Apple-Silicon PoC)
+# Setup
+
+The pipeline itself is **cluster-only now** (see `## Cluster (MN5, BSC)` below) — the
+local Mac PoC configs (`poc_mac.yaml`, `local_clean.yaml`) that W1/W1.5 ran are retired.
+Everything through "Verify" below still applies for local dev/tests (editing code,
+running `pytest`); it's just no longer how you run training/eval.
 
 ## 0. Get the submodules
 
@@ -44,47 +49,31 @@ Instead, both packages are put on `sys.path` explicitly:
 .venv/bin/python -m pytest tests/ -q          # 6 passed (hook-parity is live)
 ```
 
-## W1 pipeline (all use configs/poc_mac.yaml)
-
-```bash
-.venv/bin/python scripts/download_interplm_saes.py --config configs/poc_mac.yaml
-.venv/bin/python scripts/extract_activations.py    --config configs/poc_mac.yaml --store train
-.venv/bin/python scripts/build_swissprot_eval.py   --config configs/poc_mac.yaml
-.venv/bin/python scripts/train_glp.py              --config configs/poc_mac.yaml   # + training_loss/lr figures
-.venv/bin/python scripts/eval_generation.py        --config configs/poc_mac.yaml   # Gate G1 + FD/PCA figures
-.venv/bin/python scripts/make_report.py            --config configs/poc_mac.yaml   # re-render all figures
-```
-
-Figures and metrics are written under `runs/<name>/` (`figures/*.png`, `metrics/`,
-plus a per-run `run_summary.md` write-up). `runs/` is gitignored — results are not
-committed to git; each run's own directory is the source of truth.
-
 ## Cluster (MN5, BSC)
 
-Don't hand-run `.venv/bin/python` over SSH for the cluster spine — use the SLURM
-launchers in `scripts/cluster/` (separate venv, on cluster storage, built against
-Python 3.11.5-gcc + CUDA via `module load`). See `scripts/cluster/README.md` for
-one-time setup and `sbatch` invocations.
-
-## W3 probing (the canonical run used `configs/local_clean.yaml`)
-
+Don't hand-run `.venv/bin/python` over SSH for the pipeline — use the SLURM launchers
+in `scripts/cluster/` (separate venv, on cluster storage, built against Python
+3.11.5-gcc + CUDA via `module load`). Default entrypoint is one job running all seven
+stages sequentially:
 ```bash
-# labeled eval set (20k densely-annotated Swiss-Prot proteins)
-.venv/bin/python scripts/build_swissprot_eval.py --config configs/local_clean.yaml --n-prot 20000 --min-required-instances 30
-
-# freeze the concept set BEFORE probing (PLAN §7 fairness rule)
-.venv/bin/python scripts/freeze_concepts.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed
-
-# 4-method probing; add --metric f1 for InterPLM domain-adjusted F1
-.venv/bin/python scripts/run_probing.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed --concepts runs/local_clean/swissprot/processed/frozen_concepts.json --n-shards-per-split 1
+sbatch scripts/cluster/submit_pipeline.sh configs/esm8m_h100.yaml 5000000 20000
 ```
+See `scripts/cluster/README.md` for one-time setup, the per-stage launchers (for
+rerunning a single stage), and the `acc_debug` QOS caveat (time-capped, one job at a
+time — override `--qos`/`--time` for a real run past smoke-test scale).
+
+Figures and metrics land under `runs/<name>/` (`figures/*.png`, `metrics/`, plus a
+per-run `run_summary.md` write-up). `runs/` is gitignored — results are not committed
+to git; each run's own directory is the source of truth.
 
 Probing is **resumable**: every `(concept, method)` is checkpointed to
 `metrics/probing_partial[_f1].jsonl`, so an interruption costs one probe. Pass
 `--restart` to ignore a saved checkpoint.
 
-## Memory notes (16 GB Mac)
+## Historical: Mac PoC memory notes (16 GB Mac, retired 2026-07-29)
 
-RAM, not compute, is the local ceiling. 10M activations = 6.4 GB fp16 is comfortable;
-25M = 16 GB is not. When adding a new feature bank, stream it to a memmap instead of
-accumulating in RAM, and clear the MPS cache inside long loops.
+W1/W1.5 ran locally on Apple Silicon before moving to MN5. RAM, not compute, was the
+local ceiling there: 10M activations = 6.4 GB fp16 was comfortable, 25M = 16 GB was
+not. The code-level fix (stream to a memmap instead of accumulating in RAM) is a
+permanent property of `ActivationStore`, not a Mac-only workaround, so it still holds
+on cluster; only the MPS-cache-clearing habit was Mac-specific.
