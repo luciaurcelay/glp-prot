@@ -19,7 +19,7 @@
 device: cuda
 precision: fp32
 seed: 0
-output_dir: runs/uniref50_100m
+output_dir: runs/uniref50_500m
 
 model:
   activation_dim: 320
@@ -30,7 +30,7 @@ model:
 data:
   model_name: facebook/esm2_t6_8M_UR50D
   layer: 4
-  n_train_activations: 100000000   # next scale point after mid_mn5's 10M; scan on to 300M later (PLAN §6.1)
+  n_train_activations: 500000000   # next scale point after mid_mn5's 10M; scan on to 300M later (PLAN §6.1)
   store_mode: precache             # `stream` unimplemented — see header
   activation_dtype: float16
   train_fasta: uniref50            # reservoir-sampled from the local UniRef50 pull (read_fasta_slice) — real
