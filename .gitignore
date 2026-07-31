@@ -37,3 +37,7 @@ docs/papers/
 
 # OS
 .DS_Store
+
+# Paper draft + its figures: kept LOCAL, not shared in the repo
+docs/paper_draft.tex
+docs/figures/
