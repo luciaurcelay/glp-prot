@@ -32,9 +32,6 @@ scripts/cluster/cluster.env
 *.out
 *.err
 
-# Reference PDFs (kept locally as ground truth, not tracked — 34 MB)
-docs/papers/
-
 # OS
 .DS_Store
 
