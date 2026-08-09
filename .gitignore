@@ -38,9 +38,5 @@ docs/papers/
 # OS
 .DS_Store
 
-# Paper draft + its figures: kept LOCAL, not shared in the repo
-docs/paper_draft.tex
-docs/figures/
-
 # EuroHPC/MN5 grant support material (hypothesized scaling data): kept LOCAL
 docs/grant_mn5/
