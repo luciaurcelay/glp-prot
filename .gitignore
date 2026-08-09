@@ -34,6 +34,3 @@ scripts/cluster/cluster.env
 
 # OS
 .DS_Store
-
-# EuroHPC/MN5 grant support material (hypothesized scaling data): kept LOCAL
-docs/grant_mn5/
