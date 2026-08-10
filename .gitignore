@@ -29,6 +29,9 @@ runs/*/*
 
 # Cluster (MN5) launcher config — path is per-user, not shared (scripts/cluster/README.md)
 scripts/cluster/cluster.env
+
+# Personal local<->MN5 git sync helper — hardcodes one user's paths + SSH alias, not shared
+scripts/sync-to-mn5.sh
 *.out
 *.err
 
