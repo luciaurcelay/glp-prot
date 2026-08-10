@@ -81,19 +81,20 @@ python scripts/eval_generation.py --config "$CONFIG" \
 echo "[submit_pipeline] 5/7 freeze_concepts"
 python scripts/freeze_concepts.py --config "$CONFIG" --eval-dir "$EVAL_DIR"
 
-echo "[submit_pipeline] 6/7 run_probing (auc + f1)"
-# Compute BOTH the primary AUC (GLP protocol) and InterPLM-native domain-adjusted
-# F1 (D5) on identical data (same --n-shards-per-split), so the two metrics in the
-# report describe the same run. Each is independently resumable via
-# metrics/probing_partial{,_f1}.jsonl, so a re-submit after a timeout picks up
-# whichever pass was mid-flight. ($METRIC — arg 6 — is retained for positional-arg
-# stability but no longer selects a single metric; both always run.)
-python scripts/run_probing.py --config "$CONFIG" --eval-dir "$EVAL_DIR" \
-    --concepts "$EVAL_DIR/frozen_concepts.json" --metric auc \
-    --n-shards-per-split "$N_SHARDS_PER_SPLIT"
-python scripts/run_probing.py --config "$CONFIG" --eval-dir "$EVAL_DIR" \
-    --concepts "$EVAL_DIR/frozen_concepts.json" --metric f1 \
-    --n-shards-per-split "$N_SHARDS_PER_SPLIT"
+echo "[submit_pipeline] 6/7 run_probing ($METRIC)"
+# METRIC (arg 6): "auc" (default) | "f1" | "both". AUC is the primary GLP-protocol
+# metric; a standard run does the AUC pass only. InterPLM-native domain-adjusted F1
+# (D5) is implemented and resumable but OFF by default — it adds a full extra probing
+# pass and relies on a rate-matched-threshold deviation that needs justifying if
+# reported, so opt in explicitly (METRIC=both, or f1) when you actually want it. Both
+# passes are independently resumable via metrics/probing_partial{,_f1}.jsonl.
+run_probe() { python scripts/run_probing.py --config "$CONFIG" --eval-dir "$EVAL_DIR" \
+    --concepts "$EVAL_DIR/frozen_concepts.json" --metric "$1" \
+    --n-shards-per-split "$N_SHARDS_PER_SPLIT"; }
+case "$METRIC" in
+  both) run_probe auc; run_probe f1 ;;
+  *)    run_probe "$METRIC" ;;
+esac
 
 echo "[submit_pipeline] 7/7 make_report"
 python scripts/make_report.py --config "$CONFIG"
