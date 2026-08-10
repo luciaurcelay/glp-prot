@@ -17,15 +17,19 @@
 # already implemented here (which follow the GLP reference). We ran the earlier
 # 100M/500M pilots at 512 while validating the launchers; this is now the paper run at
 # GLP's actual batch. At 500M activations, batch 4096 = one epoch in ~122k steps.
+#
+# This is a fresh run under a NEW output_dir (uniref50_500m_4096), distinct from the
+# superseded batch-512 uniref50_500m attempts, so their checkpoints/metrics/ledgers
+# stay separate. It REUSES the already-extracted 500M activation store: point
+# $GLP_DATA_ROOT/uniref50_500m_4096/train_store at the existing
+# $GLP_DATA_ROOT/uniref50_500m/train_store (a symlink) so nothing re-extracts.
 # NOTE: changing batch_size changes total_steps and the LR schedule, so it is NOT
-# resume-compatible with a checkpoint trained at a different batch — a batch change
-# means a fresh run (the batch-512 500M partial is superseded), reusing the already
-# extracted activation store under $GLP_DATA_ROOT/uniref50_500m/train_store.
+# resume-compatible with a checkpoint trained at a different batch — hence a fresh run.
 
 device: cuda
 precision: fp32
 seed: 0
-output_dir: runs/uniref50_500m
+output_dir: runs/uniref50_500m_4096
 
 model:
   activation_dim: 320
