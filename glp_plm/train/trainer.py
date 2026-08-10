@@ -9,12 +9,31 @@ so it is unit-testable on synthetic data and swaps to real activations later.
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 from typing import Iterable, Optional
 
 import torch
 
 from glp_plm.diffusion import flow_matching
+
+
+def _save_checkpoint_atomic(state: dict, ckpt_path: Path) -> None:
+    """Write a checkpoint so a kill mid-save can't corrupt the live one.
+
+    SLURM sends SIGKILL at the wall-clock TimeLimit; if that lands inside a plain
+    in-place `torch.save` of a multi-hundred-MB checkpoint, the file is left
+    truncated and the *next* resume crashes on `torch.load` — losing the whole run
+    (exactly the failure mode a time-capped run like uniref50_500m is exposed to).
+    Writing to a sidecar then `os.replace` (atomic rename on the same filesystem)
+    means the live checkpoint is only ever swapped as a complete file: a kill during
+    the save leaves the previous good checkpoint intact, costing at most `ckpt_every`
+    steps, never everything.
+    """
+    ckpt_path = Path(ckpt_path)
+    tmp = ckpt_path.with_suffix(ckpt_path.suffix + ".tmp")
+    torch.save(state, tmp)
+    os.replace(tmp, ckpt_path)
 
 
 def cosine_lr_with_warmup(step: int, total_steps: int, warmup_ratio: float,
@@ -59,10 +78,15 @@ def fit(
     If `run_logger` (experiments.RunLogger) is given, appends {step, loss, lr} to the
     "train" series each step so figures.training_loss can plot it.
 
-    `ckpt_path` enables periodic {model, optimizer, step} checkpoints every
-    `ckpt_every` steps and, with `resume=True`, picks up from the last one. Without
-    this a killed run loses everything — a 19.5k-step run died at step 16k during
-    development, and cluster runs are far longer.
+    `ckpt_path` enables periodic {model, optimizer, step, total_steps, history}
+    checkpoints every `ckpt_every` steps and, with `resume=True`, auto-picks up from
+    the last one (resubmit a timed-out job and it continues). Without this a killed
+    run loses everything — a 19.5k-step run died at step 16k during development, and
+    cluster runs are far longer. Saves are atomic (temp + os.replace) so a SIGKILL at
+    the SLURM TimeLimit can't corrupt the live checkpoint; an unreadable checkpoint
+    is warned-through as a fresh start rather than crashing; and a resume whose
+    total_steps disagrees with the checkpoint (i.e. a changed n/epochs, which would
+    desync the LR schedule) is refused with a clear error.
     """
     torch.manual_seed(seed)
     model = model.to(device).train()
@@ -78,15 +102,35 @@ def fit(
 
     start_step = 0
     if ckpt_path is not None and resume and Path(ckpt_path).exists():
-        state = torch.load(ckpt_path, map_location=device)
-        model.load_state_dict(state["model"])
-        opt.load_state_dict(state["optimizer"])
-        start_step = int(state["step"])
-        logger(f"[trainer] resuming from {ckpt_path} at step {start_step}/{total_steps}")
-        if run_logger is not None:      # don't duplicate the series we already logged
-            run_logger.reset_series("train")
-            for r in state.get("history", []):
-                run_logger.log_step("train", r)
+        try:
+            state = torch.load(ckpt_path, map_location=device)
+        except Exception as e:
+            # A pre-atomic-write checkpoint (or any other corruption) shouldn't be a
+            # hard crash — warn loudly and start fresh rather than wedge every resume.
+            logger(f"[trainer] WARNING: checkpoint {ckpt_path} is unreadable "
+                   f"({type(e).__name__}: {e}); starting from scratch.")
+            state = None
+        if state is not None:
+            # Guard against silently resuming into a different LR schedule: total_steps
+            # depends on n (activation count) and num_epochs, so a resume under a
+            # changed config would recompute cosine_lr_with_warmup on a different total
+            # and desync the schedule from the step counter. Older checkpoints predate
+            # this field — skip the check for them (they carry no total_steps).
+            ckpt_total = state.get("total_steps")
+            if ckpt_total is not None and ckpt_total != total_steps:
+                raise ValueError(
+                    f"checkpoint {ckpt_path} was written for total_steps={ckpt_total} but "
+                    f"this run computes total_steps={total_steps} (n={n}, batch={batch_size}, "
+                    f"epochs={num_epochs}). Resuming would use a mismatched LR schedule. "
+                    f"Use the original config, or pass --restart to train from scratch.")
+            model.load_state_dict(state["model"])
+            opt.load_state_dict(state["optimizer"])
+            start_step = int(state["step"])
+            logger(f"[trainer] resuming from {ckpt_path} at step {start_step}/{total_steps}")
+            if run_logger is not None:      # don't duplicate the series we already logged
+                run_logger.reset_series("train")
+                for r in state.get("history", []):
+                    run_logger.log_step("train", r)
 
     history = {"loss": [], "lr": []}
     step = 0
@@ -124,8 +168,9 @@ def fit(
                        f"loss {loss.item():.4f} lr {lr * mult:.2e}")
             step += 1
             if ckpt_path is not None and step % ckpt_every == 0:
-                torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(),
-                            "step": step,
-                            "history": (run_logger.load_series("train") if run_logger else [])},
-                           ckpt_path)
+                _save_checkpoint_atomic(
+                    {"model": model.state_dict(), "optimizer": opt.state_dict(),
+                     "step": step, "total_steps": total_steps,
+                     "history": (run_logger.load_series("train") if run_logger else [])},
+                    ckpt_path)
     return history

@@ -256,9 +256,17 @@ that one field if you need this path exercised.
 - **No launcher for `run_steering.py` / `auto_interp_metaneurons.py`.** Both are
   still CLI stubs (`NotImplementedError`, PLAN §9 W4) — add a launcher once they're
   implemented, following the pattern in the other `submit_*.sh` files.
-- **No checkpoint/resume in `train_glp.py`.** A run is single-shot to completion;
-  `acc_bsccs` QOS caps wall time at 2 days. `run_probing.py` is separately resumable
-  via `metrics/probing_partial*.jsonl`, independent of this.
+- **`train_glp.py` checkpoints and auto-resumes.** It writes a periodic
+  `checkpoints/glp_ckpt.pt` ({model, optimizer, step, total_steps, history}) every
+  2000 steps, atomically (temp + rename, so a SIGKILL at the QOS wall-clock cap can't
+  corrupt it). Resubmitting the *same* `submit_train_glp.sh <config>` after a timeout
+  auto-continues from the last checkpoint — no flag needed (pass `--restart` to force
+  a fresh run; a resume whose `total_steps` disagrees with the checkpoint, i.e. a
+  changed `n_train_activations`/`num_epochs`, is refused rather than run on a desynced
+  LR schedule). `acc_bsccs` still caps a single job at 2 days, but the run no longer
+  has to fit in one — e.g. `runs/uniref50_500m` stopped at step 174000/≈976000 and is
+  resumable today. `run_probing.py` is separately resumable via
+  `metrics/probing_partial*.jsonl`, independent of this.
 - **The `python/3.11.5-gcc` module exports `PYTHONHOME`/`PYTHONPATH`** pointing at
   its own shared site-packages (legacy `.egg` installs of torch's deps). Left in
   place this breaks venv isolation — `pip` reports packages "already satisfied"
