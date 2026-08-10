@@ -6,12 +6,15 @@
 - report.make_report: render every figure whose inputs exist (idempotent, additive),
                       then (re)write run_summary.md via summary.write_run_summary
 - summary            : factual, tabular run_summary.md from metrics/*.json (no narrative)
+- compare.compare_runs: cross-run comparison figures for >=2 already-finished runs —
+                        standalone, not part of the per-run pipeline (scripts/compare_runs.py)
 
 Compute logs metrics; plotting reads them. See metrics.py for the layout.
 """
 
+from glp_plm.experiments.compare import compare_runs
 from glp_plm.experiments.metrics import RunLogger
-from glp_plm.experiments.report import compare_runs, make_report
+from glp_plm.experiments.report import make_report
 from glp_plm.experiments.summary import write_run_summary
 
 __all__ = ["RunLogger", "make_report", "compare_runs", "write_run_summary"]
