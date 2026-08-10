@@ -55,9 +55,9 @@ def fig_training_loss(run: RunLogger) -> Optional[str]:
     xs, ys = _downsample(steps, loss)
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(xs, ys, color=style.color(0), label="diffusion loss (MSE)")
+    ax.plot(xs, ys, color=style.method_color("glp"), label="diffusion loss (MSE)")
     # trivial-predictor reference (predict 0): E||eps - z0||^2 / d ≈ 2 for standardized z0
-    ax.axhline(2.0, color=style.CRITICAL, lw=1.5, ls="--", label="trivial baseline ≈ 2.0")
+    ax.axhline(2.0, color=style.BASELINE, lw=1.5, ls="--", label="trivial baseline ≈ 2.0")
     ax.set_xlabel("training step")
     ax.set_ylabel("flow-matching MSE")
     ax.set_title("GLP training loss")
@@ -77,7 +77,7 @@ def fig_lr_schedule(run: RunLogger) -> Optional[str]:
     xs, ys = _downsample(steps, lr)
 
     fig, ax = plt.subplots(figsize=(6, 3))
-    ax.plot(xs, ys, color=style.color(6))
+    ax.plot(xs, ys, color=style.method_color("glp"))
     ax.set_xlabel("training step")
     ax.set_ylabel("learning rate")
     ax.set_title("LR schedule (cosine + warmup)")
@@ -93,9 +93,9 @@ def fig_generation_pca(run: RunLogger) -> Optional[str]:
     R, G = d["real"], d["gen"]
 
     fig, ax = plt.subplots(figsize=(5.2, 5))
-    ax.scatter(R[:, 0], R[:, 1], s=6, alpha=0.35, color=style.color(0),
+    ax.scatter(R[:, 0], R[:, 1], s=6, alpha=0.35, color=style.REAL_COLOR,
                edgecolors="none", label="real")
-    ax.scatter(G[:, 0], G[:, 1], s=6, alpha=0.35, color=style.color(1),
+    ax.scatter(G[:, 0], G[:, 1], s=6, alpha=0.35, color=style.GENERATED_COLOR,
                edgecolors="none", label="generated")
     ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
     ax.set_title("Real vs generated (real's top-2 PCs)")
@@ -120,7 +120,7 @@ def fig_fd_vs_steps(run: RunLogger) -> Optional[str]:
     lb = d["lower_bound"]
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(xs, ys, marker="o", markersize=8, color=style.color(0), label="FD(generated, real)")
+    ax.plot(xs, ys, marker="o", markersize=8, color=style.GENERATED_COLOR, label="FD(generated, real)")
     ax.axhline(lb, color=style.BASELINE, lw=1.5, ls="--", label=f"lower bound (real vs real) = {lb:.2f}")
     for r in sweep:
         ax.annotate(f"{r['ratio']:.2f}x", (r["steps"], r["fd"]),
@@ -148,13 +148,17 @@ def fig_probing_auc(run: RunLogger) -> Optional[str]:
     agg = d.get("aggregate", {})
     if not agg:
         return None
-    methods = list(agg.keys())
+    # Fixed display order (glp_plm.experiments.style.METHOD_ORDER), not dict/JSON
+    # iteration order — bar position and color both must follow the entity, and
+    # this is the order style.py's adjacent-pair CVD validation was run against.
+    methods = [m for m in style.METHOD_ORDER if m in agg] + \
+        [m for m in agg if m not in style.METHOD_ORDER]
     means = [agg[m]["mean_test_auc"] for m in methods]
     lo = [agg[m]["mean_test_auc"] - agg[m]["ci_low"] for m in methods]
     hi = [agg[m]["ci_high"] - agg[m]["mean_test_auc"] for m in methods]
 
     fig, ax = plt.subplots(figsize=(1.5 * len(methods) + 2, 4))
-    bars = ax.bar(methods, means, color=[style.color(i) for i in range(len(methods))],
+    bars = ax.bar(methods, means, color=[style.method_color(m) for m in methods],
                   width=0.6, yerr=[lo, hi], capsize=5,
                   error_kw={"ecolor": style.SECONDARY, "lw": 1.5})
     ax.bar_label(bars, fmt="%.3f", padding=10, color=style.SECONDARY)
@@ -186,7 +190,7 @@ def fig_probing_per_concept(run: RunLogger) -> Optional[str]:
     fig, ax = plt.subplots(figsize=(5.2, 5))
     lim = [min(0.5, min(xs + ys)) - 0.02, 1.005]
     ax.plot(lim, lim, color=style.BASELINE, lw=1.2, ls="--", zorder=1)
-    ax.scatter(xs, ys, s=42, color=style.color(0), alpha=0.75,
+    ax.scatter(xs, ys, s=42, color=style.method_color("glp"), alpha=0.75,
                edgecolors=style.SURFACE, linewidths=1.5, zorder=2)
     ax.set_xlim(lim); ax.set_ylim(lim)
     ax.set_xlabel("SAE feature — test AUC")
@@ -209,26 +213,29 @@ def fig_probing_f1(run: RunLogger) -> Optional[str]:
     import numpy as np
 
     rows = json.loads((run.metrics_dir / "probing_f1.json").read_text())["results"]
-    methods = ["glp", "sae", "raw_mlp", "raw_layer"]
-    methods = [m for m in methods if any(r["method"] == m for r in rows)]
+    # Fixed display order (style.METHOD_ORDER), matching probing_auc's bar chart
+    # and the adjacent-pair CVD validation — not an ad-hoc local order.
+    methods = [m for m in style.METHOD_ORDER if any(r["method"] == m for r in rows)]
     if not methods:
         return None
     stat = lambda m, k: float(np.mean([r[k] for r in rows if r["method"] == m]))
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4))
     b = ax1.bar(methods, [stat(m, "test_f1") for m in methods],
-                color=[style.color(i) for i in range(len(methods))], width=0.6)
+                color=[style.method_color(m) for m in methods], width=0.6)
     ax1.bar_label(b, fmt="%.3f", padding=3, color=style.SECONDARY)
     ax1.set_ylabel("mean test F1")
     ax1.set_title(f"Domain-adjusted F1 ({len(rows)//len(methods)} concepts)")
     ax1.margins(y=0.18)
 
+    # Precision/recall aren't a method identity — spare mid-tone accents so they
+    # can't be mistaken for one of the glp/sae/raw_layer/raw_mlp colors in ax1.
     x = np.arange(len(methods))
     w = 0.38
     p = ax2.bar(x - w / 2, [stat(m, "precision") for m in methods], w,
-                color=style.color(0), label="precision")
+                color=style.ORANGE_MID, label="precision")
     r = ax2.bar(x + w / 2, [stat(m, "recall") for m in methods], w,
-                color=style.color(2), label="recall")
+                color=style.PURPLE_MID, label="recall")
     ax2.bar_label(p, fmt="%.2f", padding=2, color=style.SECONDARY, fontsize=9)
     ax2.bar_label(r, fmt="%.2f", padding=2, color=style.SECONDARY, fontsize=9)
     ax2.set_xticks(x); ax2.set_xticklabels(methods)
@@ -245,11 +252,11 @@ def fig_generation_fd(run: RunLogger) -> Optional[str]:
     if "fd_generated_vs_real" not in s:
         return None
     labels, vals, colors = [], [], []
-    labels.append("FD(gen, real)"); vals.append(s["fd_generated_vs_real"]); colors.append(style.color(0))
+    labels.append("FD(gen, real)"); vals.append(s["fd_generated_vs_real"]); colors.append(style.GENERATED_COLOR)
     if "fd_lower_bound" in s:
         labels.append("FD(train, val)\nlower bound"); vals.append(s["fd_lower_bound"]); colors.append(style.BASELINE)
     if "fd_sae_recon" in s:  # W2 anchor when available
-        labels.append("FD(SAE recon)"); vals.append(s["fd_sae_recon"]); colors.append(style.color(1))
+        labels.append("FD(SAE recon)"); vals.append(s["fd_sae_recon"]); colors.append(style.method_color("sae"))
 
     fig, ax = plt.subplots(figsize=(1.6 * len(labels) + 1.5, 4))
     bars = ax.bar(labels, vals, color=colors, width=0.6)
