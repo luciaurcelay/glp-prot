@@ -7,7 +7,6 @@
 ---
 
 
-
 ## 0. One-paragraph summary
 
 We port the **Generative Latent Prior (GLP)** — a diffusion "meta-model" of neural activations (Luo et al., 2026) — from LLM activations to **protein language model (PLM) activations**, reusing the **InterPLM** (Simon & Zou, *Nature Methods* 2024) SAE + Swiss-Prot annotation pipeline as our validated substrate. GLP learns the *distribution* of ESM-2 residual-stream activations with no linearity/sparsity assumptions. We test two claims a protein biologist can act on: (1) GLP's internal "meta-neurons" isolate biological concepts at least as well as InterPLM's SAE features, measured by 1-D probing against Swiss-Prot concepts; and (2) using GLP as an on-manifold prior makes SAE-based concept steering produce **more natural proteins** at matched concept strength. A small subsection surfaces meta-neurons that map to *no* known annotation but show a **held-out** signal (causal steering effect or cross-family consistency) — candidate motifs for domain follow-up.
