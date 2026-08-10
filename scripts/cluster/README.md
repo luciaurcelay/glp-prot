@@ -80,8 +80,7 @@ script runs first). **Check `runs` isn't itself a symlink on your account first*
 (`stat runs`) — on this account it turned out to be `runs -> $GLP_RUNS_ROOT`
 wholesale (predates this doc), which collapses the two trees below into one, so
 e.g. `checkpoints/` shows up "under `runs/`" too despite the "NOT symlinked" notes
-below. Harmless (same data, reachable either path) except for one launcher quirk —
-see `finalize_logs` in Known gaps.
+below. Harmless (same data, reachable either path).
 
 ```
 $GLP_DATA_ROOT/
@@ -99,8 +98,23 @@ $GLP_RUNS_ROOT/
 └── <run>/
     ├── checkpoints/                 # NOT symlinked under runs/ (see below)
     ├── metrics/                     -> runs/<run>/metrics    (symlink)
-    └── figures/                     -> runs/<run>/figures    (symlink)
+    ├── figures/                     -> runs/<run>/figures    (symlink)
+    ├── launches.jsonl              # one row per launch attempt (the ledger)
+    └── launches/<job_id>/          # per-attempt ephemera, grouped by job id
+        ├── launch.txt              #   submit args + `scontrol show job` allocation
+        ├── stdout.log  stderr.log  #   Slurm's job output, relocated here on exit
 ```
+
+A run can be launched more than once — a timeout/crash is resubmitted and
+`train_glp.py` auto-resumes from its checkpoint, so those attempts are **one run**,
+not several. Their shared state (`checkpoints/`, `metrics/`, `train_store/`) is
+per-run and must not be split by job id (resume depends on the next job finding the
+previous job's `glp_ckpt.pt`). Only the per-attempt ephemera — the launch manifest
+and Slurm's `.out`/`.err` — is grouped under `launches/<job_id>/` (via
+`record_launch` in `env_mn5.sh`), with a `launches.jsonl` ledger giving a one-glance
+history of every attempt (job id, TimeLimit, QOS, submit args, git commit). For a
+genuinely *separate* experiment (different seed, independent training) use a distinct
+`output_dir` — that, not a job-id subfolder, is the run-identity boundary.
 
 The raw Swiss-Prot TSV/FASTA are identical for any run pulling the same
 `--n-prot`/`--n-seqs`, so they live once under `$GLP_DATA_ROOT/swissprot/` (keyed by
@@ -233,14 +247,16 @@ that one field if you need this path exercised.
 
 ## Known gaps (don't be surprised)
 
-- **`finalize_logs` (the `.out`/`.err` relocation trap in every `submit_*.sh`) is a
-  no-op, not an error, if `runs/$RUN_NAME/...` and `$GLP_RUNS_ROOT/$RUN_NAME/...` are
-  already the same file** (e.g. `runs` symlinked wholesale — see Storage layout
-  above). The trailing `ln -sf ... || true` is intentional: without it, under
-  `set -e`, that failure used to abort the trap mid-loop and strand `.err` in the
-  submit dir (`$HOME`) permanently while `.out` moved fine (2026-07-28, job
-  43929721). If a job's `.out`/`.err` are still sitting in the repo root well after
-  it *finished* (not mid-run), that's a real miss worth investigating, not this.
+- **`record_launch` (`env_mn5.sh`) relocates each job's `.out`/`.err` into
+  `runs/<run>/launches/<job_id>/{stdout.log,stderr.log}` on exit** (EXIT trap). The
+  two `mv`s are independently guarded (`{ …; } 2>/dev/null || true`) so a failure on
+  one can't abort the trap and strand the other in the submit dir — the bug that
+  used to leave `.err` in `$HOME` under `set -e` (2026-07-28, job 43929721). If a
+  job's `glp-*-<id>.out`/`.err` are still sitting in the repo root well after it
+  *finished* (not mid-run), that's a real miss worth investigating. The relocation is
+  a cross-filesystem `mv` (submit dir on `$HOME`/gpfs-home, destination on
+  gpfs-projects), i.e. copy+delete, so a few lines of epilog stdout written *after*
+  the trap are not captured — expected, not a bug.
 - **`extract_activations.py` doesn't truly *stream* UniRef50 (as in, unbounded, off a
   live source) yet.** `data.train_fasta: uniref50` (the canonical config's setting)
   does work today — it reservoir-samples `--n-seqs` sequences out of a **local**

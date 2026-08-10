@@ -23,23 +23,8 @@ RUN_NAME="$(basename "$OUT_DIR")"
 # Data-sized, not symlinked under runs/ — reached directly at $GLP_DATA_ROOT/<run>/.
 EVAL_DIR="$GLP_DATA_ROOT/$RUN_NAME/swissprot/processed"
 
-# #SBATCH --output/--error can't reference $RUN_NAME (unknown until now), so Slurm
-# writes them to the submission dir first; relocate to $GLP_RUNS_ROOT/<run>/ (off
-# $HOME) on exit, success or failure, with a symlink back under runs/<run>/.
-if [ -n "${SLURM_JOB_ID:-}" ]; then
-  finalize_logs() {
-    local base="${SLURM_JOB_NAME:-glp-freeze-concepts}-${SLURM_JOB_ID}"
-    mkdir -p "$GLP_RUNS_ROOT/$RUN_NAME" "runs/$RUN_NAME"
-    for ext in out err; do
-      [ -f "$base.$ext" ] || continue
-      mv "$base.$ext" "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext"
-      ln -sf "$GLP_RUNS_ROOT/$RUN_NAME/$base.$ext" "runs/$RUN_NAME/$base.$ext" 2>/dev/null || true  # no-op if runs/ already resolves into $GLP_RUNS_ROOT (symlinked wholesale)
-    done
-  }
-  trap finalize_logs EXIT
-fi
-
-# Record the SLURM allocation (time limit / QOS / nodes) + submit args (see env_mn5.sh).
-write_launch_manifest "$RUN_NAME" "$@"
+# Group this attempt's logs under runs/<run>/launches/<job_id>/, append the per-run
+# launch ledger, and relocate Slurm's .out/.err there on exit (env_mn5.sh).
+record_launch "$RUN_NAME" "$@"
 
 python scripts/freeze_concepts.py --config "$CONFIG" --eval-dir "$EVAL_DIR"

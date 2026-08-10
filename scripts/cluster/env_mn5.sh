@@ -77,40 +77,88 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 
 mkdir -p "$GLP_RUNS_ROOT" "$GLP_DATA_ROOT" runs
 
-# Record how a job was actually launched, next to its .out/.err. The SLURM logs
-# don't capture the time limit / QOS / node allocation, so a run that hit its wall
-# clock (e.g. uniref50_500m, killed at its --time cap mid-training) otherwise leaves
-# no trace of what cap it hit or how it was submitted. `scontrol show job` is the
-# authoritative source (reflects any `sbatch --qos=/--time=` overrides, not just the
-# #SBATCH defaults). Written at job START so it survives a timeout/kill; no-op
-# outside SLURM (local dev). Call once per submit script, after RUN_NAME is resolved:
-#   write_launch_manifest "$RUN_NAME" "$@"
-# The filename base matches finalize_logs' <job_name>-<job_id> so all three artifacts
-# (.out/.err/.launch.txt) sort together per job.
-write_launch_manifest() {
+# --- Per-launch bookkeeping --------------------------------------------------
+# A run can be launched more than once — a timeout/crash is resubmitted and
+# train_glp.py auto-resumes from its checkpoint (so the attempts are ONE run, not
+# several — see scripts/cluster/README.md). To keep those attempts legible without
+# fragmenting the run's shared state (checkpoints/metrics/train_store stay per-run),
+# each attempt's ephemera is grouped under runs/<run>/launches/<job_id>/ and one row
+# per attempt is appended to a runs/<run>/launches.jsonl ledger:
+#
+#   runs/<run>/
+#     launches.jsonl                 # one JSON row per launch (the attempt ledger)
+#     launches/<job_id>/
+#       launch.txt                   # human-readable: submit args + scontrol allocation
+#       stdout.log  stderr.log       # Slurm's job output, relocated here on exit
+#     checkpoints/  metrics/  figures/   # PER-RUN, shared across attempts (unchanged)
+#
+# `record_launch "$RUN_NAME" "$@"` (called once per submit script, after RUN_NAME is
+# resolved) does all of this and installs the exit-time log relocation. No-op outside
+# SLURM (local dev). It supersedes the old inline finalize_logs blocks + the separate
+# write_launch_manifest.
+_glp_relocate_logs() {
+  # EXIT trap: move Slurm's .out/.err (written to the submit dir, since #SBATCH can't
+  # reference the run name) into this attempt's launches/<job_id>/ folder. Each mv is
+  # independently guarded so a failure on one can't strand the other under `set -e`
+  # (the bug that used to leave .err in $HOME — see git history).
+  [ -n "${_GLP_LAUNCH_DIR:-}" ] || return 0
+  mkdir -p "$_GLP_LAUNCH_DIR"
+  { [ -f "${_GLP_JOB_BASE}.out" ] && mv "${_GLP_JOB_BASE}.out" "$_GLP_LAUNCH_DIR/stdout.log"; } 2>/dev/null || true
+  { [ -f "${_GLP_JOB_BASE}.err" ] && mv "${_GLP_JOB_BASE}.err" "$_GLP_LAUNCH_DIR/stderr.log"; } 2>/dev/null || true
+}
+
+record_launch() {
   [ -n "${SLURM_JOB_ID:-}" ] || return 0
   local run_name="$1"; shift
-  local base="${SLURM_JOB_NAME:-glp-job}-${SLURM_JOB_ID}"
-  local dest="$GLP_RUNS_ROOT/$run_name"
-  mkdir -p "$dest" "runs/$run_name"
-  local manifest="$dest/$base.launch.txt"
+  local jid="$SLURM_JOB_ID"
+  local rundir="$GLP_RUNS_ROOT/$run_name"
+  local ldir="$rundir/launches/$jid"
+  mkdir -p "$ldir"
+
+  local ts git sc
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  git="$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
+  sc="$(scontrol show job "$jid" 2>/dev/null || true)"
+
+  # Human-readable manifest (authoritative allocation from scontrol: TimeLimit, QOS,
+  # Account, Partition, NodeList, Submit/StartTime).
   {
-    echo "# Launch manifest for $base"
-    echo "generated:   $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    echo "job_id:      $SLURM_JOB_ID"
+    echo "# Launch manifest for ${SLURM_JOB_NAME:-job}-$jid"
+    echo "generated:   $ts"
+    echo "job_id:      $jid"
     echo "job_name:    ${SLURM_JOB_NAME:-?}"
     echo "run_name:    $run_name"
     echo "submit_dir:  ${SLURM_SUBMIT_DIR:-$(pwd)}"
     echo "submit_args: $*"
-    echo "git_commit:  $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
+    echo "git_commit:  $git"
     echo
-    echo "## scontrol show job (authoritative allocation: TimeLimit, QOS, Account, Partition, NodeList, Submit/StartTime)"
-    scontrol show job "$SLURM_JOB_ID" 2>/dev/null || echo "(scontrol unavailable on this node)"
-  } > "$manifest"
-  # Mirror under runs/<run>/ for accounts where runs/ is a real dir; no-op (same
-  # inode) where runs/ is symlinked wholesale into $GLP_RUNS_ROOT.
-  ln -sf "$manifest" "runs/$run_name/$base.launch.txt" 2>/dev/null || true
-  echo "[env_mn5] launch manifest -> $manifest"
+    echo "## scontrol show job"
+    if [ -n "$sc" ]; then echo "$sc"; else echo "(scontrol unavailable on this node)"; fi
+  } > "$ldir/launch.txt"
+
+  # Machine-readable ledger row (one per attempt). Python assembles the JSON so submit
+  # args / node lists are escaped safely, and pulls the allocation fields out of
+  # scontrol's key=value output.
+  python - "$rundir/launches.jsonl" "$jid" "${SLURM_JOB_NAME:-}" "$run_name" "$ts" "$git" "$*" "$sc" <<'PY' || echo "[env_mn5] WARNING: could not append launch ledger row" >&2
+import json, re, sys
+ledger, jid, jname, run, ts, git, args, sc = sys.argv[1:9]
+def field(key):
+    m = re.search(rf'\b{key}=(\S+)', sc)
+    return m.group(1) if m else None
+row = {"job_id": jid, "job_name": jname, "run_name": run, "timestamp": ts,
+       "git_commit": git, "submit_args": args, "time_limit": field("TimeLimit"),
+       "qos": field("QOS"), "account": field("Account"),
+       "partition": field("Partition"), "nodelist": field("NodeList")}
+with open(ledger, "a") as fh:
+    fh.write(json.dumps(row) + "\n")
+PY
+
+  # Relocate this attempt's Slurm logs into $ldir on exit (globals, so the EXIT trap
+  # can read them). Not `local` — they must outlive this function.
+  _GLP_LAUNCH_DIR="$ldir"
+  _GLP_JOB_BASE="${SLURM_JOB_NAME:-glp-job}-$jid"
+  trap _glp_relocate_logs EXIT
+  echo "[env_mn5] launch $jid -> $ldir  (ledger: $rundir/launches.jsonl)"
 }
 
 echo "[env_mn5] repo=$REPO_ROOT  data_root=$GLP_DATA_ROOT  runs_root=$GLP_RUNS_ROOT  python=$(command -v python)  device_check=$(python -c 'import torch;print(torch.cuda.is_available())' 2>/dev/null || echo 'n/a')"
