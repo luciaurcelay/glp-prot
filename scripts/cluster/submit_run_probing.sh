@@ -22,6 +22,10 @@ source scripts/cluster/env_mn5.sh
 
 CONFIG="${1:-configs/esm8m_h100.yaml}"
 METRIC="${2:-auc}"
+# Arg 3: shards per split (default all). Pass 1 to match a run whose AUC was computed
+# with the pipeline's default N_SHARDS_PER_SPLIT=1, so a post-hoc F1 pass scores the
+# same data as that run's published AUC (e.g. re-probing the completed uniref50_100m).
+N_SHARDS_PER_SPLIT="${3:-}"
 OUT_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")"
 RUN_NAME="$(basename "$OUT_DIR")"
 # Data-sized, not symlinked under runs/ — reached directly at $GLP_DATA_ROOT/<run>/.
@@ -32,5 +36,7 @@ CONCEPTS="$EVAL_DIR/frozen_concepts.json"
 # launch ledger, and relocate Slurm's .out/.err there on exit (env_mn5.sh).
 record_launch "$RUN_NAME" "$@"
 
+SHARD_ARGS=()
+[ -n "$N_SHARDS_PER_SPLIT" ] && SHARD_ARGS=(--n-shards-per-split "$N_SHARDS_PER_SPLIT")
 python scripts/run_probing.py --config "$CONFIG" --eval-dir "$EVAL_DIR" \
-  --concepts "$CONCEPTS" --metric "$METRIC"
+  --concepts "$CONCEPTS" --metric "$METRIC" "${SHARD_ARGS[@]}"
