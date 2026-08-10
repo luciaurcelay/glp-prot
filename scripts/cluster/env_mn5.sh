@@ -32,6 +32,15 @@ fi
 : "${GLP_RUNS_ROOT:?GLP_RUNS_ROOT is not set. Fill it in in scripts/cluster/cluster.env.}"
 
 module purge
+# /apps/ACC/modulefiles (python/3.11.5-gcc, cuda/12.4, ...) isn't on MODULEPATH by
+# default for every account — some accounts' login shell profile adds it, others
+# don't (found 2026-08-10: crg562661's `sbatch` failed with "unknown module
+# python/3.11.5-gcc" even though the file exists on disk, because MODULEPATH only
+# carried /apps/GPP/modulefiles/* — the job's environment is captured at submission
+# from whatever the submitting login shell had). `module use` here makes this
+# account-independent instead of relying on ambient profile state.
+module use /apps/ACC/modulefiles/environment /apps/ACC/modulefiles/compilers \
+  /apps/ACC/modulefiles/libs /apps/ACC/modulefiles/applications
 # python/3.11.5-gcc's Lmod hierarchy doesn't declare its own prereqs (`module
 # spider` claims it loads standalone; it doesn't) — the real chain, found by
 # trial and error on 2026-07-28: intel -> impi -> mkl -> hdf5 -> python -> cuda.
