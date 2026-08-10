@@ -11,10 +11,16 @@
 # raises on both (glp_plm/config.py) since mixed precision + the streaming
 # producer-consumer are still W2 work (glp_plm/data/producer_consumer.py is a stub).
 # 100M fp16 activations = 64 GB, which fits MN5 scratch precached — see
-# scripts/cluster/README.md known gaps. batch_size stays at 512 (the value validated
-# by the mid_mn5 replication run) rather than GLP's LLM-scale reference batch of 4096,
-# which has never been tried at this d=320 width — bumping it is future re-tuning work
-# (PLAN §9 "Re-tune lr/batch for d=320"), not assumed safe here.
+# scripts/cluster/README.md known gaps.
+#
+# batch_size is GLP's reference batch of 4096 (Luo et al.), paired with the LR/schedule
+# already implemented here (which follow the GLP reference). We ran the earlier
+# 100M/500M pilots at 512 while validating the launchers; this is now the paper run at
+# GLP's actual batch. At 500M activations, batch 4096 = one epoch in ~122k steps.
+# NOTE: changing batch_size changes total_steps and the LR schedule, so it is NOT
+# resume-compatible with a checkpoint trained at a different batch — a batch change
+# means a fresh run (the batch-512 500M partial is superseded), reusing the already
+# extracted activation store under $GLP_DATA_ROOT/uniref50_500m/train_store.
 
 device: cuda
 precision: fp32
@@ -52,7 +58,7 @@ sampler:
 
 train:
   lr: 5.0e-5
-  batch_size: 512       # validated at this scale by the mid_mn5 replication — see header
+  batch_size: 4096      # GLP reference batch (Luo et al.); see header — fresh run, not resume-compatible with 512
   num_epochs: 1
   warmup_ratio: 0.01
   lr_initial_factor: 0.01
