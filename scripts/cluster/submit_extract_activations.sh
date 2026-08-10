@@ -50,6 +50,9 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
   trap finalize_logs EXIT
 fi
 
+# Record the SLURM allocation (time limit / QOS / nodes) + submit args (see env_mn5.sh).
+write_launch_manifest "$RUN_NAME" "$@"
+
 EVAL_TSV="${4:-}"
 if [[ -z "$EVAL_TSV" ]]; then
   # Shared, not per-run (glp_plm.utils.resolve_shared_dir) — same file regardless of

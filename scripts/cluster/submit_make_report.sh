@@ -37,4 +37,7 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
   trap finalize_logs EXIT
 fi
 
+# Record the SLURM allocation (time limit / QOS / nodes) + submit args (see env_mn5.sh).
+write_launch_manifest "$RUN_NAME" "$@"
+
 python scripts/make_report.py --config "$CONFIG"

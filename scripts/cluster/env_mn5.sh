@@ -77,4 +77,40 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 
 mkdir -p "$GLP_RUNS_ROOT" "$GLP_DATA_ROOT" runs
 
+# Record how a job was actually launched, next to its .out/.err. The SLURM logs
+# don't capture the time limit / QOS / node allocation, so a run that hit its wall
+# clock (e.g. uniref50_500m, killed at its --time cap mid-training) otherwise leaves
+# no trace of what cap it hit or how it was submitted. `scontrol show job` is the
+# authoritative source (reflects any `sbatch --qos=/--time=` overrides, not just the
+# #SBATCH defaults). Written at job START so it survives a timeout/kill; no-op
+# outside SLURM (local dev). Call once per submit script, after RUN_NAME is resolved:
+#   write_launch_manifest "$RUN_NAME" "$@"
+# The filename base matches finalize_logs' <job_name>-<job_id> so all three artifacts
+# (.out/.err/.launch.txt) sort together per job.
+write_launch_manifest() {
+  [ -n "${SLURM_JOB_ID:-}" ] || return 0
+  local run_name="$1"; shift
+  local base="${SLURM_JOB_NAME:-glp-job}-${SLURM_JOB_ID}"
+  local dest="$GLP_RUNS_ROOT/$run_name"
+  mkdir -p "$dest" "runs/$run_name"
+  local manifest="$dest/$base.launch.txt"
+  {
+    echo "# Launch manifest for $base"
+    echo "generated:   $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    echo "job_id:      $SLURM_JOB_ID"
+    echo "job_name:    ${SLURM_JOB_NAME:-?}"
+    echo "run_name:    $run_name"
+    echo "submit_dir:  ${SLURM_SUBMIT_DIR:-$(pwd)}"
+    echo "submit_args: $*"
+    echo "git_commit:  $(git rev-parse --short HEAD 2>/dev/null || echo '?')"
+    echo
+    echo "## scontrol show job (authoritative allocation: TimeLimit, QOS, Account, Partition, NodeList, Submit/StartTime)"
+    scontrol show job "$SLURM_JOB_ID" 2>/dev/null || echo "(scontrol unavailable on this node)"
+  } > "$manifest"
+  # Mirror under runs/<run>/ for accounts where runs/ is a real dir; no-op (same
+  # inode) where runs/ is symlinked wholesale into $GLP_RUNS_ROOT.
+  ln -sf "$manifest" "runs/$run_name/$base.launch.txt" 2>/dev/null || true
+  echo "[env_mn5] launch manifest -> $manifest"
+}
+
 echo "[env_mn5] repo=$REPO_ROOT  data_root=$GLP_DATA_ROOT  runs_root=$GLP_RUNS_ROOT  python=$(command -v python)  device_check=$(python -c 'import torch;print(torch.cuda.is_available())' 2>/dev/null || echo 'n/a')"

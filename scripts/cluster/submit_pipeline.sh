@@ -72,6 +72,9 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
   trap finalize_logs EXIT
 fi
 
+# Record the SLURM allocation (time limit / QOS / nodes) + submit args (see env_mn5.sh).
+write_launch_manifest "$RUN_NAME" "$@"
+
 EVAL_TSV="$GLP_DATA_ROOT/swissprot/swissprot_annotated_eval_${N_PROT}.tsv"
 EVAL_DIR="$GLP_DATA_ROOT/$RUN_NAME/swissprot/processed"
 
