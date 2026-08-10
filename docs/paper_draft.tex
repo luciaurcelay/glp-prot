@@ -8,16 +8,21 @@
 %  not bundled here. On Overleaf: upload neurips_2024.sty next to this file
 %  (https://neurips.cc/Conferences/2024/PaperInformation/StyleFiles).
 %
-%  If you just want it to compile immediately without that file, comment out the
-%  \usepackage[final]{neurips_2024} line and uncomment the geometry fallback
-%  marked FALLBACK below — layout differs slightly but everything else works.
+%  Submission (anonymous) mode: `\usepackage{neurips_2024}` WITHOUT [final] prints
+%  "Anonymous Author(s)" and ignores the author block below. For a camera-ready,
+%  non-anonymous version, add [final] and fill in the author block.
 %
-%  Figures live in docs/figures/ (committed). Compile from docs/.
+%  If you just want it to compile immediately without that file, comment out the
+%  \usepackage{neurips_2024} line and uncomment the geometry fallback marked
+%  FALLBACK below — layout differs slightly but everything else works.
+%
+%  Figures live in docs/figures/ (committed, from the 100M MareNostrum-5 run).
+%  Compile from docs/.
 % ============================================================================
 
 \documentclass{article}
 
-\usepackage[final]{neurips_2024}
+\usepackage{neurips_2024}          % anonymous submission mode (no [final])
 % FALLBACK (use only if neurips_2024.sty is unavailable):
 % \usepackage[margin=1in]{geometry}
 
@@ -33,10 +38,13 @@
 \title{Generative Latent Priors for Protein Language Models:\\
        Do Diffusion Meta-Neurons Isolate Biological Concepts?}
 
+% Anonymous for submission — the neurips_2024 style (no [final]) replaces this
+% block with "Anonymous Author(s)".
 \author{%
-  Lucia Urcelay \\
-  Centre for Genomic Regulation (CRG) \\
-  \texttt{lucia.urcelay@crg.eu} \\
+  Anonymous Author(s) \\
+  Affiliation \\
+  Address \\
+  \texttt{email} \\
 }
 
 \begin{document}
@@ -44,16 +52,22 @@
 
 \begin{abstract}
 Sparse autoencoders (SAEs) are the dominant tool for interpreting protein language
-models, but they assume activations decompose as a \emph{sparse linear} sum of
-dictionary atoms. We ask whether that assumption is necessary. We port the
-Generative Latent Prior (GLP) --- a diffusion model \emph{of neural activations} ---
-from LLMs to ESM-2, and probe whether its internal units isolate biological concepts.
-On 104 pre-registered Swiss-Prot concepts, GLP meta-neurons attain a mean test AUC of
-$0.945$ versus $0.900$ for InterPLM's released SAE, $0.916$ for ESM's own FFN neurons,
-and $0.861$ for the raw residual stream --- every paired comparison significant. On
-InterPLM's domain-adjusted F1 the SAE remains more \emph{precise}. The two metrics
-disagree in an informative way: sparse features fire rarely but correctly, dense
-generative features rank better. All results are from a single 16\,GB laptop.
+models, and increasingly a substrate for \emph{discovery} --- reading out, and
+steering, biological concepts. But they bake in a strong assumption: that activations
+decompose as a \emph{sparse, non-negative, linear} sum of dictionary atoms, which
+bounds what can be found to what the dictionary already spans. We ask whether a
+\emph{generative} model of activations, unconstrained by sparsity or linearity, is a
+richer discovery substrate. We port the Generative Latent Prior (GLP) --- a diffusion
+model \emph{of neural activations} --- from LLMs to ESM-2, and study its internal units
+(``meta-neurons''). On 104 pre-registered Swiss-Prot concepts, \emph{single} GLP
+meta-neurons isolate biological concepts better than every baseline: mean test AUC
+$0.953$ versus $0.900$ for InterPLM's released SAE, $0.916$ for ESM's own FFN neurons,
+and $0.861$ for the raw residual stream --- every paired comparison significant --- with
+the largest margins exactly where the SAE is weakest (structural and binding/catalytic
+concepts). Because GLP is generative, the same model doubles as an on-manifold prior for
+\emph{steering} activations toward new functions, which a purpose-built dictionary cannot
+supply. Results are from a 100M-activation run on ESM-2-8M; a larger run and
+concept-steering are in progress.
 \end{abstract}
 
 \section{Motivation}
@@ -61,20 +75,27 @@ generative features rank better. All results are from a single 16\,GB laptop.
 Interpretability for protein language models is currently synonymous with sparse
 dictionary learning. InterPLM \cite{simon2024interplm} trains SAEs on ESM-2
 \cite{lin2023esm2} activations and recovers features aligned with Swiss-Prot
-annotations. The method works, but it \emph{builds in} the hypothesis it is testing:
-features are assumed to be sparse, non-negative, and linearly composable.
+annotations. The method works, and it is increasingly used not just to \emph{read}
+concepts but to \emph{act} on them --- clamping a feature to steer a protein. But it
+\emph{builds in} the hypothesis it is testing: features are assumed sparse,
+non-negative, and linearly composable. Whatever biology does not fit a sparse-linear
+dictionary is, by construction, invisible to it --- both to discover and to steer.
 
 The Generative Latent Prior \cite{luo2026glp} offers a different lens. GLP trains a
 diffusion model on the activations of a frozen host network, learning their
 \emph{distribution} with no linearity or sparsity constraint. Its internal units
-(``meta-neurons'') are a byproduct of that objective rather than its purpose. If those
-units track biology as well as a purpose-built dictionary, the sparse-linear
-assumption is a convenience rather than a requirement --- and the generative model
-additionally provides a \emph{prior} usable for on-manifold activation editing.
+(``meta-neurons'') are a byproduct of that objective rather than its purpose. Two things
+follow if those units track biology at least as well as a purpose-built dictionary.
+First, the generative model is a broader \emph{discovery} substrate: concept structure
+can live in dense, non-linear units a sparse dictionary would never surface. Second, the
+same model is a learned \emph{prior} over the activation manifold --- so it can steer
+activations toward new functions while keeping them on-manifold, an operation a static
+dictionary has no way to perform.
 
 We report a first port of GLP to protein LMs, with two deliverables: (i) a concept
-probing comparison (complete, below), and (ii) on-manifold concept steering (design
-complete, not yet run).
+probing comparison (complete, below), which tests the discovery claim directly, and
+(ii) on-manifold concept steering (design complete, in progress), which tests the
+prior.
 
 \section{Method}
 
@@ -86,8 +107,11 @@ invalidate the comparison.
 \textbf{GLP.} A stack of 6 SwiGLU MLP blocks (20.9M parameters, no attention,
 single-token) trained by flow matching: given a clean standardised activation $z_0$,
 noise $\epsilon$, and $t\!\sim\!U(0,1)$, form $z_t = (1{-}t)z_0 + t\epsilon$ and
-regress the velocity $\epsilon - z_0$ under MSE. \emph{Meta-neurons} are the
-$6\times1280 = 7{,}680$ per-block gated-MLP activations read at a chosen noise level.
+regress the velocity $\epsilon - z_0$ under MSE. Training uses 100M activations
+extracted from a 5M-sequence reservoir sample of UniRef50 --- the same distribution
+InterPLM's SAE was trained on --- with all evaluation proteins excluded (below).
+\emph{Meta-neurons} are the $6\times1280 = 7{,}680$ per-block gated-MLP activations read
+at a chosen noise level.
 
 \textbf{Probing.} For each concept we ask whether a \emph{single} unit isolates it ---
 not whether the representation as a whole decodes it. Per concept and method: filter
@@ -98,44 +122,47 @@ representations receive an identical candidate budget: GLP meta-neurons, SAE fea
 
 \textbf{Fairness controls.} The concept set is frozen \emph{before} any probing, using
 only Swiss-Prot frequency statistics and the SAE's own tractability --- never GLP
-output. Training proteins exclude every evaluation protein (verified zero overlap);
-an earlier run overlapped $98.4\%$, which we measured to be worth only $-0.002$ AUC
-(95\% CI $[-0.006, +0.001]$, not significant) but which we removed regardless, since
-the advantage is asymmetric (the SAE was trained on UniRef50).
+output. Training proteins exclude every evaluation protein (verified zero overlap):
+because the SAE was trained on a disjoint UniRef50 sample, any leakage would advantage
+GLP asymmetrically, so we remove it by construction.
 
 \section{Results}
 
-\textbf{The generative model is sound.} Trained on 10M activations, the diffusion loss
-falls from $2.39$ to $1.04$ (below the $\approx\!2.0$ trivial-predictor floor).
-Fr\'echet Distance between generated and real activations is $8.24$ against a
-real-vs-real lower bound of $5.32$ --- a ratio of $1.55\times$, better than GLP's own
-published Llama-8B figure ($2.28\times$). Generated activations overlap the real
-distribution in its principal subspace (Fig.~\ref{fig:main}c). We note FD is strongly
-sampler-dependent ($2.88\times$ at 20 steps, $1.55\times$ at 1000); it must always be
-quoted with its step count.
+\textbf{The generative model is sound.} The flow-matching loss converges to $0.90$,
+well below the $\approx\!2.0$ trivial-predictor floor (Fig.~\ref{fig:gen}a). Generated
+activations occupy the real distribution's principal subspace: projected onto the real
+data's top-2 PCs they overlap closely (Fig.~\ref{fig:main}c), matching its spread (std
+ratio $0.93$) and centre (mean gap $0.04$ in PC-std units), with near-identical captured
+variance ($0.157$ vs.\ $0.153$). Fr\'echet Distance between generated and real
+activations is $3.63$ at 1000 sampler steps against a real-vs-real lower bound of
+$0.96$. FD is strongly sampler-dependent --- $11.85$ at 20 steps, falling monotonically
+to $3.63$ at 1000 (Fig.~\ref{fig:gen}b) --- and must always be quoted with its step
+count.
 
 \textbf{GLP meta-neurons isolate concepts better than all baselines}
 (Table~\ref{tab:auc}, Fig.~\ref{fig:main}a). Paired bootstrap over the 104 concepts:
-GLP\,$-$\,SAE $= +0.045$ (95\% CI $[+0.034,+0.056]$, wins 84/104);
-GLP\,$-$\,FFN $= +0.029$ ($[+0.021,+0.036]$, 91/104);
-FFN\,$-$\,SAE $= +0.016$ ($[+0.005,+0.028]$, 61/104). The gains concentrate exactly
-where the SAE is weakest (Fig.~\ref{fig:main}b): $+0.10$ on structural and
-binding/catalytic concepts, $+0.01$ on chemical/PTM concepts the SAE already handles.
-Notably the SAE is \emph{not} the strongest baseline --- ESM's own FFN neurons beat
-it --- so the informative dense-vs-dense control is GLP versus FFN, which GLP also
-wins. The selected probing noise level was $u{=}0.9$ for 93/104 concepts,
+GLP\,$-$\,SAE $= +0.053$ (95\% CI $[+0.042,+0.064]$, wins 88/104);
+GLP\,$-$\,FFN $= +0.036$ ($[+0.030,+0.044]$, 92/104);
+GLP\,$-$\,raw $= +0.092$ ($[+0.081,+0.103]$, 101/104) --- all significant. The gains
+concentrate exactly where the SAE is weakest (Fig.~\ref{fig:main}b): $+0.10$ on
+structural and $+0.11$ on binding/catalytic concepts (small buckets, $n{=}4$ and
+$n{=}2$), versus $+0.015$ on the chemical/PTM concepts the SAE already handles well.
+Notably the SAE is \emph{not} the strongest baseline --- ESM's own FFN neurons beat it
+($0.916$ vs.\ $0.900$) --- so the informative dense-vs-dense control is GLP versus FFN,
+which GLP also wins. The selected probing noise level was $u{=}0.9$ for 85/104 concepts,
 independently reproducing GLP's released default.
 
 \begin{table}[t]
 \centering
-\caption{1-D probing, 104 pre-registered Swiss-Prot concepts. Mean test AUC with 95\%
-bootstrap CIs. Selection on validation, reporting on held-out test proteins.}
+\caption{1-D probing, 104 pre-registered Swiss-Prot concepts (100M-activation run,
+ESM-2-8M). Mean test AUC with 95\% bootstrap CIs. Selection on validation, reporting on
+held-out test proteins.}
 \label{tab:auc}
 \begin{tabular}{lcc}
 \toprule
 Representation & Units & Mean test AUC \\
 \midrule
-\textbf{GLP meta-neurons} & 7{,}680 & $\mathbf{0.945}$ $[0.932, 0.957]$ \\
+\textbf{GLP meta-neurons} & 7{,}680 & $\mathbf{0.953}$ $[0.941, 0.964]$ \\
 ESM FFN neurons           & 1{,}280 & $0.916$ $[0.901, 0.931]$ \\
 InterPLM SAE              & 10{,}240 & $0.900$ $[0.880, 0.919]$ \\
 Raw residual stream       & 320     & $0.861$ $[0.844, 0.878]$ \\
@@ -166,49 +193,89 @@ onto the real data's top-2 principal components.}
 \label{fig:main}
 \end{figure}
 
-\textbf{The metrics disagree, informatively.} On InterPLM's domain-adjusted F1
-(14 frozen concepts, operating points rate-matched across methods), the SAE scores
-$0.286$ and GLP $0.264$; the difference is \emph{not} significant
-($[-0.008,+0.060]$). Because rate-matching equalises recall ($0.30$--$0.34$ for all
-methods), the gap is entirely \emph{precision}: SAE $0.347$ vs.\ GLP $0.241$. This is
-mechanistically coherent --- SAE features are $99.0\%$ exactly zero, so they fire
-rarely but correctly, whereas dense meta-neurons rank every residue well but must
-threshold an always-on signal. GLP does significantly beat both raw baselines on F1
-($+0.078$ over FFN neurons, 12/14).
+\begin{figure}[t]
+\centering
+\begin{subfigure}[b]{0.32\textwidth}
+  \includegraphics[width=\textwidth]{figures/training_loss.png}
+  \caption{}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+  \includegraphics[width=\textwidth]{figures/fd_vs_steps.png}
+  \caption{}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+  \includegraphics[width=\textwidth]{figures/generation_fd.png}
+  \caption{}
+\end{subfigure}
+\caption{Generation quality (100M-activation run). (a) Flow-matching loss vs.\ training
+step, converging below the $\approx\!2.0$ trivial-predictor floor. (b) FD vs.\ sampler
+steps: FD reports sampler error at low step counts, so it must be quoted with its step
+count. (c) FD(generated, real) against the real-vs-real lower bound at 1000 steps.}
+\label{fig:gen}
+\end{figure}
+
+\textbf{Where the signal lives.} Per category (Table~\ref{tab:cat}), GLP leads every
+bucket, and the aggregate is dominated by the 86 domain/motif concepts. The honest read
+is the per-category one: the advantage is broad but largest on the structural and
+binding/catalytic concepts a sparse-linear dictionary captures least well --- the regime
+where an unconstrained generative substrate has the most room to help.
+
+\begin{table}[t]
+\centering
+\caption{Mean test AUC per Swiss-Prot category ($n$ concepts). GLP leads every bucket;
+the aggregate is dominated by domain/motif ($n{=}86$).}
+\label{tab:cat}
+\begin{tabular}{lccccc}
+\toprule
+Category & $n$ & GLP & FFN & SAE & Raw \\
+\midrule
+Domain / motif          & 86 & $\mathbf{0.962}$ & $0.928$ & $0.908$ & $0.867$ \\
+Chemical / PTM          & 9  & $\mathbf{0.969}$ & $0.943$ & $0.954$ & $0.901$ \\
+Structural              & 4  & $\mathbf{0.765}$ & $0.703$ & $0.669$ & $0.661$ \\
+Topology / localization & 3  & $\mathbf{0.957}$ & $0.875$ & $0.938$ & $0.879$ \\
+Binding / catalytic     & 2  & $\mathbf{0.829}$ & $0.794$ & $0.721$ & $0.797$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{Limitations}
 
-These are laptop-scale results and should be read as such. (i) Training used 10M
-activations for one epoch; the cluster plan calls for 50--300M. (ii) The F1 comparison
-uses 14 concepts and its key contrast is not significant; extending to all 104 is
-required before any claim about precision. (iii) 86 of 104 concepts fall in the
-domain/motif category, so the aggregate is dominated by one bucket --- the
-per-category breakdown is the honest read. (iv) GLP trains on Swiss-Prot while the SAE
-was trained on UniRef50; proteins are now disjoint but the distributions still differ.
-(v) The generation-quality gate (\%Loss-Recovered, SAE-reconstruction FD) has not yet
-been run, and no steering experiment exists yet.
+(i) A larger 500M-activation run is in progress but was interrupted by the cluster
+wall-clock limit mid-training; the results here are the completed 100M run, and the
+scaling point is not yet available. (ii) Domain-adjusted F1 --- which at pilot scale
+told a different story from AUC (the SAE fired rarely but precisely) --- has not been
+recomputed at 100M and is not claimed here. (iii) 86 of 104 concepts fall in the
+domain/motif category, so the aggregate is dominated by one bucket; the per-category
+breakdown (Table~\ref{tab:cat}) is the honest read, and the extreme-margin buckets are
+small ($n{=}2$--$4$). (iv) The generation-quality gate (\%Loss-Recovered,
+SAE-reconstruction FD) has not yet been run. (v) The steering deliverable is designed
+but not yet run, so the discovery-by-steering claim is so far only supported indirectly,
+via the probing result.
 
 \section{Next steps}
 
-\textbf{Immediate (local).} Complete the generation gate: \%Loss-Recovered and the
-SAE-reconstruction FD anchor. Extend F1 to all 104 concepts. Run the nonlinearity
-falsification test --- if a winning meta-neuron is linearly predictable from the SAE
-dictionary ($R^2$ high), the advantage is repackaging rather than new structure, and
-we would retract the stronger claim.
+\textbf{Complete the current scale.} Resume the interrupted 500M-activation run from its
+checkpoint for a scaling point, and compute domain-adjusted F1 at 100M to test whether
+the SAE's precision edge seen at pilot scale persists. Run the generation gate
+(\%Loss-Recovered, SAE-reconstruction FD). Run the nonlinearity falsification test --- if
+a winning meta-neuron is linearly predictable from the SAE dictionary ($R^2$ high), the
+advantage is repackaging rather than new structure, and we would retract the stronger
+claim.
 
-\textbf{Cluster (MareNostrum~5).} Scale to 50--300M activations with streaming and
-bf16; re-run probing at full evaluation scale. SLURM launchers are in place.
+\textbf{Steering (deliverable 2): discovery by editing.} SAE-based concept clamping
+produces off-manifold activations that degrade downstream predictions. GLP supplies a
+learned prior: noise the edited activation and denoise it back (an activation-space
+SDEdit \cite{meng2022sdedit}), then measure the concept-strength / naturalness Pareto
+frontier against naive clamping. This is where the generative substrate should pay off
+for \emph{discovery} --- steering a protein toward a new function while staying on the
+data manifold, rather than merely reading a concept out. The periodic-glycine features
+characterised by InterPLM give a cheap, reproducible testbed.
 
-\textbf{Steering (deliverable 2).} SAE-based concept clamping produces off-manifold
-activations that degrade downstream predictions. GLP supplies a learned prior: noise
-the edited activation and denoise it back (an activation-space SDEdit \cite{meng2022sdedit}), then measure
-the concept-strength/naturalness Pareto frontier against naive clamping. The
-periodic-glycine features characterised by InterPLM give a cheap, reproducible
-testbed.
-
-\textbf{If time permits.} ESM-2-650M as a scaling point, ESMFold pLDDT as a
-foldability metric for steered sequences, and a three-size scaling curve relating
-diffusion loss to probe AUC.
+\textbf{If time permits.} ESM-2-650M as a second scaling point, ESMFold pLDDT as a
+foldability metric for steered sequences, and a scaling curve relating diffusion loss to
+probe AUC.
 
 \begin{thebibliography}{9}
 \small
