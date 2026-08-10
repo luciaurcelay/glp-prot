@@ -5,6 +5,9 @@ Brand palette, two hue families, three shades each:
 Dark shade = the headline entity in its family; light shade = that family's
 "raw"/naive baseline sibling; mid shade = a spare accent for charts that aren't
 part of the glp/sae/raw_layer/raw_mlp identity set (e.g. precision/recall).
+Single-series charts (no second method to contrast against) use `ACCENT`
+(PURPLE_LIGHT) instead of the orange glp/generated identity — a design choice,
+not a semantic one; see `ACCENT`'s docstring below.
 
 Method identity (glp/sae/raw_layer/raw_mlp) is assigned by NAME, never by
 position. `glp_plm.eval.baselines.METHODS` and a script's own method list don't
@@ -54,6 +57,13 @@ METHOD_COLORS = {
 # same way in every figure that draws the distinction.
 GENERATED_COLOR = ORANGE_DARK
 REAL_COLOR = PURPLE_LIGHT
+
+# Single-series accent: the lone-line/lone-bar "this is GLP" mark for charts with
+# no second method to contrast against (training loss, LR schedule, FD-vs-steps,
+# the per-concept scatter, the generation-FD headline bar, cross-run scaling
+# curves). Deliberately PURPLE_LIGHT, not method_color("glp")'s orange — chosen
+# by design preference, decoupled from the glp/sae bar identity above.
+ACCENT = PURPLE_LIGHT
 
 # Generic categorical fallback for charts with no fixed entity set. Fixed order
 # (never cycled), validated end-to-end as one adjacent Hamiltonian path.

@@ -55,7 +55,7 @@ def fig_training_loss(run: RunLogger) -> Optional[str]:
     xs, ys = _downsample(steps, loss)
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(xs, ys, color=style.method_color("glp"), label="diffusion loss (MSE)")
+    ax.plot(xs, ys, color=style.ACCENT, label="diffusion loss (MSE)")
     # trivial-predictor reference (predict 0): E||eps - z0||^2 / d ≈ 2 for standardized z0
     ax.axhline(2.0, color=style.BASELINE, lw=1.5, ls="--", label="trivial baseline ≈ 2.0")
     ax.set_xlabel("training step")
@@ -77,7 +77,7 @@ def fig_lr_schedule(run: RunLogger) -> Optional[str]:
     xs, ys = _downsample(steps, lr)
 
     fig, ax = plt.subplots(figsize=(6, 3))
-    ax.plot(xs, ys, color=style.method_color("glp"))
+    ax.plot(xs, ys, color=style.ACCENT)
     ax.set_xlabel("training step")
     ax.set_ylabel("learning rate")
     ax.set_title("LR schedule (cosine + warmup)")
@@ -120,7 +120,7 @@ def fig_fd_vs_steps(run: RunLogger) -> Optional[str]:
     lb = d["lower_bound"]
 
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(xs, ys, marker="o", markersize=8, color=style.GENERATED_COLOR, label="FD(generated, real)")
+    ax.plot(xs, ys, marker="o", markersize=8, color=style.ACCENT, label="FD(generated, real)")
     ax.axhline(lb, color=style.BASELINE, lw=1.5, ls="--", label=f"lower bound (real vs real) = {lb:.2f}")
     for r in sweep:
         ax.annotate(f"{r['ratio']:.2f}x", (r["steps"], r["fd"]),
@@ -190,7 +190,7 @@ def fig_probing_per_concept(run: RunLogger) -> Optional[str]:
     fig, ax = plt.subplots(figsize=(5.2, 5))
     lim = [min(0.5, min(xs + ys)) - 0.02, 1.005]
     ax.plot(lim, lim, color=style.BASELINE, lw=1.2, ls="--", zorder=1)
-    ax.scatter(xs, ys, s=42, color=style.method_color("glp"), alpha=0.75,
+    ax.scatter(xs, ys, s=42, color=style.ACCENT, alpha=0.75,
                edgecolors=style.SURFACE, linewidths=1.5, zorder=2)
     ax.set_xlim(lim); ax.set_ylim(lim)
     ax.set_xlabel("SAE feature — test AUC")
@@ -252,11 +252,11 @@ def fig_generation_fd(run: RunLogger) -> Optional[str]:
     if "fd_generated_vs_real" not in s:
         return None
     labels, vals, colors = [], [], []
-    labels.append("FD(gen, real)"); vals.append(s["fd_generated_vs_real"]); colors.append(style.GENERATED_COLOR)
+    labels.append("FD(gen, real)"); vals.append(s["fd_generated_vs_real"]); colors.append(style.ACCENT)
     if "fd_lower_bound" in s:
         labels.append("FD(train, val)\nlower bound"); vals.append(s["fd_lower_bound"]); colors.append(style.BASELINE)
     if "fd_sae_recon" in s:  # W2 anchor when available
-        labels.append("FD(SAE recon)"); vals.append(s["fd_sae_recon"]); colors.append(style.method_color("sae"))
+        labels.append("FD(SAE recon)"); vals.append(s["fd_sae_recon"]); colors.append(style.PURPLE_DARK)  # not ACCENT/method_color("sae") — this chart already uses ACCENT for the gen,real bar
 
     fig, ax = plt.subplots(figsize=(1.6 * len(labels) + 1.5, 4))
     bars = ax.bar(labels, vals, color=colors, width=0.6)

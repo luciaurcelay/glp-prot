@@ -62,7 +62,7 @@ def compare_runs(run_dirs: List[str | Path], summary_key: str, x_key: str,
     pts.sort()
     xs, ys = zip(*pts)
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(xs, ys, marker="o", markersize=7, color=style.method_color("glp"))
+    ax.plot(xs, ys, marker="o", markersize=7, color=style.ACCENT)
     ax.set_xlabel(xlabel or x_key)
     ax.set_ylabel(ylabel or summary_key)
     ax.set_title(f"{ylabel or summary_key} vs {xlabel or x_key}")
