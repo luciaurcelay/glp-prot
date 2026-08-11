@@ -70,6 +70,21 @@ def resolve_storage_dir(output_dir: str | Path, subdir: str, root_env: str, *,
     return link
 
 
+def resolve_config_store_dir(store_dir: str) -> Path:
+    """Resolve a config `data.store_dir` (reuse an existing activation store) to a path.
+
+    Absolute path is used as-is; a relative one resolves under $GLP_DATA_ROOT (falling
+    back to ./data off-cluster), e.g. "uniref50_500m/train_store". Unlike
+    `resolve_shared_dir` this does NOT create the directory: a reused store must already
+    exist, so a wrong/missing path should surface as a clear ActivationStore error rather
+    than a silently-created empty dir that looks like a store with zero activations.
+    """
+    p = Path(store_dir)
+    if p.is_absolute():
+        return p
+    return Path(os.environ.get("GLP_DATA_ROOT", "data")) / store_dir
+
+
 def resolve_shared_dir(subdir: str, root_env: str) -> Path:
     """Resolve a subdir shared across ALL runs — for content that doesn't depend on
     which run downloaded it (raw Swiss-Prot REST pulls, UniRef50), unlike

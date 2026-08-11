@@ -135,6 +135,16 @@ and worth browsing — get the local symlink.
 An existing real (non-symlink) directory at any of these paths is left alone with a
 warning instead of being clobbered.
 
+**Reusing one activation store across many runs (scaling/architecture grids).** The
+store depends only on the *data* (model, layer, sequences, seed, count) — not on the
+GLP architecture (`n_blocks`) or `batch_size` — so a depth/batch grid over identical
+activations should share one store, never re-extract per cell. Set `data.store_dir` in
+each grid config to an existing store (absolute, or relative to `$GLP_DATA_ROOT`, e.g.
+`uniref50_500m/train_store`); `train_glp`/`eval_generation` read from there instead of
+the per-run default (CLI `--store-dir` overrides). `extract_activations` ignores it and
+always writes the per-run store, so a shared store is never overwritten by an accidental
+re-extract. This replaces the older hand-made per-run `train_store` symlink.
+
 ## Running the pipeline
 
 Submit from the repo root. Every launcher takes `configs/esm8m_h100.yaml` — the single

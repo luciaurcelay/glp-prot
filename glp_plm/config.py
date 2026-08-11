@@ -64,6 +64,13 @@ class DataConfig:
     # Training source: null -> Swiss-Prot REST slice; "uniref50" -> shared local pull
     # (scripts/prefetch_data.py --with-uniref50); any other string -> that path.
     train_fasta: Optional[str] = None
+    # Reuse an EXISTING activation store instead of the per-run <output_dir>/train_store,
+    # so many runs (e.g. a depth/scaling grid over identical activations) share one 320GB
+    # store with no re-extraction. Absolute path used as-is; a relative path resolves under
+    # $GLP_DATA_ROOT (e.g. "uniref50_500m/train_store"). null -> per-run default.
+    # Only train_glp/eval_generation READ it; extract_activations always writes the per-run
+    # store (it never overwrites a shared one). CLI --store-dir overrides this.
+    store_dir: Optional[str] = None
     eval_uniprot_tsv: Optional[str] = None
     # Swiss-Prot eval split by shard ranges (docs/INTERPLM_MAP.md, prepare_eval_set).
     n_shards: int = 8

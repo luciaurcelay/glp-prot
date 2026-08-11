@@ -23,7 +23,7 @@ from glp_plm.eval.frechet import frechet_distance
 from glp_plm.eval.pca_overlap import pca_overlap
 from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
-from glp_plm.utils import get_device, resolve_storage_dir, set_seed
+from glp_plm.utils import get_device, resolve_config_store_dir, resolve_storage_dir, set_seed
 
 
 def main():
@@ -42,8 +42,14 @@ def main():
     device = get_device(cfg.device)
     out = Path(cfg.output_dir)
     ckpt_dir = resolve_storage_dir(out, "checkpoints", "GLP_RUNS_ROOT", symlink=False)
-    store_dir = Path(args.store_dir) if args.store_dir else \
-        resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
+    # Store precedence: CLI --store-dir > config data.store_dir (reuse a shared store) >
+    # per-run default. Must match train_glp so FD compares against the same activations.
+    if args.store_dir:
+        store_dir = Path(args.store_dir)
+    elif cfg.data.store_dir:
+        store_dir = resolve_config_store_dir(cfg.data.store_dir)
+    else:
+        store_dir = resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
 
     store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
     scaler = Scaler.load(ckpt_dir / "rep_statistics.pt")

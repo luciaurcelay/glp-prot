@@ -18,7 +18,7 @@ from glp_plm.diffusion.scaler import Scaler
 from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
 from glp_plm.train.trainer import fit
-from glp_plm.utils import get_device, resolve_storage_dir, set_seed
+from glp_plm.utils import get_device, resolve_config_store_dir, resolve_storage_dir, set_seed
 
 
 def main():
@@ -47,8 +47,14 @@ def main():
         scaler = Scaler.fit(raw[:min(len(raw), 500_000)].float())
         scaler.save(ckpt_dir / "rep_statistics.pt")
     else:
-        store_dir = Path(args.store_dir) if args.store_dir else \
-            resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
+        # Store precedence: CLI --store-dir > config data.store_dir (reuse a shared store)
+        # > per-run <output_dir>/train_store default.
+        if args.store_dir:
+            store_dir = Path(args.store_dir)
+        elif cfg.data.store_dir:
+            store_dir = resolve_config_store_dir(cfg.data.store_dir)
+        else:
+            store_dir = resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
         store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
         raw = store.load()                      # lazy memmap view, fp16
         try:
