@@ -77,7 +77,7 @@ python scripts/train_glp.py --config "$CONFIG"
 echo "[submit_pipeline] 4/7 eval_generation (Gate G2)"
 python scripts/eval_generation.py --config "$CONFIG" \
     --n-samples "$N_SAMPLES" --fd-steps 20,50,100,300,1000
-
+'''
 echo "[submit_pipeline] 5/7 freeze_concepts"
 python scripts/freeze_concepts.py --config "$CONFIG" --eval-dir "$EVAL_DIR"
 
@@ -95,7 +95,7 @@ case "$METRIC" in
   both) run_probe auc; run_probe f1 ;;
   *)    run_probe "$METRIC" ;;
 esac
-
+'''
 echo "[submit_pipeline] 7/7 make_report"
 python scripts/make_report.py --config "$CONFIG"
 

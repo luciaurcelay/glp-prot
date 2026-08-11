@@ -29,7 +29,7 @@
 device: cuda
 precision: fp32
 seed: 0
-output_dir: runs/uniref50_500m_4096
+output_dir: runs/uniref50_100m_4096
 
 model:
   activation_dim: 320
