@@ -20,11 +20,11 @@ source scripts/cluster/env_mn5.sh
 CONFIG="${1:-configs/esm8m_h100.yaml}"
 OUT_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")"
 RUN_NAME="$(basename "$OUT_DIR")"
-# Data-sized, not symlinked under runs/ — reached directly at $GLP_DATA_ROOT/<run>/.
-EVAL_DIR="$GLP_DATA_ROOT/$RUN_NAME/swissprot/processed"
 
 # Group this attempt's logs under runs/<run>/launches/<job_id>/, append the per-run
 # launch ledger, and relocate Slurm's .out/.err there on exit (env_mn5.sh).
 record_launch "$RUN_NAME" "$@"
 
-python scripts/freeze_concepts.py --config "$CONFIG" --eval-dir "$EVAL_DIR"
+# Eval store resolved by the script: config data.eval_dir (reuse a shared store), else
+# the per-run <output_dir>/swissprot/processed default.
+python scripts/freeze_concepts.py --config "$CONFIG"

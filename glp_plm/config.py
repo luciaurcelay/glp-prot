@@ -71,6 +71,13 @@ class DataConfig:
     # Only train_glp/eval_generation READ it; extract_activations always writes the per-run
     # store (it never overwrites a shared one). CLI --store-dir overrides this.
     store_dir: Optional[str] = None
+    # Same idea for the labeled Swiss-Prot eval store (embedded shards + labels +
+    # frozen_concepts.json): it depends only on model+layer+n_prot, not the GLP run, so
+    # many runs share one prebuilt `.../swissprot/processed`. Absolute path as-is; relative
+    # resolves under $GLP_DATA_ROOT (e.g. "uniref50_100m/swissprot/processed"). Only
+    # freeze_concepts/run_probing READ it; build_swissprot_eval always writes the per-run
+    # store. CLI --eval-dir overrides this. null -> per-run default.
+    eval_dir: Optional[str] = None
     eval_uniprot_tsv: Optional[str] = None
     # Swiss-Prot eval split by shard ranges (docs/INTERPLM_MAP.md, prepare_eval_set).
     n_shards: int = 8

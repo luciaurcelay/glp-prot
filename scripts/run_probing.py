@@ -25,7 +25,7 @@ from glp_plm.eval import probing_f1 as pf
 from glp_plm.eval.meta_neurons import meta_neuron_bank
 from glp_plm.experiments import RunLogger, make_report
 from glp_plm.model import GLPDenoiser
-from glp_plm.utils import get_device, resolve_storage_dir, set_seed
+from glp_plm.utils import get_device, resolve_config_data_dir, resolve_storage_dir, set_seed
 
 
 def _raw_mlp_cached(processed: Path, split_shards, layer, model_name, device, cache: Path,
@@ -47,7 +47,8 @@ def _raw_mlp_cached(processed: Path, split_shards, layer, model_name, device, ca
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    ap.add_argument("--eval-dir", required=True, help="…/swissprot/processed (labeled eval store)")
+    ap.add_argument("--eval-dir", help="…/swissprot/processed (labeled eval store). Default: "
+                                        "config data.eval_dir, else <output_dir>/swissprot/processed")
     ap.add_argument("--ckpt", help="GLP checkpoint (default <output_dir>/checkpoints/glp_final.pt)")
     ap.add_argument("--scaler", help="rep_statistics.pt (default <output_dir>/checkpoints/rep_statistics.pt)")
     ap.add_argument("--concepts", help="frozen_concepts.json; default = all qualifying")
@@ -69,7 +70,14 @@ def main():
     device = get_device(cfg.device)
     out = Path(cfg.output_dir)
     ckpt_dir = resolve_storage_dir(out, "checkpoints", "GLP_RUNS_ROOT", symlink=False)
-    processed = Path(args.eval_dir)
+    # Eval store precedence: CLI --eval-dir > config data.eval_dir (reuse a shared,
+    # model+layer-keyed store) > per-run <output_dir>/swissprot/processed default.
+    if args.eval_dir:
+        processed = Path(args.eval_dir)
+    elif cfg.data.eval_dir:
+        processed = resolve_config_data_dir(cfg.data.eval_dir)
+    else:
+        processed = resolve_storage_dir(out, "swissprot", "GLP_DATA_ROOT", symlink=False) / "processed"
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
 
     # ---- data ----
@@ -112,8 +120,10 @@ def main():
         assert mlp_te.shape[0] == A_te.shape[0], "raw_mlp/activation row mismatch (test)"
 
     # ---- concept list ----
-    if args.concepts:
-        sel = json.loads(Path(args.concepts).read_text())
+    # --concepts, else <eval-dir>/frozen_concepts.json if present, else all qualifying.
+    concepts_json = Path(args.concepts) if args.concepts else processed / "frozen_concepts.json"
+    if concepts_json.exists():
+        sel = json.loads(concepts_json.read_text())
         concepts = sel["all_qualifying"]
         headline = {h["concept"] for h in sel["headline"]}
     else:

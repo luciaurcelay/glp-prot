@@ -61,15 +61,30 @@ echo "[submit_pipeline] config=$CONFIG run=$RUN_NAME n_seqs=$N_SEQS n_prot=$N_PR
 record_launch "$RUN_NAME" "$@"
 
 EVAL_TSV="$GLP_DATA_ROOT/swissprot/swissprot_annotated_eval_${N_PROT}.tsv"
-EVAL_DIR="$GLP_DATA_ROOT/$RUN_NAME/swissprot/processed"
+# If the config declares data.eval_dir, the labeled Swiss-Prot eval store is prebuilt and
+# shared (it depends only on model+layer+n_prot, not this run) — so skip building it
+# (stage 1) and freezing concepts (stage 5); freeze_concepts/run_probing resolve the
+# shared store from the config themselves.
+CFG_EVAL_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['data'].get('eval_dir') or '')")"
+# Likewise data.store_dir reuses a shared activation store -> skip extract (stage 2);
+# train_glp reads the shared store, so a per-run re-extract would just be discarded.
+CFG_STORE_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['data'].get('store_dir') or '')")"
 
-echo "[submit_pipeline] 1/7 build_swissprot_eval"
-python scripts/build_swissprot_eval.py --config "$CONFIG" \
-    --n-prot "$N_PROT" --min-required-instances "$MIN_REQUIRED_INSTANCES"
+if [ -z "$CFG_EVAL_DIR" ]; then
+  echo "[submit_pipeline] 1/7 build_swissprot_eval"
+  python scripts/build_swissprot_eval.py --config "$CONFIG" \
+      --n-prot "$N_PROT" --min-required-instances "$MIN_REQUIRED_INSTANCES"
+else
+  echo "[submit_pipeline] 1/7 build_swissprot_eval — SKIPPED (reusing data.eval_dir=$CFG_EVAL_DIR)"
+fi
 
-echo "[submit_pipeline] 2/7 extract_activations"
-python scripts/extract_activations.py --config "$CONFIG" --store train \
-    --n-seqs "$N_SEQS" --embed-batch-size 64 --exclude-from "$EVAL_TSV"
+if [ -z "$CFG_STORE_DIR" ]; then
+  echo "[submit_pipeline] 2/7 extract_activations"
+  python scripts/extract_activations.py --config "$CONFIG" --store train \
+      --n-seqs "$N_SEQS" --embed-batch-size 64 --exclude-from "$EVAL_TSV"
+else
+  echo "[submit_pipeline] 2/7 extract_activations — SKIPPED (reusing data.store_dir=$CFG_STORE_DIR)"
+fi
 
 echo "[submit_pipeline] 3/7 train_glp"
 python scripts/train_glp.py --config "$CONFIG"
@@ -78,8 +93,12 @@ echo "[submit_pipeline] 4/7 eval_generation (Gate G2)"
 python scripts/eval_generation.py --config "$CONFIG" \
     --n-samples "$N_SAMPLES" --fd-steps 20,50,100,300,1000
 
-echo "[submit_pipeline] 5/7 freeze_concepts"
-python scripts/freeze_concepts.py --config "$CONFIG" --eval-dir "$EVAL_DIR"
+if [ -z "$CFG_EVAL_DIR" ]; then
+  echo "[submit_pipeline] 5/7 freeze_concepts"
+  python scripts/freeze_concepts.py --config "$CONFIG"
+else
+  echo "[submit_pipeline] 5/7 freeze_concepts — SKIPPED (reusing data.eval_dir=$CFG_EVAL_DIR)"
+fi
 
 echo "[submit_pipeline] 6/7 run_probing ($METRIC)"
 # METRIC (arg 6): "auc" (default) | "f1" | "both". AUC is the primary GLP-protocol
@@ -88,8 +107,7 @@ echo "[submit_pipeline] 6/7 run_probing ($METRIC)"
 # pass and relies on a rate-matched-threshold deviation that needs justifying if
 # reported, so opt in explicitly (METRIC=both, or f1) when you actually want it. Both
 # passes are independently resumable via metrics/probing_partial{,_f1}.jsonl.
-run_probe() { python scripts/run_probing.py --config "$CONFIG" --eval-dir "$EVAL_DIR" \
-    --concepts "$EVAL_DIR/frozen_concepts.json" --metric "$1" \
+run_probe() { python scripts/run_probing.py --config "$CONFIG" --metric "$1" \
     --n-shards-per-split "$N_SHARDS_PER_SPLIT"; }
 case "$METRIC" in
   both) run_probe auc; run_probe f1 ;;

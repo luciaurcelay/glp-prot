@@ -145,6 +145,15 @@ the per-run default (CLI `--store-dir` overrides). `extract_activations` ignores
 always writes the per-run store, so a shared store is never overwritten by an accidental
 re-extract. This replaces the older hand-made per-run `train_store` symlink.
 
+The **labeled Swiss-Prot eval store** works the same way via `data.eval_dir`. It depends
+only on model+layer+n_prot (not the GLP run), so many runs share one prebuilt
+`.../swissprot/processed` (shards + labels + `frozen_concepts.json`), e.g.
+`data.eval_dir: uniref50_100m/swissprot/processed`. `freeze_concepts`/`run_probing` read
+from there (CLI `--eval-dir` overrides); `build_swissprot_eval` always writes the per-run
+store. When either field is set, `submit_pipeline.sh` **skips the corresponding stage**:
+`store_dir` skips extract (2/7), `eval_dir` skips build (1/7) and freeze (5/7). (Both live
+on scratch, which is periodically purged — a purge means one rebuild, not per-run.)
+
 ## Running the pipeline
 
 Submit from the repo root. Every launcher takes `configs/esm8m_h100.yaml` — the single

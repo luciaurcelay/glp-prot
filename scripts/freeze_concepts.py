@@ -16,13 +16,14 @@ from glp_plm.data import swissprot_labels as sl
 from glp_plm.eval import baselines as bl
 from glp_plm.eval import concept_selection as cs
 from glp_plm.eval.probing_1d import fast_auc_matrix
-from glp_plm.utils import set_seed
+from glp_plm.utils import resolve_config_data_dir, resolve_storage_dir, set_seed
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
-    ap.add_argument("--eval-dir", required=True, help="…/swissprot/processed")
+    ap.add_argument("--eval-dir", help="…/swissprot/processed. Default: config data.eval_dir, "
+                                        "else <output_dir>/swissprot/processed")
     ap.add_argument("--out", help="default <eval-dir>/frozen_concepts.json")
     ap.add_argument("--min-pos-test", type=int, default=500)
     ap.add_argument("--n-per-category", type=int, default=3)
@@ -32,7 +33,14 @@ def main():
 
     cfg = load_config(args.config)
     set_seed(cfg.seed)
-    processed = Path(args.eval_dir)
+    out = Path(cfg.output_dir)
+    # Eval store precedence: CLI --eval-dir > config data.eval_dir > per-run default.
+    if args.eval_dir:
+        processed = Path(args.eval_dir)
+    elif cfg.data.eval_dir:
+        processed = resolve_config_data_dir(cfg.data.eval_dir)
+    else:
+        processed = resolve_storage_dir(out, "swissprot", "GLP_DATA_ROOT", symlink=False) / "processed"
 
     A_tr, Y_tr, names = sl.load_split(processed, "valid", cfg.data.layer)
     _, Y_te, _ = sl.load_split(processed, "test", cfg.data.layer)
