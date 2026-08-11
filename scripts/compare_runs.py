@@ -1,14 +1,15 @@
 #!/usr/bin/env python
-"""Compare >=2 already-finished runs against each other (PLAN §9 W2+ "scaling_curve").
+"""Depth × data-scale generation-quality comparison across finished runs (the paper's
+scaling section — PLAN §9). Standalone, NOT part of submit_pipeline.sh: run by hand
+once the grid runs exist. Renders FLOPs-vs-loss, FD-vs-steps, and (if a run has a
+pca_proj_vs_steps.npz from scripts/pca_vs_steps.py) the sampler-convergence PCA, plus a
+params/FD table, into runs/comparisons/<name>/. Generation only — no probing.
 
-Standalone, deliberately NOT part of submit_pipeline.sh — run by hand once you have
-finished runs to compare (e.g. does probing AUC / generation FD improve as
-n_train_activations scales up?). Renders whatever comparison figures have enough
-data (skips the rest — see glp_plm.experiments.compare's module docstring) into
-runs/comparisons/<name>/.
-
-Example (the 100M vs 500M UniRef50 runs):
-  python scripts/compare_runs.py runs/uniref50_100m runs/uniref50_500m
+Example (the 100M + 500M depth grids):
+  python scripts/compare_runs.py --name depth_scaling \
+      runs/uniref50_500m_4096_d3 runs/uniref50_500m_4096 runs/uniref50_500m_4096_d12 \
+      runs/uniref50_500m_4096_d24 runs/uniref50_100m_4096_b3 runs/uniref50_100m_4096_b6 \
+      runs/uniref50_100m_4096_b12 runs/uniref50_100m_4096_b24
 """
 import argparse
 
@@ -20,9 +21,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dirs", nargs="+", help="two or more finished run directories")
     ap.add_argument("--labels", nargs="+",
-                    help="one label per run, same order as run_dirs (default: derived "
-                         "from the training-store's activation count, e.g. '100M')")
-    ap.add_argument("--name", help="comparison name (default: <label>_vs_<label>...)")
+                    help="one label per run, same order as run_dirs (default: run dir name)")
+    ap.add_argument("--name", help="comparison name (default: depth_scaling)")
     ap.add_argument("--out-root", default="runs/comparisons",
                     help="where <name>/ is written (default: runs/comparisons)")
     args = ap.parse_args()

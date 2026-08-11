@@ -1,49 +1,41 @@
-"""Cross-run comparison figures — deliberately NOT part of the per-run pipeline.
+"""Cross-run scaling comparison — the paper's depth x data-scale figures.
 
-`make_report` (experiments.report) renders figures for ONE finished run from its own
-metrics/. This module compares MULTIPLE already-finished runs against each other —
-e.g. "does probing AUC / generation FD improve with more training activations" — which
-by definition needs runs that already exist. So it's invoked by hand
-(`scripts/compare_runs.py`) after the fact, never from `submit_pipeline.sh`, and it
-never writes into any compared run's own `metrics/` or `figures/`.
+Compares MULTIPLE already-finished runs against each other (a depth grid at two data
+scales), on generation quality only: FLOPs-vs-loss, FD-vs-sampler-steps, PCA-vs-steps,
+and a params/FD table. Deliberately NOT part of the per-run pipeline and NEVER touches
+probing — the block scan follows GLP's own protocol of comparing architectures by
+Fréchet Distance.
 
-Read-only by design: `_load_run` reads each run's `metrics/summary.json`,
-`metrics/train.jsonl`, `metrics/probing.json`, and (for the x-axis) the activation
-store's `train_store/meta.json` — but never constructs a `RunLogger`, whose
-constructor stamps a fresh git_commit/git_dirty into `summary.json` as a side effect
-(appropriate for a run producing its own metrics, wrong for a tool that's only
-comparing runs someone else's job may still be writing to).
+Read-only by design: `_load_run` reads each run's `metrics/*.json(l)`, `config.yaml`
+(for n_train_activations, since store_dir-reuse runs have no per-run train_store), and
+an optional `pca_proj_vs_steps.npz` — but never constructs a `RunLogger` (whose
+constructor would stamp git provenance into a run someone else may still be writing).
 
-Each `compare_*` figure follows the same defensive contract as `experiments.figures`:
-returns None (never raises) when fewer than 2 of the given runs have the metric it
-needs — runs reach pipeline stages at different times (e.g. as of 2026-08,
-uniref50_500m has training metrics only; eval_generation/probing haven't run on it
-yet), so a comparison only makes sense once >=2 runs have actually gotten there.
+FLOPs follow Kaplan et al. (2020): C = 6 N D, N = params, D = tokens = activations seen
+(n_train_activations x epochs). Loss is smoothed (mean of the last ~500 steps) because
+the flow-matching loss is single-step noisy (random t~U(0,1), eps per step) at a
+magnitude comparable to the inter-run gaps.
 """
 
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from glp_plm.experiments import style
-from glp_plm.experiments.figures import _downsample
-from glp_plm.utils import resolve_storage_dir
 
-# Run identity (which RUN a line is, not which METHOD) is a different semantic axis
-# than glp/sae/raw_layer/raw_mlp, so it must not reuse those hexes even though
-# nothing else currently calls style.color() — a reader who has just seen glp=dark
-# orange in probing_auc.png would misread the same hex here as "this is GLP's line".
-# The two mid shades are exactly the "spare accent, outside the method identity set"
-# role style.py already reserves them for (see its module docstring); validated PASS
-# adjacent (ΔE 19.7, dataviz skill's validate_palette.js). A 3rd+ run needs a
-# re-validated extension, not an unchecked append.
-RUN_COLORS = [style.ORANGE_MID, style.PURPLE_MID]
+# GLP paper's LLM-activation compute-scaling fit, for reference overlay (their units).
+GLP_REF = {"E": 0.52, "A": 435.1, "alpha": 0.169}
+
+LOSS_SMOOTH_WINDOW = 500   # steps averaged for the "final" loss (kills single-step noise)
 
 
-def _human_count(n: int) -> str:
+def _human_count(n: Optional[int]) -> str:
+    if not n:
+        return "—"
     if n >= 1_000_000_000:
         return f"{n / 1_000_000_000:g}B"
     if n >= 1_000_000:
@@ -53,176 +45,275 @@ def _human_count(n: int) -> str:
     return str(n)
 
 
-def _run_color(i: int) -> str:
-    return RUN_COLORS[i % len(RUN_COLORS)]
-
-
 @dataclass
 class RunInfo:
     dir: Path
     label: str
+    n_blocks: Optional[int] = None
+    n_params: Optional[int] = None
+    n_activations: Optional[int] = None       # tokens D (from config.yaml)
+    smoothed_loss: Optional[float] = None
     summary: Dict[str, Any] = field(default_factory=dict)
-    train: List[Dict[str, Any]] = field(default_factory=list)
-    probing: Optional[Dict[str, Any]] = None
-    n_activations: Optional[int] = None
+    fd_sweep: List[Dict[str, Any]] = field(default_factory=list)   # [{steps,fd,ratio,pc_std_ratio}]
+    fd_lower_bound: Optional[float] = None
+    pca_steps: Optional[Dict[str, Any]] = None                     # {real, gen_<step>...} if npz present
+
+    @property
+    def flops(self) -> Optional[float]:
+        if self.n_params and self.n_activations:
+            return 6.0 * self.n_params * self.n_activations
+        return None
+
+    @property
+    def scale(self) -> str:
+        return _human_count(self.n_activations)
 
 
 def _load_run(run_dir: str | Path, label: Optional[str] = None) -> RunInfo:
     d = Path(run_dir)
-    metrics_dir = d / "metrics"  # already resolved by whichever pipeline stage produced it
+    m = d / "metrics"
 
     summary: Dict[str, Any] = {}
-    p = metrics_dir / "summary.json"
-    if p.exists():
-        summary = json.loads(p.read_text())
+    if (m / "summary.json").exists():
+        summary = json.loads((m / "summary.json").read_text())
 
-    train: List[Dict[str, Any]] = []
-    p = metrics_dir / "train.jsonl"
-    if p.exists():
-        train = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
-
-    probing = None
-    p = metrics_dir / "probing.json"
-    if p.exists():
-        probing = json.loads(p.read_text())
-
-    # train_store is data-sized and NOT symlinked under runs/ (scripts/cluster/README.md
-    # "Storage layout") — resolve_storage_dir(symlink=False) finds it either way, on
-    # cluster or the retired local Mac PoC layout, without creating a symlink itself.
+    # tokens D: n_train_activations from the run's own config.yaml (log_config). The
+    # per-run train_store/meta.json is absent when the run reused a shared store_dir,
+    # so config.yaml is the reliable source; fall back to the store meta (works on
+    # cluster) for older runs that predate log_config.
     n_activations = None
-    store_meta = resolve_storage_dir(d, "train_store", "GLP_DATA_ROOT", symlink=False) / "meta.json"
-    if store_meta.exists():
-        n_activations = json.loads(store_meta.read_text()).get("n")
+    cfg_path = d / "config.yaml"
+    if cfg_path.exists():
+        import yaml
+        cfg = yaml.safe_load(cfg_path.read_text())
+        n_activations = (cfg.get("data") or {}).get("n_train_activations")
+    if n_activations is None:
+        try:
+            from glp_plm.utils import resolve_storage_dir
+            meta = resolve_storage_dir(d, "train_store", "GLP_DATA_ROOT", symlink=False) / "meta.json"
+            if meta.exists():
+                n_activations = json.loads(meta.read_text()).get("n")
+        except Exception:
+            pass
+
+    # smoothed final loss
+    smoothed_loss = None
+    if (m / "train.jsonl").exists():
+        losses = [json.loads(l)["loss"] for l in (m / "train.jsonl").read_text().splitlines() if l.strip()]
+        if losses:
+            tail = losses[-LOSS_SMOOTH_WINDOW:]
+            smoothed_loss = sum(tail) / len(tail)
+
+    fd_sweep: List[Dict[str, Any]] = []
+    fd_lb = None
+    if (m / "fd_vs_steps.json").exists():
+        d_fd = json.loads((m / "fd_vs_steps.json").read_text())
+        fd_sweep = sorted(d_fd.get("sweep", []), key=lambda r: r["steps"])
+        fd_lb = d_fd.get("lower_bound")
+
+    pca_steps = None
+    if (m / "pca_proj_vs_steps.npz").exists():
+        import numpy as np
+        z = np.load(m / "pca_proj_vs_steps.npz")
+        pca_steps = {k: z[k] for k in z.files}
 
     return RunInfo(
-        dir=d,
-        label=label or (_human_count(n_activations) if n_activations else d.name),
-        summary=summary, train=train, probing=probing, n_activations=n_activations,
+        dir=d, label=label or d.name,
+        n_blocks=summary.get("n_blocks"), n_params=summary.get("n_params"),
+        n_activations=n_activations, smoothed_loss=smoothed_loss,
+        summary=summary, fd_sweep=fd_sweep, fd_lower_bound=fd_lb, pca_steps=pca_steps,
     )
 
 
-def compare_training_loss(runs: List[RunInfo], out_dir: Path) -> Optional[str]:
-    """Loss-curve overlay, one line per run. The only comparison that only needs
-    train.jsonl — usually the first (and, early on, only) one with enough data."""
+# --- shared visual encoding -------------------------------------------------
+def _depth_colors(runs: List[RunInfo]) -> Dict[int, str]:
+    """Fixed depth -> color, sorted shallow->deep, from the documented palette."""
+    depths = sorted({r.n_blocks for r in runs if r.n_blocks is not None})
+    return {nb: style.color(i) for i, nb in enumerate(depths)}
+
+
+def _scale_style(runs: List[RunInfo]) -> Dict[int, str]:
+    """Data scale -> linestyle: solid for the larger scale, dashed for the smaller."""
+    scales = sorted({r.n_activations for r in runs if r.n_activations})
+    # smallest dashed, then denser -> solid (only 2 in practice)
+    order = ["--", "-", "-."]
+    return {n: order[min(i, len(order) - 1)] for i, n in enumerate(scales)}
+
+
+def _scale_colors(runs: List[RunInfo]) -> Dict[int, str]:
+    """Data scale -> color (for plots keyed on scale rather than depth)."""
+    scales = sorted({r.n_activations for r in runs if r.n_activations})
+    palette = [style.ORANGE_MID, style.PURPLE_MID, style.PURPLE_DARK]
+    return {n: palette[min(i, len(palette) - 1)] for i, n in enumerate(scales)}
+
+
+# --- figures ----------------------------------------------------------------
+def flops_vs_loss(runs: List[RunInfo], out_dir: Path) -> Optional[str]:
+    """Compute-scaling: smoothed diffusion loss vs FLOPs (C=6ND), points colored by
+    data scale, with a power-law fit L(C)=E+A*C^-a and the GLP reference overlaid."""
     import matplotlib.pyplot as plt
+    import numpy as np
 
-    qualifying = [r for r in runs if r.train]
-    if len(qualifying) < 2:
+    pts = [r for r in runs if r.flops and r.smoothed_loss is not None]
+    if len(pts) < 2:
         return None
+    C = np.array([r.flops for r in pts], float)
+    L = np.array([r.smoothed_loss for r in pts], float)
+    scol = _scale_colors(pts)
 
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    for i, r in enumerate(qualifying):
-        steps = [row["step"] for row in r.train]
-        loss = [row["loss"] for row in r.train]
-        xs, ys = _downsample(steps, loss)
-        ax.plot(xs, ys, color=_run_color(i), label=r.label, lw=1.6, alpha=0.9)
-    ax.set_xlabel("training step")
-    ax.set_ylabel("flow-matching MSE")
-    ax.set_title("Training loss across runs")
-    ax.legend()
-    return str(style.save_fig(fig, out_dir / "scaling_loss.png"))
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    # points, one color per data scale; connect within a scale (ordered by depth)
+    for n in sorted({r.n_activations for r in pts}):
+        grp = sorted([r for r in pts if r.n_activations == n], key=lambda r: r.flops)
+        ax.plot([r.flops for r in grp], [r.smoothed_loss for r in grp], marker="o",
+                markersize=8, color=scol[n], lw=1.4, label=f"{_human_count(n)} activations", zorder=3)
+        for r in grp:  # annotate depth
+            ax.annotate(f"{r.n_blocks}b", (r.flops, r.smoothed_loss),
+                        textcoords="offset points", xytext=(6, 5), fontsize=8, color=style.SECONDARY)
 
+    # power-law fit L = E + A*(C/C0)^-a  (C0 = geo-mean for numerical stability), then
+    # report A back in raw-C units so alpha/E/A are comparable to the GLP reference.
+    fit_txt = ""
+    try:
+        from scipy.optimize import curve_fit
+        C0 = float(np.exp(np.mean(np.log(C))))
+        f = lambda c, E, A, a: E + A * (c / C0) ** (-a)
+        p0 = [float(L.min()) * 0.9, float(L.max() - L.min()), 0.17]
+        (E, A, a), _ = curve_fit(f, C, L, p0=p0, maxfev=20000,
+                                 bounds=([0, 0, 0.0], [L.min(), np.inf, 2.0]))
+        A_raw = A * C0 ** a
+        xs = np.logspace(np.log10(C.min()) - 0.15, np.log10(C.max()) + 0.15, 200)
+        ax.plot(xs, E + A_raw * xs ** (-a), color=style.INK, lw=1.6, ls="-",
+                label=f"power-law fit (α={a:.3f})", zorder=2)
+        e_note = "" if E > 0.01 else "  [E unconstrained over this C range → ~0; effective L≈A·C^−α]"
+        fit_txt = (f"our fit: L = {E:.3f} + {A_raw:.3g}·C^(−{a:.3f})  vs GLP α={GLP_REF['alpha']}." + e_note)
+    except Exception as e:  # thin data / no scipy: show points without a fit
+        fit_txt = f"(no power-law fit: {type(e).__name__})"
 
-def compare_scaling_auc(runs: List[RunInfo], out_dir: Path) -> Optional[str]:
-    """Mean test AUC per method vs training scale (n activations) — the headline
-    "does GLP's edge hold/grow with more data" curve. One line per method, method
-    identity colors (same as probing_auc.png) since method IS the entity here."""
-    import matplotlib.pyplot as plt
+    # GLP reference curve (their LLM-activation fit), over our C range
+    xs = np.logspace(np.log10(C.min()) - 0.15, np.log10(C.max()) + 0.15, 200)
+    ax.plot(xs, GLP_REF["E"] + GLP_REF["A"] * xs ** (-GLP_REF["alpha"]),
+            color=style.BASELINE, lw=1.4, ls=":", label=f"GLP ref (α={GLP_REF['alpha']})", zorder=1)
 
-    qualifying = sorted(
-        (r for r in runs if r.probing and r.probing.get("aggregate") and r.n_activations),
-        key=lambda r: r.n_activations,
-    )
-    if len(qualifying) < 2:
-        return None
-
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    for m in style.METHOD_ORDER:
-        pts = [(r.n_activations, r.probing["aggregate"][m]["mean_test_auc"])
-               for r in qualifying if m in r.probing["aggregate"]]
-        if not pts:
-            continue
-        xs, ys = zip(*pts)
-        ax.plot(xs, ys, marker="o", markersize=8, color=style.method_color(m), label=m)
     ax.set_xscale("log")
-    ax.set_xlabel("training activations")
-    ax.set_ylabel("mean test AUC")
-    ax.set_title("1-D probing AUC vs training scale")
-    ax.legend()
-    return str(style.save_fig(fig, out_dir / "scaling_auc.png"))
+    ax.set_xlabel("compute  C = 6ND  (FLOPs)")
+    ax.set_ylabel("diffusion loss (last-500-step mean)")
+    ax.set_title("Compute scaling: diffusion loss vs FLOPs")
+    ax.legend(fontsize=8)
+    print(f"[compare] {fit_txt}")
+    return str(style.save_fig(fig, out_dir / "flops_vs_loss.png"))
 
 
-def compare_scaling_fd(runs: List[RunInfo], out_dir: Path) -> Optional[str]:
-    """Generation-quality FD vs training scale, with the real-vs-real lower bound
-    anchor alongside it (same pairing as fd_vs_steps.png / generation_fd.png)."""
+def fd_vs_steps(runs: List[RunInfo], out_dir: Path) -> Optional[str]:
+    """FD vs sampler steps, faceted by data scale (one subplot per scale, shared y),
+    one line per depth + the real-vs-real lower bound. FD must be read with its step
+    count, so this doubles as the 'always quote steps' caveat figure."""
     import matplotlib.pyplot as plt
 
-    qualifying = sorted(
-        (r for r in runs if "fd_generated_vs_real" in r.summary and r.n_activations),
-        key=lambda r: r.n_activations,
-    )
-    if len(qualifying) < 2:
+    pts = [r for r in runs if r.fd_sweep and r.n_activations]
+    if len(pts) < 2:
+        return None
+    scales = sorted({r.n_activations for r in pts})
+    dcol = _depth_colors(pts)
+
+    fig, axes = plt.subplots(1, len(scales), figsize=(5.2 * len(scales), 4.3), sharey=True, squeeze=False)
+    for ax, n in zip(axes[0], scales):
+        grp = sorted([r for r in pts if r.n_activations == n], key=lambda r: r.n_blocks or 0)
+        for r in grp:
+            xs = [s["steps"] for s in r.fd_sweep]
+            ys = [s["fd"] for s in r.fd_sweep]
+            ax.plot(xs, ys, marker="o", markersize=6, color=dcol[r.n_blocks], label=f"{r.n_blocks} blocks")
+        lb = next((r.fd_lower_bound for r in grp if r.fd_lower_bound is not None), None)
+        if lb is not None:
+            ax.axhline(lb, color=style.BASELINE, lw=1.3, ls="--", label=f"lower bound {lb:.2f}")
+        ax.set_xscale("log")
+        ax.set_xticks(xs); ax.set_xticklabels([str(x) for x in xs])
+        ax.set_xlabel("sampler steps")
+        ax.set_title(f"{_human_count(n)} activations")
+        ax.legend(fontsize=8)
+    axes[0][0].set_ylabel("Fréchet distance")
+    fig.suptitle("FD vs sampler steps, by depth and data scale", y=1.0)
+    return str(style.save_fig(fig, out_dir / "fd_vs_steps.png"))
+
+
+def pca_vs_steps(runs: List[RunInfo], out_dir: Path) -> Optional[str]:
+    """4-panel PCA overlay (real vs generated on real's top-2 PCs) at increasing
+    sampler steps for the single run that has pca_proj_vs_steps.npz — shows the
+    diffusion sampler refining from near-noise to matched. Needs the regen step
+    (scripts/pca_vs_steps.py)."""
+    import matplotlib.pyplot as plt
+
+    r = next((r for r in runs if r.pca_steps), None)
+    if r is None:
+        return None
+    z = r.pca_steps
+    real = z["real"]
+    step_keys = sorted((k for k in z if k.startswith("gen_")), key=lambda k: int(k.split("_")[1]))
+    if not step_keys:
         return None
 
-    xs = [r.n_activations for r in qualifying]
-    fd = [r.summary["fd_generated_vs_real"] for r in qualifying]
-    lb = [r.summary.get("fd_lower_bound") for r in qualifying]
-
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    ax.plot(xs, fd, marker="o", markersize=8, color=style.ACCENT, label="FD(generated, real)")
-    if all(v is not None for v in lb):
-        ax.plot(xs, lb, marker="o", markersize=6, color=style.BASELINE, ls="--",
-                label="FD(train, val) lower bound")
-    ax.set_xscale("log")
-    ax.set_xlabel("training activations")
-    ax.set_ylabel("Fréchet distance")
-    ax.set_title("Generation quality vs training scale")
-    ax.legend()
-    return str(style.save_fig(fig, out_dir / "scaling_fd.png"))
+    fig, axes = plt.subplots(1, len(step_keys), figsize=(3.5 * len(step_keys), 3.7), squeeze=False)
+    for ax, k in zip(axes[0], step_keys):
+        gen = z[k]
+        ax.scatter(real[:, 0], real[:, 1], s=5, alpha=0.35, color=style.REAL_COLOR,
+                   edgecolors="none", label="real")
+        ax.scatter(gen[:, 0], gen[:, 1], s=5, alpha=0.35, color=style.GENERATED_COLOR,
+                   edgecolors="none", label="generated")
+        ax.set_title(f"{int(k.split('_')[1])} steps")
+        ax.set_xlabel("PC1")
+    axes[0][0].set_ylabel("PC2")
+    axes[0][0].legend(markerscale=3, fontsize=8)
+    fig.suptitle(f"Sampler convergence in PCA space — {r.label}", y=1.0)
+    return str(style.save_fig(fig, out_dir / "pca_vs_steps.png"))
 
 
-# Registry order = render order = summary-table column emphasis. Add a new
-# compare_* here (same needs-based skip contract) to extend the report.
-COMPARISONS = [compare_training_loss, compare_scaling_auc, compare_scaling_fd]
+def scaling_table(runs: List[RunInfo], out_dir: Path) -> str:
+    """Params + FD table for every run (markdown returned, CSV written alongside)."""
+    ordered = sorted(runs, key=lambda r: (r.n_activations or 0, r.n_blocks or 0))
+    header = ["data", "blocks", "params", "FLOPs (C=6ND)", "FD@1000", "FD ratio", "loss (smoothed)"]
+    rows = []
+    for r in ordered:
+        rows.append([
+            r.scale,
+            str(r.n_blocks) if r.n_blocks is not None else "—",
+            _human_count(r.n_params),
+            f"{r.flops:.3g}" if r.flops else "—",
+            f"{r.summary['fd_generated_vs_real']:.3f}" if "fd_generated_vs_real" in r.summary else "—",
+            f"{r.summary['fd_ratio']:.2f}" if "fd_ratio" in r.summary else "—",
+            f"{r.smoothed_loss:.4f}" if r.smoothed_loss is not None else "—",
+        ])
+    with open(out_dir / "scaling_table.csv", "w", newline="") as f:
+        w = csv.writer(f); w.writerow(header); w.writerows(rows)
+    md = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    md += ["| " + " | ".join(row) + " |" for row in rows]
+    return "\n".join(md)
 
 
-def _summary_table(runs: List[RunInfo]) -> str:
-    lines = ["| run | activations | final loss | FD(gen,real) | glp AUC | sae AUC |",
-             "|---|---|---|---|---|---|"]
-    for r in runs:
-        acts = _human_count(r.n_activations) if r.n_activations else "—"
-        final_loss = f"{r.summary['final_loss']:.4f}" if "final_loss" in r.summary else "—"
-        fd = f"{r.summary['fd_generated_vs_real']:.3f}" if "fd_generated_vs_real" in r.summary else "—"
-        agg = (r.probing or {}).get("aggregate", {})
-        glp_auc = f"{agg['glp']['mean_test_auc']:.3f}" if "glp" in agg else "—"
-        sae_auc = f"{agg['sae']['mean_test_auc']:.3f}" if "sae" in agg else "—"
-        lines.append(f"| {r.label} | {acts} | {final_loss} | {fd} | {glp_auc} | {sae_auc} |")
-    return "\n".join(lines)
+FIGURES = [flops_vs_loss, fd_vs_steps, pca_vs_steps]
 
 
 def compare_runs(run_dirs: List[str | Path], labels: Optional[List[str]] = None,
-                 name: Optional[str] = None, out_root: str | Path = "runs/comparisons",
+                 name: str = "depth_scaling", out_root: str | Path = "runs/comparisons",
                  verbose: bool = True) -> Dict[str, Any]:
-    """Render every registered cross-run comparison with enough qualifying runs.
+    """Render the depth x data-scale generation-quality report from finished runs.
 
-    Writes to `<out_root>/<name>/{figures/*.png, comparison_summary.md}` — a sibling
-    of individual runs' `runs/<run>/`, never inside one of them, so a comparison can
-    never be mistaken for one run's own output (or clobber one).
+    Writes `<out_root>/<name>/{figures/*.png, scaling_table.csv, comparison_summary.md}`
+    — a sibling of the individual runs, never inside one of them.
     """
     style.apply_style()
+    name = name or "depth_scaling"
     labels = labels or [None] * len(run_dirs)
     runs = [_load_run(d, l) for d, l in zip(run_dirs, labels)]
 
-    name = name or "_vs_".join(r.label for r in runs)
     out_dir = Path(out_root) / name
     figures_dir = out_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     made: List[str] = []
-    for fn in COMPARISONS:
+    for fn in FIGURES:
         try:
             out = fn(runs, figures_dir)
-        except Exception as e:  # a broken comparison must not sink the rest
+        except Exception as e:  # a broken figure must not sink the rest
             if verbose:
                 print(f"[compare] {fn.__name__}: FAILED ({type(e).__name__}: {e})")
             continue
@@ -231,9 +322,12 @@ def compare_runs(run_dirs: List[str | Path], labels: Optional[List[str]] = None,
             if verbose:
                 print(f"[compare] {fn.__name__} -> {out}")
         elif verbose:
-            print(f"[compare] {fn.__name__}: skipped (< 2 runs have this metric yet)")
+            print(f"[compare] {fn.__name__}: skipped (inputs missing)")
 
-    md = [f"# Comparison: {' vs '.join(r.label for r in runs)}", "", _summary_table(runs)]
+    table = scaling_table(runs, figures_dir.parent)
+    md = ["# Depth × data-scale generation-quality comparison", "",
+          "Generation only (FD / PCA / loss) — the block scan follows GLP's protocol of "
+          "comparing architectures by Fréchet Distance. No probing.", "", table]
     if made:
         md += ["", "## Figures", ""]
         md += [f"![{Path(p).stem}](figures/{Path(p).name})" for p in made]
@@ -241,6 +335,5 @@ def compare_runs(run_dirs: List[str | Path], labels: Optional[List[str]] = None,
     summary_path.write_text("\n".join(md) + "\n")
 
     if verbose:
-        print(f"[compare] {len(made)} figure(s) -> {figures_dir}")
-        print(f"[compare] summary -> {summary_path}")
+        print(f"[compare] {len(made)} figure(s) + table -> {out_dir}")
     return {"out_dir": str(out_dir), "figures": made, "summary": str(summary_path)}

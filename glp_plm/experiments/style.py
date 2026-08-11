@@ -52,11 +52,13 @@ METHOD_COLORS = {
     "raw_mlp": ORANGE_LIGHT,
 }
 
-# generation_pca (all-pairs scatter, 2 categories): reuses the same validated
-# glp/sae pair so "orange = model output" and "purple = ground truth" reads the
-# same way in every figure that draws the distinction.
-GENERATED_COLOR = ORANGE_DARK
-REAL_COLOR = PURPLE_LIGHT
+# PCA overlays (generation_pca, pca_vs_steps): two overlapping point clouds, so the
+# pair must be maximally distinguishable. ORANGE_MID / PURPLE_MID (#f17628/#ba5895)
+# — validated ΔE ~20 normal / ~11-20 CVD (dataviz validate_palette.js), far more
+# separable than the earlier dark-orange/light-purple pair (which read as red/pink).
+# "orange = model output, purple = ground truth."
+GENERATED_COLOR = ORANGE_MID
+REAL_COLOR = PURPLE_MID
 
 # Single-series accent: the lone-line/lone-bar "this is GLP" mark for charts with
 # no second method to contrast against (training loss, LR schedule, FD-vs-steps,
@@ -69,7 +71,7 @@ ACCENT = PURPLE_LIGHT
 # (never cycled), validated end-to-end as one adjacent Hamiltonian path.
 PALETTE = [ORANGE_DARK, PURPLE_LIGHT, PURPLE_DARK, ORANGE_MID, PURPLE_MID, ORANGE_LIGHT]
 
-SURFACE = "#fcfcfb"      # chart surface
+SURFACE = "#ffffff"      # chart surface — plain white
 INK = "#0b0b0b"          # primary text
 SECONDARY = "#52514e"    # secondary text
 MUTED = "#898781"        # axis / tick labels
