@@ -1,0 +1,55 @@
+# 100M depth-scaling grid — batch 4096, cell = 3 GLP blocks. Completes the missing cell
+# of Dani's 100M grid (uniref50_100m_4096_b6/b12/b24 already done). Matches his config
+# exactly except n_blocks (3) and output_dir. Reuses his shared 100M store via
+# data.store_dir = uniref50_100m_4096/train_store — no re-extraction. FD-only.
+#
+# This cell: 3 blocks -> ~11.1M params, 3*1280 = 3,840 meta-neurons.
+
+device: cuda
+precision: fp32
+seed: 0
+output_dir: runs/uniref50_100m_4096_b3
+
+model:
+  activation_dim: 320
+  d_model: null         # -> 640
+  d_mlp: null           # -> 1280
+  n_blocks: 3
+
+data:
+  model_name: facebook/esm2_t6_8M_UR50D
+  layer: 4
+  n_train_activations: 100000000
+  store_mode: precache
+  activation_dtype: float16
+  train_fasta: uniref50
+  store_dir: uniref50_100m_4096/train_store       # reuse Dani's shared 100M store (no re-extract)
+  eval_uniprot_tsv: null
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20
+  fd_num_steps: 1000
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5
+  batch_size: 4096
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 50
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]
+  topk: 512
+  seed: 42
