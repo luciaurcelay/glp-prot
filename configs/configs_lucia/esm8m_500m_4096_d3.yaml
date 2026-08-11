@@ -1,0 +1,57 @@
+# GLP depth-scaling grid — 500M activations, batch 4096. See configs_lucia/README.md.
+# Varies ONLY n_blocks across the grid (3/6/12/24); everything else fixed. Reuses the
+# already-extracted 500M UniRef50 store via data.store_dir — no re-extraction per cell.
+# Block scan is FD-only (GLP-paper protocol: compare architectures by Fréchet Distance),
+# so no eval store / probing is needed; uncomment data.eval_dir to also probe.
+#
+# This cell: 3 blocks -> ~11.1M params, 3*1280 = 3,840 meta-neurons.
+
+device: cuda
+precision: fp32
+seed: 0
+output_dir: runs/uniref50_500m_4096_d3
+
+model:
+  activation_dim: 320
+  d_model: null         # -> 640
+  d_mlp: null           # -> 1280
+  n_blocks: 3
+
+data:
+  model_name: facebook/esm2_t6_8M_UR50D
+  layer: 4
+  n_train_activations: 500000000
+  store_mode: precache
+  activation_dtype: float16
+  train_fasta: uniref50
+  store_dir: uniref50_500m/train_store            # reuse the extracted 500M store (no re-extract)
+  # eval_dir: uniref50_100m/swissprot/processed   # uncomment to also probe (FD-only grid by default)
+  eval_uniprot_tsv: null
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20
+  fd_num_steps: 1000
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5
+  batch_size: 4096
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 50
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]
+  topk: 512
+  seed: 42
