@@ -59,6 +59,7 @@ def main():
     print(f"[train_glp] training on {raw.shape[0]:,} activations (d={raw.shape[1]}) on {device}")
 
     run_logger = RunLogger(out)
+    run_logger.log_config(cfg)
     model = GLPDenoiser(cfg.model)
     fit(model, raw, lr=cfg.train.lr, batch_size=cfg.train.batch_size,
         num_epochs=cfg.train.num_epochs, warmup_ratio=cfg.train.warmup_ratio,

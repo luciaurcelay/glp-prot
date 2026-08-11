@@ -68,6 +68,16 @@ class RunLogger:
     def reset_series(self, phase: str) -> None:
         self.series_path(phase).unlink(missing_ok=True)
 
+    # ---- full config dump (every knob, not just the ones a script chooses to log) ----
+    def log_config(self, config: Any) -> None:
+        """Write every Config field to `<run_dir>/config.yaml` (source of truth for repro)."""
+        import dataclasses
+
+        import yaml
+
+        data = dataclasses.asdict(config) if dataclasses.is_dataclass(config) else dict(config)
+        (self.dir / "config.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
+
     # ---- summary scalars (merged) ----
     @property
     def summary_path(self) -> Path:

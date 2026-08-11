@@ -152,6 +152,7 @@ def main():
     # Resumable: each (concept, method) is appended as it finishes, so a crash or
     # interruption costs one probe, not the whole sweep.
     run = RunLogger(out)
+    run.log_config(cfg)
     suffix = "" if args.metric == "auc" else f"_{args.metric}"
     partial = run.metrics_dir / f"probing_partial{suffix}.jsonl"
     results = []

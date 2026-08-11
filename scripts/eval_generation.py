@@ -70,6 +70,7 @@ def main():
         return scaler.destandardize(z.cpu())
 
     run = RunLogger(out)
+    run.log_config(cfg)
     fd_lb = frechet_distance(real_anchor_a, real_anchor_b)
 
     # optional sweep: FD is meaningless without stating the step count (PLAN §6.4)
