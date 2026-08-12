@@ -12,7 +12,7 @@
 
 \documentclass{article}
 
-\usepackage{neurips_2024}          % anonymous submission mode (no [final])
+\usepackage{neurips_2026}          % anonymous submission mode (no [final])
 % FALLBACK (use only if neurips_2024.sty is unavailable):
 % \usepackage[margin=1in]{geometry}
 
@@ -25,8 +25,7 @@
 \usepackage{graphicx}
 \usepackage{subcaption}
 
-\title{Generative Latent Priors for Protein Language Models:\\
-       Training a Diffusion Model of ESM-2 Activations and its Compute Scaling}
+\title{Generative Latent Priors for Protein Language Models}
 
 % Anonymous for submission — the neurips_2024 style (no [final]) replaces this block.
 \author{%
@@ -40,11 +39,10 @@
 \maketitle
 
 \begin{abstract}
-The Generative Latent Prior (GLP) is a diffusion model \emph{of a frozen network's
+(ingore for now) The Generative Latent Prior (GLP) is a diffusion model \emph{of a frozen network's
 activations}, introduced for large language models. We port GLP to protein language
 models: we build a data pipeline that reads ESM-2 activations at the exact hook point
-InterPLM's released sparse autoencoders (SAEs) consume --- byte-identical, unit-tested
---- train a GLP by flow matching, and characterize its generation quality and how that
+InterPLM's released sparse autoencoders (SAEs) consume, train a GLP via flow matching, and characterize its generation quality and how that
 quality scales. Across a grid of model depth (3--24 transformer-style blocks) and
 training data (100M vs.\ 500M activations), GLP trains stably below the trivial-predictor
 floor, its samples lie on the real activation manifold, and Fréchet Distance (FD)
@@ -230,6 +228,7 @@ SDEdit \cite{meng2022sdedit} and measure the concept-strength / naturalness trad
 against naive SAE clamping; extend the scaling grid to a wider compute range and to
 ESM-2-650M to constrain $E$ and test whether the power law holds across host sizes.
 
+\newpage
 \appendix
 
 \section{Reading the compute-scaling figure (Fig.~\ref{fig:flops})}
