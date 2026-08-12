@@ -4,20 +4,10 @@
 %
 %  BUILD NOTES
 %  -----------
-%  NeurIPS style is SINGLE column. This file expects `neurips_2024.sty`, which is
-%  not bundled here. On Overleaf: upload neurips_2024.sty next to this file
-%  (https://neurips.cc/Conferences/2024/PaperInformation/StyleFiles).
-%
-%  Submission (anonymous) mode: `\usepackage{neurips_2024}` WITHOUT [final] prints
-%  "Anonymous Author(s)" and ignores the author block below. For a camera-ready,
-%  non-anonymous version, add [final] and fill in the author block.
-%
-%  If you just want it to compile immediately without that file, comment out the
-%  \usepackage{neurips_2024} line and uncomment the geometry fallback marked
-%  FALLBACK below — layout differs slightly but everything else works.
-%
-%  Figures live in docs/figures/ (committed, from the 100M MareNostrum-5 run).
-%  Compile from docs/.
+%  NeurIPS style is SINGLE column. Expects `neurips_2024.sty` (not bundled here;
+%  upload it next to this file on Overleaf). Submission (anonymous) mode:
+%  `\usepackage{neurips_2024}` WITHOUT [final]. Add [final] + fill the author block
+%  for a camera-ready. Figures live in docs/figures/ (committed); compile from docs/.
 % ============================================================================
 
 \documentclass{article}
@@ -36,10 +26,9 @@
 \usepackage{subcaption}
 
 \title{Generative Latent Priors for Protein Language Models:\\
-       Do Diffusion Meta-Neurons Isolate Biological Concepts?}
+       Training a Diffusion Model of ESM-2 Activations and its Compute Scaling}
 
-% Anonymous for submission — the neurips_2024 style (no [final]) replaces this
-% block with "Anonymous Author(s)".
+% Anonymous for submission — the neurips_2024 style (no [final]) replaces this block.
 \author{%
   Anonymous Author(s) \\
   Affiliation \\
@@ -51,231 +40,262 @@
 \maketitle
 
 \begin{abstract}
-Sparse autoencoders (SAEs) are the dominant tool for interpreting protein language
-models, and increasingly a substrate for \emph{discovery} --- reading out, and
-steering, biological concepts. But they bake in a strong assumption: that activations
-decompose as a \emph{sparse, non-negative, linear} sum of dictionary atoms, which
-bounds what can be found to what the dictionary already spans. We ask whether a
-\emph{generative} model of activations, unconstrained by sparsity or linearity, is a
-richer discovery substrate. We port the Generative Latent Prior (GLP) --- a diffusion
-model \emph{of neural activations} --- from LLMs to ESM-2, and study its internal units
-(``meta-neurons''). On 104 pre-registered Swiss-Prot concepts, \emph{single} GLP
-meta-neurons isolate biological concepts better than every baseline: mean test AUC
-$0.953$ versus $0.900$ for InterPLM's released SAE, $0.916$ for ESM's own FFN neurons,
-and $0.861$ for the raw residual stream --- every paired comparison significant --- with
-the largest margins exactly where the SAE is weakest (structural and binding/catalytic
-concepts). Because GLP is generative, the same model doubles as an on-manifold prior for
-\emph{steering} activations toward new functions, which a purpose-built dictionary cannot
-supply. Results are from a 100M-activation run on ESM-2-8M; a larger run and
-concept-steering are in progress.
+The Generative Latent Prior (GLP) is a diffusion model \emph{of a frozen network's
+activations}, introduced for large language models. We port GLP to protein language
+models: we build a data pipeline that reads ESM-2 activations at the exact hook point
+InterPLM's released sparse autoencoders (SAEs) consume --- byte-identical, unit-tested
+--- train a GLP by flow matching, and characterize its generation quality and how that
+quality scales. Across a grid of model depth (3--24 transformer-style blocks) and
+training data (100M vs.\ 500M activations), GLP trains stably below the trivial-predictor
+floor, its samples lie on the real activation manifold, and Fréchet Distance (FD)
+improves monotonically with both depth and data. The diffusion loss follows a
+compute power law: all eight runs collapse onto a single loss-versus-FLOPs curve, with
+our protein-activation models sitting below the published LLM-activation reference. This
+paper reports the \emph{validated substrate} --- pipeline, training, and generation
+scaling. Using GLP's internal units for concept probing and on-manifold steering is
+deliberately left as future work and is not claimed here.
 \end{abstract}
 
-\section{Motivation}
+\section{Introduction}
 
-Interpretability for protein language models is currently synonymous with sparse
-dictionary learning. InterPLM \cite{simon2024interplm} trains SAEs on ESM-2
-\cite{lin2023esm2} activations and recovers features aligned with Swiss-Prot
-annotations. The method works, and it is increasingly used not just to \emph{read}
-concepts but to \emph{act} on them --- clamping a feature to steer a protein. But it
-\emph{builds in} the hypothesis it is testing: features are assumed sparse,
-non-negative, and linearly composable. Whatever biology does not fit a sparse-linear
-dictionary is, by construction, invisible to it --- both to discover and to steer.
+Interpreting and modeling the activations of protein language models (PLMs) is a growing
+area, led by sparse dictionary learning: InterPLM \cite{simon2024interplm} trains SAEs on
+ESM-2 \cite{lin2023esm2} activations and recovers features aligned with Swiss-Prot
+annotations. The Generative Latent Prior \cite{luo2026glp} offers a complementary,
+\emph{generative} lens: rather than decomposing activations into a sparse dictionary, GLP
+trains a diffusion model on the activations of a frozen host network, learning their
+distribution directly, with no linearity or sparsity assumption. In the LLM setting GLP
+serves both as a lens on representations and as an on-manifold prior for editing
+activations.
 
-The Generative Latent Prior \cite{luo2026glp} offers a different lens. GLP trains a
-diffusion model on the activations of a frozen host network, learning their
-\emph{distribution} with no linearity or sparsity constraint. Its internal units
-(``meta-neurons'') are a byproduct of that objective rather than its purpose. Two things
-follow if those units track biology at least as well as a purpose-built dictionary.
-First, the generative model is a broader \emph{discovery} substrate: concept structure
-can live in dense, non-linear units a sparse dictionary would never surface. Second, the
-same model is a learned \emph{prior} over the activation manifold --- so it can steer
-activations toward new functions while keeping them on-manifold, an operation a static
-dictionary has no way to perform.
-
-We report a first port of GLP to protein LMs, with two deliverables: (i) a concept
-probing comparison (complete, below), which tests the discovery claim directly, and
-(ii) on-manifold concept steering (design complete, in progress), which tests the
-prior.
+We take the first step of porting GLP to PLMs. Our contribution here is deliberately
+scoped to the parts we have \emph{built and validated}: (i) a data pipeline that produces
+GLP training activations byte-identical to InterPLM's SAE substrate; (ii) a flow-matching
+GLP trained on ESM-2 activations; and (iii) a study of its generation quality and how
+that quality scales with model depth and training data. The downstream promise of GLP for
+protein discovery --- surfacing concept-carrying units, and steering activations toward
+new functions on-manifold --- motivates this substrate but is future work; we do not make
+probing or steering claims in this paper.
 
 \section{Method}
 
-\textbf{Substrate.} ESM-2-8M is frozen throughout. We hook the residual stream after
-transformer block 4 ($d{=}320$), which is byte-identical to what InterPLM's released
-SAE consumed --- a unit test enforces this ``hook parity'', since any mismatch would
-invalidate the comparison.
+\textbf{Substrate and hook parity.} ESM-2-8M (\texttt{facebook/esm2\_t6\_8M\_UR50D}) is
+frozen throughout. We read the residual stream after transformer block 4
+($d{=}320$), the exact tensor InterPLM's released SAE was trained on. A unit test
+enforces this ``hook parity'' against InterPLM's own embedder, since any mismatch would
+make future SAE-vs-GLP comparisons meaningless (Appendix~\ref{app:pipeline}).
 
-\textbf{GLP.} A stack of 6 SwiGLU MLP blocks (20.9M parameters, no attention,
-single-token) trained by flow matching: given a clean standardised activation $z_0$,
-noise $\epsilon$, and $t\!\sim\!U(0,1)$, form $z_t = (1{-}t)z_0 + t\epsilon$ and
-regress the velocity $\epsilon - z_0$ under MSE. Training uses 100M activations
-extracted from a 5M-sequence reservoir sample of UniRef50 --- the same distribution
-InterPLM's SAE was trained on --- with all evaluation proteins excluded (below).
-\emph{Meta-neurons} are the $6\times1280 = 7{,}680$ per-block gated-MLP activations read
-at a chosen noise level.
+\textbf{Data pipeline.} We reservoir-sample sequences from UniRef50 --- the distribution
+InterPLM's SAE was trained on --- embed them through frozen ESM-2 at the hooked layer, and
+write the per-residue activations to a memory-mapped \texttt{float16} store with a fitted
+per-feature standardizer. A single store is reused across all runs at a given data scale
+(100M or 500M activations), so a depth sweep never re-extracts (Appendix~\ref{app:repro}).
 
-\textbf{Probing.} For each concept we ask whether a \emph{single} unit isolates it ---
-not whether the representation as a whole decodes it. Per concept and method: filter
-to 512 candidates on train, fit a 1-D logistic regression per candidate, select by
-validation AUC, and report that unit's AUC on \emph{held-out test proteins}. Four
-representations receive an identical candidate budget: GLP meta-neurons, SAE features
-(10,240), ESM's FFN neurons (1,280), and the raw residual stream (320).
+\textbf{GLP model.} GLP is a stack of SwiGLU MLP blocks (LayerNorm, timestep-modulated
+gate; no attention; single-token), with $d_{\text{model}}{=}640$ and
+$d_{\text{mlp}}{=}1280$. Depth $n_{\text{blocks}}$ is the variable we scan
+($3,6,12,24$ blocks $=$ $11.1$--$80.0$M parameters). It is trained by flow matching: given
+a standardized activation $z_0$, noise $\epsilon$, and $t\!\sim\!U(0,1)$, form
+$z_t = (1{-}t)z_0 + t\epsilon$ and regress the velocity $\epsilon - z_0$ under MSE. (The
+per-block gated activations, which GLP calls ``meta-neurons,'' are the internal units a
+future probing/steering study would examine; we do not use them here.)
 
-\textbf{Fairness controls.} The concept set is frozen \emph{before} any probing, using
-only Swiss-Prot frequency statistics and the SAE's own tractability --- never GLP
-output. Training proteins exclude every evaluation protein (verified zero overlap):
-because the SAE was trained on a disjoint UniRef50 sample, any leakage would advantage
-GLP asymmetrically, so we remove it by construction.
+\textbf{Training.} Batch size $4096$ (GLP's reference batch), learning rate $5{\times}10^{-5}$
+with cosine decay and warmup, one epoch over the activation store. At 500M activations one
+epoch is $\approx$122k steps; at 100M, $\approx$24k. Training checkpoints periodically and
+auto-resumes, so a run interrupted by the cluster wall clock continues on resubmit.
+
+\textbf{Generation quality.} We sample activations from noise ($t_{\text{start}}{=}1$) with
+an Euler sampler, de-standardize, and compare to held-out real activations by (i)
+Fréchet Distance FD(generated, real) against the FD(train, val) real-vs-real lower bound,
+and (ii) top-2 PCA overlap. FD depends strongly on the number of sampler steps and must be
+quoted with it (Appendix~\ref{app:fd}); we report FD at 1000 steps.
 
 \section{Results}
 
-\textbf{The generative model is sound.} The flow-matching loss converges to $0.90$,
-well below the $\approx\!2.0$ trivial-predictor floor (Fig.~\ref{fig:gen}a). Generated
-activations occupy the real distribution's principal subspace: projected onto the real
-data's top-2 PCs they overlap closely (Fig.~\ref{fig:main}c), matching its spread (std
-ratio $0.93$) and centre (mean gap $0.04$ in PC-std units), with near-identical captured
-variance ($0.157$ vs.\ $0.153$). Fr\'echet Distance between generated and real
-activations is $3.63$ at 1000 sampler steps against a real-vs-real lower bound of
-$0.96$. FD is strongly sampler-dependent --- $11.85$ at 20 steps, falling monotonically
-to $3.63$ at 1000 (Fig.~\ref{fig:gen}b) --- and must always be quoted with its step
-count.
-
-\textbf{GLP meta-neurons isolate concepts better than all baselines}
-(Table~\ref{tab:auc}, Fig.~\ref{fig:main}a). Paired bootstrap over the 104 concepts:
-GLP\,$-$\,SAE $= +0.053$ (95\% CI $[+0.042,+0.064]$, wins 88/104);
-GLP\,$-$\,FFN $= +0.036$ ($[+0.030,+0.044]$, 92/104);
-GLP\,$-$\,raw $= +0.092$ ($[+0.081,+0.103]$, 101/104) --- all significant. The gains
-concentrate exactly where the SAE is weakest (Fig.~\ref{fig:main}b): $+0.10$ on
-structural and $+0.11$ on binding/catalytic concepts (small buckets, $n{=}4$ and
-$n{=}2$), versus $+0.015$ on the chemical/PTM concepts the SAE already handles well.
-Notably the SAE is \emph{not} the strongest baseline --- ESM's own FFN neurons beat it
-($0.916$ vs.\ $0.900$) --- so the informative dense-vs-dense control is GLP versus FFN,
-which GLP also wins. The selected probing noise level was $u{=}0.9$ for 85/104 concepts,
-independently reproducing GLP's released default.
-
-\begin{table}[t]
-\centering
-\caption{1-D probing, 104 pre-registered Swiss-Prot concepts (100M-activation run,
-ESM-2-8M). Mean test AUC with 95\% bootstrap CIs. Selection on validation, reporting on
-held-out test proteins.}
-\label{tab:auc}
-\begin{tabular}{lcc}
-\toprule
-Representation & Units & Mean test AUC \\
-\midrule
-\textbf{GLP meta-neurons} & 7{,}680 & $\mathbf{0.953}$ $[0.941, 0.964]$ \\
-ESM FFN neurons           & 1{,}280 & $0.916$ $[0.901, 0.931]$ \\
-InterPLM SAE              & 10{,}240 & $0.900$ $[0.880, 0.919]$ \\
-Raw residual stream       & 320     & $0.861$ $[0.844, 0.878]$ \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textbf{GLP trains stably.} The flow-matching loss falls well below the
+$\approx\!2.0$ trivial-predictor floor (predicting $0$ gives
+$\mathbb{E}\|\epsilon - z_0\|^2/d \approx 2$ for standardized $z_0$), converging to
+$0.84$--$1.02$ depending on scale (Fig.~\ref{fig:train}). Generated activations occupy the
+real distribution's principal subspace and refine toward it as sampler steps increase
+(Fig.~\ref{fig:pca}): at one step the sampler output is a collapsed blob, and by 1000
+steps it fills the real cloud.
 
 \begin{figure}[t]
 \centering
-\begin{subfigure}[b]{0.32\textwidth}
-  \includegraphics[width=\textwidth]{figures/probing_auc.png}
-  \caption{}
-\end{subfigure}
-\hfill
-\begin{subfigure}[b]{0.32\textwidth}
-  \includegraphics[width=\textwidth]{figures/probing_per_concept.png}
-  \caption{}
-\end{subfigure}
-\hfill
-\begin{subfigure}[b]{0.32\textwidth}
-  \includegraphics[width=\textwidth]{figures/generation_pca.png}
-  \caption{}
-\end{subfigure}
-\caption{(a) Mean test AUC by representation, 95\% bootstrap CIs, 104 concepts.
-(b) Per-concept GLP vs.\ SAE; points above the diagonal favour GLP, and the largest
-margins occur where the SAE is weakest. (c) Generated vs.\ real activations projected
-onto the real data's top-2 principal components.}
-\label{fig:main}
-\end{figure}
-
-\begin{figure}[t]
-\centering
-\begin{subfigure}[b]{0.32\textwidth}
+\begin{subfigure}[b]{0.46\textwidth}
   \includegraphics[width=\textwidth]{figures/training_loss.png}
-  \caption{}
+  \caption{Training loss (24-block, 500M).}
+  \label{fig:train}
 \end{subfigure}
 \hfill
-\begin{subfigure}[b]{0.32\textwidth}
-  \includegraphics[width=\textwidth]{figures/fd_vs_steps.png}
-  \caption{}
+\begin{subfigure}[b]{0.52\textwidth}
+  \includegraphics[width=\textwidth]{figures/flops_vs_loss.png}
+  \caption{Compute scaling of the diffusion loss.}
+  \label{fig:flops}
 \end{subfigure}
-\hfill
-\begin{subfigure}[b]{0.32\textwidth}
-  \includegraphics[width=\textwidth]{figures/generation_fd.png}
-  \caption{}
-\end{subfigure}
-\caption{Generation quality (100M-activation run). (a) Flow-matching loss vs.\ training
-step, converging below the $\approx\!2.0$ trivial-predictor floor. (b) FD vs.\ sampler
-steps: FD reports sampler error at low step counts, so it must be quoted with its step
-count. (c) FD(generated, real) against the real-vs-real lower bound at 1000 steps.}
-\label{fig:gen}
+\caption{(a) GLP converges below the trivial-predictor floor ($\approx 2.0$). (b) The
+smoothed final loss of all eight (depth $\times$ data) runs collapses onto a single
+power law in compute $C = 6ND$ (Appendix~\ref{app:flops}); our protein-activation curve
+sits below the published LLM-activation reference (dotted).}
+\label{fig:loss}
 \end{figure}
 
-\textbf{Where the signal lives.} Per category (Table~\ref{tab:cat}), GLP leads every
-bucket, and the aggregate is dominated by the 86 domain/motif concepts. The honest read
-is the per-category one: the advantage is broad but largest on the structural and
-binding/catalytic concepts a sparse-linear dictionary captures least well --- the regime
-where an unconstrained generative substrate has the most room to help.
+\textbf{Generation quality follows a compute scaling law.} We train a grid of
+$4$ depths $\times\ 2$ data scales ($3/6/12/24$ blocks at $100$M and $500$M activations),
+comparing architectures by FD as in the original GLP work. Two clean regularities emerge.
+First, the diffusion loss follows a \emph{compute power law}: plotting the smoothed final
+loss against $C = 6ND$ ($N$ parameters, $D$ activations seen; Kaplan et al.\
+\cite{kaplan2020}), all eight runs fall on one curve (Fig.~\ref{fig:flops}). Loss depends
+essentially on total compute, not on whether that compute was spent on depth or on data ---
+a $24$-block model at $100$M and a $3$-block model at $500$M sit at similar compute
+\emph{and} similar loss. A fit $L(C) = E + A\,C^{-\alpha}$ gives slope $\alpha \approx
+0.056$; over our $\sim$1-decade compute range the irreducible term $E$ is unconstrained,
+so we report the slope and treat the fit as descriptive (Appendix~\ref{app:flops}). The
+published LLM-activation GLP reports a steeper $\alpha \approx 0.169$, yet our whole curve
+lies below it: at equal compute, our protein-activation models reach lower loss.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fd_vs_steps.png}
+\caption{Fréchet Distance vs.\ sampler steps, by GLP depth and data scale (shared
+$y$-axis). FD falls with sampler steps everywhere (quote FD with its step count). Depth
+lowers FD monotonically, and the gain is larger at $500$M than at $100$M --- more data
+lets extra depth pay off. The shallowest cells ($3$ vs.\ $6$ blocks) are near-identical at
+both scales; separation appears at $12$--$24$ blocks. Dashed lines: real-vs-real lower
+bound.}
+\label{fig:fdsteps}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/pca_vs_steps.png}
+\caption{Sampler convergence in PCA space (24-block, 500M): generated activations
+(orange) refine from a collapsed blob at 1 step to matching the real distribution (purple)
+at 1000 steps, on the real data's top-2 principal components.}
+\label{fig:pca}
+\end{figure}
+
+\textbf{Depth and data both improve generation.} Table~\ref{tab:scaling} and
+Fig.~\ref{fig:fdsteps} show FD dropping monotonically with depth at each data scale, and
+with data at each depth. The best cell ($24$ blocks, $500$M) reaches FD $2.58$ (ratio
+$2.42\times$ over the lower bound), versus $4.28$ ($4.47\times$) for the $6$-block model at
+$100$M. Depth helps more with more data: at $100$M the FD ratio moves only $4.47\times
+\!\to\! 4.06\times$ across $6\!\to\!24$ blocks, while at $500$M it moves $3.31\times
+\!\to\! 2.42\times$. PCA spread-match and centering improve in lock-step (not shown).
 
 \begin{table}[t]
 \centering
-\caption{Mean test AUC per Swiss-Prot category ($n$ concepts). GLP leads every bucket;
-the aggregate is dominated by domain/motif ($n{=}86$).}
-\label{tab:cat}
-\begin{tabular}{lccccc}
+\caption{Depth $\times$ data-scale grid, generation quality only. $N$ = parameters,
+$C = 6ND$, FD at 1000 sampler steps; ratio is FD / real-vs-real lower bound; loss is the
+mean of the last 500 training steps (the per-step flow-matching loss is noisy;
+Appendix~\ref{app:flops}).}
+\label{tab:scaling}
+\begin{tabular}{lrrrrrr}
 \toprule
-Category & $n$ & GLP & FFN & SAE & Raw \\
+Data & Blocks & Params & $C = 6ND$ & FD@1000 & FD ratio & Loss \\
 \midrule
-Domain / motif          & 86 & $\mathbf{0.962}$ & $0.928$ & $0.908$ & $0.867$ \\
-Chemical / PTM          & 9  & $\mathbf{0.969}$ & $0.943$ & $0.954$ & $0.901$ \\
-Structural              & 4  & $\mathbf{0.765}$ & $0.703$ & $0.669$ & $0.661$ \\
-Topology / localization & 3  & $\mathbf{0.957}$ & $0.875$ & $0.938$ & $0.879$ \\
-Binding / catalytic     & 2  & $\mathbf{0.829}$ & $0.794$ & $0.721$ & $0.797$ \\
+100M & 3  & 11.1M & $6.7{\times}10^{15}$ & 4.27 & 4.47$\times$ & 1.017 \\
+100M & 6  & 20.9M & $1.3{\times}10^{16}$ & 4.28 & 4.47$\times$ & 0.989 \\
+100M & 12 & 40.6M & $2.4{\times}10^{16}$ & 3.97 & 4.15$\times$ & 0.956 \\
+100M & 24 & 80.0M & $4.8{\times}10^{16}$ & 3.88 & 4.06$\times$ & 0.924 \\
+\midrule
+500M & 3  & 11.1M & $3.3{\times}10^{16}$ & 3.54 & 3.33$\times$ & 0.946 \\
+500M & 6  & 20.9M & $6.3{\times}10^{16}$ & 3.52 & 3.31$\times$ & 0.902 \\
+500M & 12 & 40.6M & $1.2{\times}10^{17}$ & 3.23 & 3.04$\times$ & 0.863 \\
+\textbf{500M} & \textbf{24} & \textbf{80.0M} & $2.4{\times}10^{17}$ & \textbf{2.58} & \textbf{2.42$\times$} & \textbf{0.835} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \section{Limitations}
 
-(i) A larger 500M-activation run is in progress but was interrupted by the cluster
-wall-clock limit mid-training; the results here are the completed 100M run, and the
-scaling point is not yet available. (ii) Domain-adjusted F1 --- which at pilot scale
-told a different story from AUC (the SAE fired rarely but precisely) --- has not been
-recomputed at 100M and is not claimed here. (iii) 86 of 104 concepts fall in the
-domain/motif category, so the aggregate is dominated by one bucket; the per-category
-breakdown (Table~\ref{tab:cat}) is the honest read, and the extreme-margin buckets are
-small ($n{=}2$--$4$). (iv) The generation-quality gate (\%Loss-Recovered,
-SAE-reconstruction FD) has not yet been run. (v) The steering deliverable is designed
-but not yet run, so the discovery-by-steering claim is so far only supported indirectly,
-via the probing result.
+(i) We report \emph{training} loss (smoothed over the last 500 steps), not held-out
+validation loss; the compute-scaling collapse should be read with that caveat.
+(ii) The compute range spans $\sim$1 decade, too narrow to pin the irreducible-error term
+$E$ of the power law --- we report only the slope $\alpha$.
+(iii) Generation quality is measured by FD and PCA overlap; the reconstruction-based
+anchors (\%Loss-Recovered, SAE-reconstruction FD) are not yet run.
+(iv) We study a single host (ESM-2-8M) at a single hook layer, and vary only depth (not
+width) in the scaling grid.
+(v) The downstream uses that motivate GLP for proteins --- probing its internal units for
+biological concepts, and on-manifold concept steering --- are \emph{not} validated in this
+paper and are stated only as future work.
 
 \section{Next steps}
 
-\textbf{Complete the current scale.} Resume the interrupted 500M-activation run from its
-checkpoint for a scaling point, and compute domain-adjusted F1 at 100M to test whether
-the SAE's precision edge seen at pilot scale persists. Run the generation gate
-(\%Loss-Recovered, SAE-reconstruction FD). Run the nonlinearity falsification test --- if
-a winning meta-neuron is linearly predictable from the SAE dictionary ($R^2$ high), the
-advantage is repackaging rather than new structure, and we would retract the stronger
-claim.
+Validate GLP's meta-neurons as a concept-probing substrate against the InterPLM SAE (and a
+nonlinearity falsification test); build on-manifold concept steering via activation-space
+SDEdit \cite{meng2022sdedit} and measure the concept-strength / naturalness trade-off
+against naive SAE clamping; extend the scaling grid to a wider compute range and to
+ESM-2-650M to constrain $E$ and test whether the power law holds across host sizes.
 
-\textbf{Steering (deliverable 2): discovery by editing.} SAE-based concept clamping
-produces off-manifold activations that degrade downstream predictions. GLP supplies a
-learned prior: noise the edited activation and denoise it back (an activation-space
-SDEdit \cite{meng2022sdedit}), then measure the concept-strength / naturalness Pareto
-frontier against naive clamping. This is where the generative substrate should pay off
-for \emph{discovery} --- steering a protein toward a new function while staying on the
-data manifold, rather than merely reading a concept out. The periodic-glycine features
-characterised by InterPLM give a cheap, reproducible testbed.
+\appendix
 
-\textbf{If time permits.} ESM-2-650M as a second scaling point, ESMFold pLDDT as a
-foldability metric for steered sequences, and a scaling curve relating diffusion loss to
-probe AUC.
+\section{Reading the compute-scaling figure (Fig.~\ref{fig:flops})}
+\label{app:flops}
+
+Training a model costs \emph{compute} --- the total amount of arithmetic performed. A
+standard estimate \cite{kaplan2020} is $C = 6\,N\,D$, where $N$ is the number of model
+parameters (how large the model is) and $D$ is the number of training tokens it processes
+(here, activation vectors seen --- i.e.\ our data size). The factor $6$ is a fixed
+bookkeeping constant for one forward-plus-backward pass per token. So a model accumulates
+more compute if it is \emph{bigger} (larger $N$) \emph{or} trained on \emph{more data}
+(larger $D$). Fig.~\ref{fig:flops} plots this compute $C$ on the horizontal axis (log
+scale: each gridline is $10\times$ more) against the final training loss on the vertical
+axis (lower is better).
+
+Each point is one of our eight trained models (four depths $\times$ two data sizes). The
+key observation is that they fall on a single downward line: the loss depends
+essentially on the \emph{total} compute, not on \emph{how} it was spent --- a small model
+on lots of data reaches about the same loss as a bigger model on less data, provided the
+compute matches. Such a relationship is called a \emph{scaling law}.
+
+We summarize the line by fitting $L(C) = E + A\,C^{-\alpha}$. Two numbers carry the
+meaning. $\alpha$ (``alpha'') is the slope: how quickly the loss falls as compute grows ---
+a larger $\alpha$ means faster improvement per unit of compute. $E$ is the
+\emph{irreducible} loss, the floor you would approach with infinite compute ($A$ is just a
+scale constant). We find $\alpha \approx 0.056$. The original GLP work, on
+language-model activations, reported $\alpha \approx 0.169$: their loss fell faster with
+compute, but our entire curve sits lower, meaning our protein-activation models reach a
+lower loss at the same compute. Because our compute range is short ($\sim$1 decade), the
+data does not reach far enough toward the floor to estimate $E$ reliably, so we report only
+the slope and treat the fitted curve as a descriptive guide rather than a precise law.
+
+\section{Fréchet Distance and its sampler dependence}
+\label{app:fd}
+
+FD compares two point clouds (here, generated vs.\ real activations) by their mean and
+covariance --- lower is better, and it is $0$ only when the two match in those first two
+moments. Because our generator is a diffusion sampler, its output quality depends on the
+number of integration steps: too few steps and FD mostly reports \emph{sampler} error, not
+model quality. Fig.~\ref{fig:fdsteps} makes this explicit --- FD falls steeply from 20 to
+1000 steps --- so every FD number must be stated with its step count (we use 1000). We also
+report FD as a \emph{ratio} to the FD(train, val) real-vs-real lower bound, which is the
+smallest FD achievable from finite samples of the true distribution; a ratio of $1$ would
+be perfect, and the ratio is comparable across models trained on the same data.
+
+\section{Hook parity and the data pipeline}
+\label{app:pipeline}
+
+GLP is only a faithful model of ``what ESM-2 computes'' if it trains on exactly the tensor
+of interest. We read \texttt{hidden\_states[4]} (the residual stream after transformer
+block 4) with cls/eos tokens dropped, which is byte-identical to what InterPLM's released
+SAE consumed; a unit test asserts equality against InterPLM's own embedder. Activations
+are extracted once per data scale into a memory-mapped \texttt{float16} store with a fitted
+standardizer (subtract mean, divide by standard deviation per feature), and all model/depth
+variants at that scale read the same store. Standardization is applied per batch at train
+time, never materializing the whole store in float32.
+
+\section{Scaling-grid reproducibility}
+\label{app:repro}
+
+Because the activation store depends only on the data (host model, hook layer, sequences,
+count) and not on the GLP architecture or batch size, the depth grid at a given scale
+shares one store; configs declare it explicitly so no cell re-extracts. Each run records
+its full resolved configuration and a per-launch manifest (SLURM allocation, git commit,
+submit arguments), and training is checkpoint/resumable, so any cell can be reproduced or
+continued from its recorded state.
 
 \begin{thebibliography}{9}
 \small
@@ -295,6 +315,11 @@ language model.
 G.~Luo et~al.
 \newblock Generative Latent Priors: diffusion models of neural activations.
 \newblock 2026.
+
+\bibitem{kaplan2020}
+J.~Kaplan et~al.
+\newblock Scaling laws for neural language models.
+\newblock \emph{arXiv:2001.08361}, 2020.
 
 \bibitem{meng2022sdedit}
 C.~Meng et~al.
