@@ -9,7 +9,7 @@
 device: cuda
 precision: fp32
 seed: 0
-output_dir: runs/uniref50_500m_4096_d24
+output_dir: runs/uniref50_500m_4096_d24_steering
 
 model:
   activation_dim: 320

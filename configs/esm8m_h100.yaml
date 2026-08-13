@@ -1,50 +1,30 @@
-# Canonical cluster config (PLAN §8/§9, GATE G2) — the single source of truth for the
-# 6-block/d=320 GLP spine on MN5/H100. Unifies what used to be three near-duplicate
-# files (mid_mn5.yaml, uniref50_100m.yaml, and this one): all three carried identical
-# model/diffusion/sampler/train/probing blocks and differed only in data source, scale,
-# and output_dir. mid_mn5.yaml's job (prove the cluster launchers reproduce the local
-# `local_clean` result at 10M Swiss-Prot acts) is done — job 43929721, 2026-07-28,
-# PLAN §9 — so it's retired; this file now carries the next step, real UniRef50 at
-# 100M acts, forward.
+# Canonical cluster config — GLP spine on MN5/H100, 100M-activation UniRef50, batch 4096.
 #
-# precision/store_mode stay fp32/precache, NOT bf16/stream: Config.check_supported()
-# raises on both (glp_plm/config.py) since mixed precision + the streaming
-# producer-consumer are still W2 work (glp_plm/data/producer_consumer.py is a stub).
-# 100M fp16 activations = 64 GB, which fits MN5 scratch precached — see
-# scripts/cluster/README.md known gaps.
-#
-# batch_size is GLP's reference batch of 4096 (Luo et al.), paired with the LR/schedule
-# already implemented here (which follow the GLP reference). We ran the earlier
-# 100M/500M pilots at 512 while validating the launchers; this is now the paper run at
-# GLP's actual batch. At 500M activations, batch 4096 = one epoch in ~122k steps.
-#
-# This is a fresh run under a NEW output_dir (uniref50_500m_4096), distinct from the
-# superseded batch-512 uniref50_500m attempts, so their checkpoints/metrics/ledgers
-# stay separate. It REUSES the already-extracted 500M activation store: point
-# $GLP_DATA_ROOT/uniref50_500m_4096/train_store at the existing
-# $GLP_DATA_ROOT/uniref50_500m/train_store (a symlink) so nothing re-extracts.
-# NOTE: changing batch_size changes total_steps and the LR schedule, so it is NOT
-# resume-compatible with a checkpoint trained at a different batch — hence a fresh run.
+# Depth scan (n_blocks 3/6/12/24, mirroring configs_lucia's 500M grid): this file is the
+# driver — data.store_dir pins it to the already-extracted 100M store, so between
+# iterations just edit model.n_blocks and output_dir (e.g. runs/uniref50_100m_4096_d3),
+# then resubmit train + eval_generation. Current: n_blocks 6 / runs/uniref50_100m_4096 (d6).
 
 device: cuda
 precision: fp32
 seed: 0
-output_dir: runs/uniref50_100m_4096
+output_dir: runs/uniref50_100m_4096_b12
 
 model:
   activation_dim: 320
   d_model: null         # -> 640
-  d_mlp: null           # -> 1280; meta-neurons = 6 * 1280 = 7,680
-  n_blocks: 6
+  d_mlp: null           # -> 1280
+  n_blocks: 12
 
 data:
   model_name: facebook/esm2_t6_8M_UR50D
   layer: 4
-  n_train_activations: 100000000   # next scale point after mid_mn5's 10M; scan on to 300M later (PLAN §6.1)
-  store_mode: precache             # `stream` unimplemented — see header
+  n_train_activations: 100000000
+  store_mode: precache
   activation_dtype: float16
-  train_fasta: uniref50            # reservoir-sampled from the local UniRef50 pull (read_fasta_slice) — real
-                                    # UniRef50, not the Swiss-Prot REST stand-in mid_mn5/local_clean used
+  train_fasta: uniref50
+  store_dir: uniref50_100m_4096/train_store   # reuse extracted store (no re-extract)
+  # eval_dir: uniref50_100m_4096/swissprot/processed   # uncomment to also probe
   eval_uniprot_tsv: null
   n_shards: 8
   valid_shard_range: [0, 3]
@@ -57,16 +37,12 @@ diffusion:
 
 sampler:
   num_steps: 20
-  fd_num_steps: 1000   # FD needs ~300+ steps to saturate (PLAN §6.4)
+  fd_num_steps: 1000
   t_start: 1.0
 
 train:
   lr: 5.0e-5
-  batch_size: 4096      # GLP reference batch (Luo et al.); see header — fresh run, not resume-compatible with 512
-
-
-
-
+  batch_size: 4096
   num_epochs: 1
   warmup_ratio: 0.01
   lr_initial_factor: 0.01

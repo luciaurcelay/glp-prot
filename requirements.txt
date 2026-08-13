@@ -21,6 +21,8 @@ typed-argument-parser
 matplotlib
 pytest
 wandb
+nnsight>=0.5.7   # InterPLM's SAE-steering entrypoint (sae/intervention.py) needs this;
+                 # InterPLM's own requirements.txt pins it but we don't pip-install that file.
 
 # Do NOT `pip install -e InterPLM` — its setup.py drops interplm/train/__init__.py
 # (missing upstream), which interplm.sae.inference needs. InterPLM and glp_plm are

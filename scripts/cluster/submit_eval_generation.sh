@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=glp-eval-gen
 #SBATCH --account=bsc70
-#SBATCH --qos=acc_bsccs
+#SBATCH --qos=acc_debug
 #SBATCH --partition=acc
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=40
-#SBATCH --time=04:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #
