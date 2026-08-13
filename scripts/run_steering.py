@@ -598,16 +598,17 @@ def sample_protein_lengths(processed: Path, split: str, n: int, seed: int,
 # --------------------------------------------------------------------------- #
 #  Part 4 — Pareto plot + rescue sanity check
 # --------------------------------------------------------------------------- #
-def pareto_and_sanity_check(rows: List[dict], out_dir: Path, run: RunLogger):
+def pareto_and_sanity_check(rows: List[dict], out_dir: Path, run: RunLogger, steer_method: str = "sae"):
     naive = [r for r in rows if not r["corrected"]]
     corrected = [r for r in rows if r["corrected"]]
+    naive_label = "naive steering (SAE only)" if steer_method == "sae" else "naive steering (DiffMean only)"
 
     style.apply_style()
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(6, 5))
     if naive:
         ax.scatter([r["naturalness_score"] for r in naive], [r["concept_score"] for r in naive],
-                  c=style.method_color("sae"), label="naive steering (SAE only)", alpha=0.75)
+                  c=style.method_color("sae"), label=naive_label, alpha=0.75)
     if corrected:
         ax.scatter([r["naturalness_score"] for r in corrected], [r["concept_score"] for r in corrected],
                   c=style.method_color("glp"), label="GLP-corrected", alpha=0.75)
@@ -1007,7 +1008,7 @@ def main():
         # CSV for the record, but excluded from the Pareto/rescue analysis, which is
         # specifically about the concept-steering tradeoff at nonzero alpha.
         steered_rows = [r for r in rows_for_pareto if r["alpha"] != 0.0]
-        pareto_and_sanity_check(steered_rows, out_dir, run)
+        pareto_and_sanity_check(steered_rows, out_dir, run, steer_method=args.steer_method)
         n_null = len(rows_for_pareto) - len(steered_rows)
         if n_null:
             null_hits = sum(1 for r in rows_for_pareto if r["alpha"] == 0.0 and r["concept_score"] > 0)
