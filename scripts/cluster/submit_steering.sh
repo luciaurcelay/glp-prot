@@ -9,14 +9,27 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #
-# Exp 4.1 steering (PLAN §11/W4, glprot_steering_spec.md): off-manifold diagnostic +
-# masked-Gibbs SAE-clamp generation + Pareto. One job sweeps the WHOLE --alphas list
-# (and both naive/corrected variants) internally — do not submit one job per alpha.
+# Steering (PLAN §11/W4, glprot_steering_spec.md v2): off-manifold diagnostic +
+# masked-Gibbs generation + Pareto, for either experiment. One job sweeps the WHOLE
+# --alphas list (and both naive/corrected variants) internally — do not submit one
+# job per alpha. Exp A and Exp B are deliberately NOT mechanically identical
+# (different init/masking/rounds/selection/folding — see run_steering.py's module
+# docstring); each experiment's own defaults kick in when ALPHAS/N_SEQUENCES below
+# are left blank ("").
 #
-# acc_debug's 2h cap is a smoke-test default (Reserve acc_debug for small --n-sequences,
-# per scripts/cluster/README.md); override qos/time for a real sweep, e.g.:
+# acc_debug's 2h cap is a smoke-test default only, and Exp A in particular blows
+# through it fast: 100 rounds/sequence (full resample every round) + mandatory
+# ESMFold (16-24GB GPU mem) is much heavier per-sequence than Exp B's 20-30-round,
+# no-fold loop. Reserve acc_debug for small --n-sequences pilots on EITHER
+# experiment; override qos/time for a real sweep, e.g.:
 #   sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_steering.sh \
-#     configs/configs_lucia/esm8m_500m_4096_d24.yaml 0.5,1,2,4,8 50
+#     A configs/configs_lucia/esm8m_500m_4096_d24.yaml "" 100
+#   sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_steering.sh \
+#     B configs/configs_lucia/esm8m_500m_4096_d24.yaml
+#
+# Exp B's first run also builds runs/<run>/steering_diffmean_hydro/gravy_contrast.json
+# (UniRef50 GRAVY contrast sets — scripts/build_gravy_contrast.py) if it doesn't
+# already exist; that step runs inline inside this same job, before generation.
 #
 # If `config.output_dir` is a run you don't own on $GLP_RUNS_ROOT (e.g. checkpoints
 # produced by a teammate), point output_dir at a directory YOU own instead (so
@@ -26,23 +39,28 @@
 # write access. See scripts/cluster/README.md and ask the run's owner for a
 # `setfacl -R -m u:<you>:rwx` grant if you need real write access instead.
 #
-# Submit from the repo root:  sbatch scripts/cluster/submit_steering.sh
-#   sbatch scripts/cluster/submit_steering.sh <config> <alphas> <n_sequences> [extra run_steering.py args...]
+# Submit from the repo root:
+#   sbatch scripts/cluster/submit_steering.sh <A|B> [config] [alphas] [n_sequences] [extra run_steering.py args...]
+# Leave alphas/n_sequences as "" to use run_steering.py's per-experiment defaults.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 source scripts/cluster/env_mn5.sh
 
-CONFIG="${1:-configs/configs_lucia/esm8m_500m_4096_d24.yaml}"
-ALPHAS="${2:-0.5,1,2,4,8}"
-N_SEQUENCES="${3:-50}"
+EXPERIMENT="${1:?experiment (A or B) is required, e.g.: sbatch scripts/cluster/submit_steering.sh A}"
+CONFIG="${2:-configs/configs_lucia/esm8m_500m_4096_d24.yaml}"
+ALPHAS="${3:-}"
+N_SEQUENCES="${4:-}"
 OUT_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")"
 RUN_NAME="$(basename "$OUT_DIR")"
-shift $(( $# < 3 ? $# : 3 ))   # remaining "$@" (if any) forwarded verbatim below
+shift $(( $# < 4 ? $# : 4 ))   # remaining "$@" (if any) forwarded verbatim below
+
+EXTRA_ARGS=("$@")
+[ -n "$N_SEQUENCES" ] && EXTRA_ARGS=(--n-sequences "$N_SEQUENCES" "${EXTRA_ARGS[@]}")
+[ -n "$ALPHAS" ] && EXTRA_ARGS=(--alphas "$ALPHAS" "${EXTRA_ARGS[@]}")
 
 # Group this attempt's logs under runs/<run>/launches/<job_id>/, append the per-run
 # launch ledger, and relocate Slurm's .out/.err there on exit (env_mn5.sh).
-record_launch "$RUN_NAME" "$CONFIG" "$ALPHAS" "$N_SEQUENCES" "$@"
+record_launch "$RUN_NAME" "$CONFIG" "$EXPERIMENT" "$ALPHAS" "$N_SEQUENCES" "$@"
 
-python scripts/run_steering.py --config "$CONFIG" \
-  --alphas "$ALPHAS" --n-sequences "$N_SEQUENCES" "$@"
+python scripts/run_steering.py --config "$CONFIG" --experiment "$EXPERIMENT" "${EXTRA_ARGS[@]}"
