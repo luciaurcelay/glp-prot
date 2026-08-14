@@ -48,10 +48,16 @@ training data (100M vs.\ 500M activations), GLP trains stably below the trivial-
 floor, its samples lie on the real activation manifold, and Fréchet Distance (FD)
 improves monotonically with both depth and data. The diffusion loss follows a
 compute power law: all eight runs collapse onto a single loss-versus-FLOPs curve, with
-our protein-activation models sitting below the published LLM-activation reference. This
-paper reports the \emph{validated substrate} --- pipeline, training, and generation
-scaling. Using GLP's internal units for concept probing and on-manifold steering is
-deliberately left as future work and is not claimed here.
+our protein-activation models sitting below the published LLM-activation reference. Using
+this substrate, we test GLP as an on-manifold prior for activation steering: for
+diff-of-means hydrophobicity steering, GLP-correction (an SDEdit-style clean-up pass)
+improves \emph{both} naturalness and concept strength simultaneously over naive steering,
+across a validated low-to-moderate steering-strength range (paired Wilcoxon $p \le 0.004$
+at every tested strength; a rescue-fraction sanity check of $68\%$). An SAE-feature
+steering experiment on a structural motif (zinc-finger) is set up under the same
+methodology but does not yet produce a clean positive result and is reported as
+in-progress, not a claim. Using GLP's internal units for concept probing is deliberately
+left as future work and is not claimed here.
 \end{abstract}
 
 \section{Introduction}
@@ -69,11 +75,14 @@ activations.
 We take the first step of porting GLP to PLMs. Our contribution here is deliberately
 scoped to the parts we have \emph{built and validated}: (i) a data pipeline that produces
 GLP training activations byte-identical to InterPLM's SAE substrate; (ii) a flow-matching
-GLP trained on ESM-2 activations; and (iii) a study of its generation quality and how
-that quality scales with model depth and training data. The downstream promise of GLP for
-protein discovery --- surfacing concept-carrying units, and steering activations toward
-new functions on-manifold --- motivates this substrate but is future work; we do not make
-probing or steering claims in this paper.
+GLP trained on ESM-2 activations; (iii) a study of its generation quality and how
+that quality scales with model depth and training data; and (iv) a first test of GLP as
+an on-manifold prior for activation steering, following a pre-registered gate (GLP's own
+generation-quality FD must beat the SAE's reconstruction-quality FD before steering claims
+are made on top of it --- Section~\ref{sec:steering-results}). The downstream promise of
+GLP for protein discovery --- surfacing concept-carrying units --- motivates this
+substrate but concept \emph{probing} is future work; we do not make probing claims in this
+paper.
 
 \section{Method}
 
@@ -108,6 +117,50 @@ an Euler sampler, de-standardize, and compare to held-out real activations by (i
 Fréchet Distance FD(generated, real) against the FD(train, val) real-vs-real lower bound,
 and (ii) top-2 PCA overlap. FD depends strongly on the number of sampler steps and must be
 quoted with it (Appendix~\ref{app:fd}); we report FD at 1000 steps.
+
+\textbf{Generation-quality gate for steering.} Before using GLP as an on-manifold prior we
+require GLP's own generation FD to beat an SAE-reconstruction FD anchor ---
+FD(SAE-decode(SAE-encode(real)), real) --- computed with the same released InterPLM SAE
+used below, plus \%Loss-Recovered (the fraction of ESM's own masked-LM loss the SAE's
+reconstruction preserves, relative to zero-ablating the hooked layer entirely; adapted
+from InterPLM's own fidelity metric). This gate passed for the $24$-block/$500$M model
+used throughout the steering experiments below: FD(generated, real) $=2.58$ vs.\
+FD(SAE-recon, real) $=22.33$ (an $8.7\times$ margin), and the SAE itself recovers
+$98.8\%$ of ESM's masked-LM loss --- so the substrate steering builds on is high-fidelity,
+and GLP models it more tightly than the SAE's own decomposition does.
+
+\textbf{On-manifold steering.} We test whether using GLP as an on-manifold prior lets
+activation steering reach a given concept strength at better naturalness than steering
+alone (``naive''), or equivalently more natural output at matched concept strength.
+Both experiments share: (i) a masked-Gibbs generation loop --- repeatedly re-mask a subset
+of sequence positions, steer the hooked-layer activations at those positions, optionally
+apply an on-manifold correction, resample the masked tokens; (ii) the correction step
+itself, SDEdit \cite{meng2022sdedit}: partially noise the steered activation to a chosen
+level $t_{\text{start}}$ and run GLP's reverse process back to $t{=}0$, so $t_{\text{start}}{=}0$
+leaves the steering edit untouched and $t_{\text{start}}{=}1$ erases it entirely; and (iii)
+Pareto analysis (naturalness via pseudo-perplexity vs.\ concept strength, naive vs.\
+GLP-corrected) plus a rescue check --- at matched-or-better naturalness, does the
+GLP-corrected concept score beat the best naive concept score achieved there. Generations
+that collapse into low-complexity repeats (any one amino acid $\ge 30\%$ of the sequence,
+or a homopolymer run $\ge 8$) are excluded from this analysis --- pseudo-perplexity scores
+a repetitive sequence as spuriously more natural, which would otherwise contaminate both
+the Pareto comparison and the rescue check.
+
+\emph{Exp.\ B (diff-of-means / hydrophobicity).} Following Huang et al.\
+\cite{huang2025diffmean}, we build a contrast vector $v$ from the difference between
+high- and low-GRAVY (hydrophobicity) real-sequence activations, and steer by
+$h' = \mathrm{renorm}(h + \alpha v, \lVert h \rVert)$. Fifteen held-out low-GRAVY real
+sequences are the initialization (a paired naive-vs-corrected design), refined by
+$10\%$-position masking over $30$ rounds; the concept score is $\Delta$GRAVY
+(final $-$ init).
+
+\emph{Exp.\ A (SAE-feature clamp / zinc-finger; methodology only, see
+Section~\ref{sec:steering-results}).} Following Villegas Garcia \& Ansuini
+\cite{villegas2025plmsae}, an InterPLM SAE feature for the C2H2 zinc-finger concept
+(selected by domain-adjusted F1, not raw AUC --- an AUC-selected feature was found to key
+on a linker-composition proxy rather than the motif itself) is clamped or scale-shifted;
+init is random amino acids, fully re-masked and re-sampled every round for $100$ rounds;
+concept score is a strict regex match to the C2H2 spacing pattern.
 
 \section{Results}
 
@@ -206,6 +259,91 @@ Data & Blocks & Params & $C = 6ND$ & FD@1000 & FD ratio & Loss \\
 \end{tabular}
 \end{table}
 
+\subsection{On-manifold steering}
+\label{sec:steering-results}
+
+\textbf{GLP-correction improves naturalness and concept strength together (Exp.\ B).}
+Table~\ref{tab:steeringB} and Fig.~\ref{fig:steeringB} compare naive diff-of-means
+steering to GLP-corrected steering at six steering strengths $\alpha \in
+\{0, 0.05, 0.25, 0.5, 1, 2\}$ (two further strengths, $5$ and $20$, were dropped: at
+$\alpha{=}20$ steering alone is already too strong for either arm to produce a valid
+sequence, and at $\alpha{=}5$ correction itself --- not the raw steering edit --- pushed
+the majority of sequences into the low-complexity collapse described above, an
+unresolved failure mode of the correction step at that strength). Within the validated
+range, GLP-correction beats naive steering on \emph{both} axes at every strength (paired
+Wilcoxon by held-out sequence, $p \le 0.004$, $n{=}9$--$14$ pairs) --- not a
+naturalness/concept trade-off. The rescue check holds for $68\%$ of matched-naturalness
+comparisons ($52/77$). One caveat: the correction step runs regardless of $\alpha$, so
+part of the win at low $\alpha$ is SDEdit alone regularizing these deliberately
+low-GRAVY held-out sequences toward the training distribution's typical GRAVY, not an
+$\alpha$-dependent steering-rescue effect specifically; the $\alpha{=}0$ arm's own paired
+delta ($+0.93$ $\Delta$GRAVY) gives the size of that baseline effect, which the
+$\alpha{>}0$ deltas ($+1.2$ to $+1.9$) exceed.
+
+\begin{table}[t]
+\centering
+\caption{Exp.\ B, naive vs.\ GLP-corrected diff-of-means steering (pseudo-perplexity:
+lower is more natural; $\Delta$GRAVY: higher is more steering effect).}
+\label{tab:steeringB}
+\begin{tabular}{lrrrr}
+\toprule
+$\alpha$ & naive pppl & naive $\Delta$GRAVY & corrected pppl & corrected $\Delta$GRAVY \\
+\midrule
+0    & 15.03 & 0.40 & 13.86 & 1.35 \\
+0.05 & 15.01 & 0.12 & 12.19 & 1.39 \\
+0.25 & 13.85 & 0.37 & 12.40 & 1.54 \\
+0.5  & 15.06 & 0.35 & 11.34 & 1.73 \\
+1    & 14.95 & 0.36 & 12.47 & 1.71 \\
+2    & 14.64 & 0.28 & 11.21 & 2.08 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/steering_expB_pareto.png}
+\caption{Exp.\ B: naive $\to$ GLP-corrected shift per steering strength (arrows), mean
+$\pm$ SEM. Every strength moves up-and-left --- more natural \emph{and} more concept
+effect, not a trade-off.}
+\label{fig:steeringB}
+\end{figure}
+
+\textbf{Correction visibly repairs the steered activation itself.} Table~\ref{tab:steeringB}
+and Fig.~\ref{fig:steeringB} show the effect on the \emph{finished, decoded} sequence, several
+masked-Gibbs rounds and a discrete decode-then-re-embed step downstream of where correction
+acts. To isolate the mechanism directly, we repeat the Section~\ref{sec:steering-results} gate
+diagnostic on the actual $15$ held-out sequences' own real activations: clamp with
+$\mathrm{diffmean\_clamp}$ at each $\alpha$, then apply SDEdit correction to that same
+clamped activation, and compare GLP's own diffusion loss before vs.\ after (no generation
+involved). Fig.~\ref{fig:steeringBcorrection} shows a much more pronounced effect than the
+finished-sequence numbers suggest: naive clamping pushes loss steeply upward with $\alpha$
+($0.80 \to 1.09$), while GLP-correction holds it essentially flat and close to baseline
+($0.78 \to 0.84$) across the whole tested range. Correction is doing exactly what it is
+meant to do at the activation level; how much of that survives the discrete decode step
+into the finished protein (Fig.~\ref{fig:steeringB}) is a separate, weaker, and only
+partially favorable effect --- pseudo-perplexity and GLP's own diffusion loss disagree on
+which arm looks more ``natural'' once you're back to discrete tokens, worth flagging as an
+open question rather than glossing over.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/steering_expB_correction_diagnostic_heldout.png}
+\caption{Exp.\ B mechanism check: GLP diffusion loss on the steered activation itself
+(no generation), naive-clamped vs.\ clamped-then-GLP-corrected, on the $15$ actual
+held-out sequences' activations. Correction holds loss near baseline while naive
+clamping climbs steeply with $\alpha$.}
+\label{fig:steeringBcorrection}
+\end{figure}
+
+\textbf{SAE-feature steering (Exp.\ A) --- in progress.} [TODO: results pending
+refinement of the intervention. A plain SAE-feature clamp on the F1-selected zinc-finger
+feature produces a small, correction-favoring but not yet compelling signal (a handful of
+strict motif hits, all under correction, none under naive steering, out of several hundred
+generations); a scale-and-shift variant of the intervention tested since has so far
+performed worse, not better, saturating the off-manifold diagnostic at the lowest tested
+steering strength. Not reported as a result here pending further tuning --- see the
+project's internal steering log for the current state.]
+
 \section{Limitations}
 
 (i) We report \emph{training} loss (smoothed over the last 500 steps), not held-out
@@ -213,20 +351,28 @@ validation loss; the compute-scaling collapse should be read with that caveat.
 (ii) The compute range spans $\sim$1 decade, too narrow to pin the irreducible-error term
 $E$ of the power law --- we report only the slope $\alpha$.
 (iii) Generation quality is measured by FD and PCA overlap; the reconstruction-based
-anchors (\%Loss-Recovered, SAE-reconstruction FD) are not yet run.
+anchors (\%Loss-Recovered, SAE-reconstruction FD) are now run for the $24$-block/$500$M
+model and pass, but only for that one cell of the scaling grid, not the full $8$-run grid.
 (iv) We study a single host (ESM-2-8M) at a single hook layer, and vary only depth (not
 width) in the scaling grid.
-(v) The downstream uses that motivate GLP for proteins --- probing its internal units for
-biological concepts, and on-manifold concept steering --- are \emph{not} validated in this
-paper and are stated only as future work.
+(v) Concept \emph{probing} of GLP's internal units is \emph{not} validated in this paper
+and is stated only as future work. On-manifold \emph{steering} is validated for one
+intervention (diff-of-means hydrophobicity, Section~\ref{sec:steering-results}) over a
+narrow, empirically-found strength range; the SAE-feature-clamp intervention is set up
+under the same methodology but not yet a positive result, and neither steering experiment
+has been checked for generalization beyond its one concept/host cell.
 
 \section{Next steps}
 
-Validate GLP's meta-neurons as a concept-probing substrate against the InterPLM SAE (and a
-nonlinearity falsification test); build on-manifold concept steering via activation-space
-SDEdit \cite{meng2022sdedit} and measure the concept-strength / naturalness trade-off
-against naive SAE clamping; extend the scaling grid to a wider compute range and to
-ESM-2-650M to constrain $E$ and test whether the power law holds across host sizes.
+Diagnose and fix the SAE-feature-clamp steering intervention (Exp.\ A) --- isolate
+whether the correction step's failure at higher steering strength is the SDEdit pass
+itself or the iterative masked-Gibbs loop compounding a small per-round bias, and narrow
+in on the strength range where it might work, mirroring what worked for Exp.\ B; extend
+Exp.\ B's validated strength range and re-run the generation-quality gate across the full
+depth $\times$ data-scale grid rather than one cell; validate GLP's meta-neurons as a
+concept-probing substrate against the InterPLM SAE (and a nonlinearity falsification
+test); extend the scaling grid to a wider compute range and to ESM-2-650M to constrain
+$E$ and test whether the power law holds across host sizes.
 
 \newpage
 \appendix
@@ -325,6 +471,17 @@ C.~Meng et~al.
 \newblock SDEdit: Guided image synthesis and editing with stochastic differential
 equations.
 \newblock \emph{ICLR}, 2022.
+
+\bibitem{huang2025diffmean}
+K.~Huang et~al.
+\newblock Steering protein language model representations via diff-of-means contrast
+vectors.
+\newblock \emph{arXiv:2509.07983}, 2025.
+
+\bibitem{villegas2025plmsae}
+E.~Villegas Garcia and A.~Ansuini.
+\newblock Sparse autoencoders for interpretable steering of protein language models.
+\newblock \emph{arXiv:2502.09135}, 2025.
 \end{thebibliography}
 
 \end{document}
