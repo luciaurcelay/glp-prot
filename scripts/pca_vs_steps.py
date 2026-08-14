@@ -25,6 +25,8 @@ from glp_plm.utils import get_device, resolve_config_data_dir, resolve_storage_d
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--ckpt", help="GLP checkpoint (default <output_dir>/checkpoints/glp_final.pt)")
+    ap.add_argument("--scaler", help="rep_statistics.pt (default <output_dir>/checkpoints/rep_statistics.pt)")
     ap.add_argument("--steps", default="1,4,20,1000", help="comma list of sampler step counts")
     ap.add_argument("--n-samples", type=int, default=20000)
     ap.add_argument("--store-dir", help="override (default: config data.store_dir / per-run)")
@@ -45,7 +47,7 @@ def main():
         store_dir = resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
 
     store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
-    scaler = Scaler.load(ckpt_dir / "rep_statistics.pt")
+    scaler = Scaler.load(args.scaler or ckpt_dir / "rep_statistics.pt")
     mm = store.memmap()
     n = mm.shape[0]
     k = min(args.n_samples, n)
@@ -54,7 +56,7 @@ def main():
     real = torch.from_numpy(np.asarray(mm[np.sort(idx)], dtype=np.float32))
 
     model = GLPDenoiser(cfg.model).to(device).eval()
-    model.load_state_dict(torch.load(ckpt_dir / "glp_final.pt", map_location=device))
+    model.load_state_dict(torch.load(args.ckpt or ckpt_dir / "glp_final.pt", map_location=device))
 
     def generate(steps: int):
         z1 = torch.randn(k, cfg.model.activation_dim, device=device,

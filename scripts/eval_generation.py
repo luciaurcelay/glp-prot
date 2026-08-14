@@ -29,6 +29,8 @@ from glp_plm.utils import get_device, resolve_config_data_dir, resolve_storage_d
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--ckpt", help="GLP checkpoint (default <output_dir>/checkpoints/glp_final.pt)")
+    ap.add_argument("--scaler", help="rep_statistics.pt (default <output_dir>/checkpoints/rep_statistics.pt)")
     ap.add_argument("--store-dir", help="ActivationStore dir (default: <output_dir>/train_store)")
     ap.add_argument("--n-samples", type=int, default=10000)
     ap.add_argument("--num-steps", type=int,
@@ -52,7 +54,7 @@ def main():
         store_dir = resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False)
 
     store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
-    scaler = Scaler.load(ckpt_dir / "rep_statistics.pt")
+    scaler = Scaler.load(args.scaler or ckpt_dir / "rep_statistics.pt")
 
     # Draw only the rows we need out of the memmap (the store can exceed RAM):
     # a held-out real slice for FD + a DISJOINT slice as the lower-bound anchor.
@@ -67,7 +69,7 @@ def main():
 
     # sample from noise in standardized space, then de-standardize
     model = GLPDenoiser(cfg.model).to(device).eval()
-    model.load_state_dict(torch.load(ckpt_dir / "glp_final.pt", map_location=device))
+    model.load_state_dict(torch.load(args.ckpt or ckpt_dir / "glp_final.pt", map_location=device))
 
     def generate(steps: int):
         z1 = torch.randn(k, cfg.model.activation_dim, device=device,
