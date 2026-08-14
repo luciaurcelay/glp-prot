@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -611,6 +612,28 @@ def fold_plddt(seq: str, device: str, _cache: dict = {}) -> Optional[float]:
 # --------------------------------------------------------------------------- #
 #  Part 3 — analysis: Pareto plots, three-regime breakdown, rescue sanity check
 # --------------------------------------------------------------------------- #
+def is_degenerate_sequence(row: dict, min_unique_aa: int = 8, min_homopolymer_run: int = 8,
+                           max_single_aa_fraction: float = 0.30) -> bool:
+    """Flags collapsed/low-complexity generations (observed in Exp B naive
+    diff-of-means steering at high alpha: sequences collapse into long homopolymer
+    runs). Pseudo-perplexity scores these as artificially *more* natural (a
+    repetitive sequence is trivially self-predictable), which silently dominates
+    the naturalness-vs-concept Pareto comparison and the rescue-fraction
+    comparator pool in Part 3. Excluded from analysis only — the raw row stays in
+    the written CSV for inspection.
+
+    `max_homopolymer_run`/`unique_aa_count` alone miss sequences that interleave a
+    dominant residue with occasional others (e.g. long L-runs broken up every few
+    residues) without ever hitting a single long run or collapsing unique-AA count
+    — caught here by overall single-residue composition instead (>=30% of the
+    sequence being one amino acid; random 20-AA composition is ~5%)."""
+    seq = row.get("sequence")
+    if seq and (max(Counter(seq).values()) / len(seq)) >= max_single_aa_fraction:
+        return True
+    return (int(float(row["unique_aa_count"])) <= min_unique_aa
+            or int(float(row["max_homopolymer_run"])) >= min_homopolymer_run)
+
+
 def _rescue_fraction(naive: List[dict], corrected: List[dict]) -> Tuple[float, int]:
     """Spec Part 3 sanity check: at matched-or-better naturalness, GLP-corrected
     concept score should beat the best naive concept score achieved at that (or
@@ -1256,6 +1279,15 @@ def main():
         if roundlog_file is not None:
             roundlog_file.close()
             print(f"[steering] wrote {roundlog_path}")
+
+        n_before_filter = len(rows_for_analysis)
+        degenerate_rows = [r for r in rows_for_analysis if is_degenerate_sequence(r)]
+        rows_for_analysis = [r for r in rows_for_analysis if not is_degenerate_sequence(r)]
+        if degenerate_rows:
+            print(f"[steering] excluded {len(degenerate_rows)}/{n_before_filter} degenerate sequences "
+                  "(unique_aa<=8 or max_homopolymer_run>=8) from Part 3 analysis — still present in "
+                  f"{csv_path.name} for inspection.")
+            run.log_summary(n_degenerate_excluded=len(degenerate_rows))
 
         if is_a:
             naive_steered = [r for r in rows_for_analysis if not r["corrected"] and r["alpha"] != neutral_alpha]

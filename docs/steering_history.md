@@ -1,0 +1,417 @@
+# On-manifold steering — experiment history
+
+Tracks PLAN.md §6.6/W4 (on-manifold steering) and the risk-register Gate G2 note
+("if G2 fails → drop steering, ship probing-only paper" — **G2 has not been run
+yet**; these experiments are running ahead of that gate, not instead of it).
+
+This is the **changelog**: every run, in order, with what was tried, what came
+out, and why. For a short current-state description of what the pipeline
+actually does (no history, no results), see `docs/steering_methodology.md`
+instead — that's the doc to read first if you just need to understand the
+experiment, not how it got here.
+
+Implementation: `scripts/run_steering.py`, launched via
+`scripts/cluster/submit_steering.sh`.
+
+## 1. Exp 4.1 (original, single-experiment version)
+
+The original version of this experiment (before the Exp A/B split in §8) only
+tested SAE-feature clamping on the zinc-finger concept. Testbed: SAE feature(s)
+for `Zinc finger_C2H2-type` (InterPLM's released esm2-8m/layer-4 SAE,
+`Elana/InterPLM-esm2-8m` via `load_sae_from_hf`), detected by the spec's C2H2
+regex `C.{2,4}C.{12}H.{3,5}H` (+ a looser variant). Methodology: Part 0
+off-manifold diagnostic, Part 1 masked-Gibbs generation loop with SAE clamp +
+optional GLP SDEdit correction, Part 2 per-sequence evaluation, Part 3 Pareto +
+rescue sanity check — see `docs/steering_methodology.md` for what each part
+does; this section is the results log only.
+
+## 2. Exp 4.1 (baseline) + exp41_pilot — results: null on concept, and why
+
+Two runs, same testbed, different knobs:
+
+| | `steering_exp41` (job 44534177) | `steering_exp41_pilot` (job 44540398) |
+|---|---|---|
+| feature(s) | 7033 only (val AUC 0.952) | 7033 + 3684 (val AUC 0.952 / 0.898) |
+| alphas | 0.5, 1, 2, 4, 8 | 1, 2, 4 |
+| mask_fraction / n_rounds | 0.2 / 8 (defaults) | 1.0 / 20 |
+| n_sequences / cell | 50 | 15 |
+| rows | 500 | 90 |
+
+**Concept score was 0 in every single row of both runs** (strict regex: 0/500,
+0/90; loose regex: 0/90). The rescue-sanity-check warning fired on the pilot
+("holds for only 29%") — but that 29% turned out to be an artifact, not signal
+(see §3).
+
+Off-manifold diagnostic (Part 0) did behave as expected — loss rises with
+`alpha`, confirming the clamp mechanism itself works, and that two-feature
+clamping is markedly more off-manifold than one at matched `alpha`:
+
+| alpha | exp41 (1 feature) mean loss | exp41_pilot (2 features) mean loss |
+|---|---|---|
+| baseline | 0.869 | 0.869 |
+| 1.0 | 0.945 | 1.695 |
+| 2.0 | 1.522 | 3.725 |
+| 4.0 | 4.952 | 13.761 |
+| 8.0 | 19.404 | *(not run)* |
+
+But the target SAE feature's activation on the *finished* sequence never climbed
+out of the noise floor either — across all 1890 logged rounds in the pilot, the
+single highest value ever observed was **0.29** (mean ≈0.03); GLP-correction did
+not raise this (corrected 0.028 mean vs. naive 0.032 mean during rounds; 0.072 vs.
+0.085 on final sequences). Whatever the clamp injects during a round does not
+survive being "baked into" the sampled tokens.
+
+## 3. Root cause: the auto-selected feature isn't a motif detector
+
+`target_feature_peak_residue` (pilot CSV) — the residue where the "zinc-finger"
+feature fires hardest on each finished sequence — should land on Cys/His far
+above the ~10% two-letter base rate if it's a real Cys-X(2-4)-Cys-X(12)-His-X(3-5)-His
+detector. Across 90 generations:
+
+| residue | R | E | K | G | S/N/T/C/V (each) | W |
+|---|---|---|---|---|---|---|
+| share | 44.4% | 20.0% | 14.4% | 7.8% | 2.2% | 1.1% |
+
+**Cys appears at base rate (2.2%); His appears 0% of the time.** The feature
+picked by plain AUC (0.952 against the annotation span) is almost certainly
+keying on the **Lys/Arg/Glu-rich linker** that strings C2H2 zinc-finger arrays
+together (the classic TGEKP-type linker), not the CxxC…HxH spacing motif itself.
+AUC is rank-only — it can't distinguish "precise to the motif" from "correlated
+with the annotated span" — so a high-AUC pick sailed through Part 0/1/2 without
+ever being able to produce the concept it was nominally targeting. This explains
+the null result independent of `alpha`, `mask_fraction`, or `n_rounds`.
+
+This also explains the pilot's spurious 29% "rescue": `pareto_and_sanity_check`'s
+old fallback counted a GLP-corrected point as "rescued" whenever it had *no*
+naturalness-matched naive comparator (`best_naive` defaulted to `-1.0`, so
+`concept_score=0 > -1.0` passed trivially) — i.e. 29% of corrected points simply
+had better naturalness than every naive point, with zero real concept-score
+contribution either way.
+
+## 4. Fixes for Exp 4.1c (`scripts/run_steering.py`)
+
+1. **Feature selection now uses InterPLM's own validated criterion — domain-adjusted
+   F1 (select-on-valid / confirm-on-test), not AUC.** `select_zinc_finger_features`
+   still uses AUC only as a cheap top-64 shortlist on a balanced subsample (mirrors
+   `run_probing.py`'s own F1 path), then re-ranks that shortlist by the exact same
+   F1 protocol that produced this project's headline SAE F1 numbers
+   (`glp_plm/eval/probing_f1.py`, a faithful port of
+   `interplm/analysis/concepts/calculate_f1.py`, `docs/INTERPLM_MAP.md:16`) —
+   `pf.run_concept_f1`, called `top_n` times, dropping the previous winner each
+   round. `zinc_finger_feature.json` now records both val and test F1 per feature.
+2. **Rescue-fraction fix.** Corrected points with no naturalness-matched naive
+   comparator are now excluded from both the numerator and denominator instead of
+   counted as a free win; `pareto_rescue_comparable` / `pareto_rescue_n` are logged
+   alongside the fraction so a small/zero comparable set is visible, not silently
+   averaged away.
+
+## 5. Exp 4.1c — updated hyperparameters
+
+Methodology (Parts 0–4) unchanged; only the sweep values changed, based on what
+Exp 4.1/exp41_pilot showed:
+
+| knob | old | new | why |
+|---|---|---|---|
+| feature selection | top-AUC | top-F1 (val-select/test-confirm) | §3 — AUC picked a linker proxy |
+| `alphas` | 0.5,1,2,4,8 | **1,2,3,4,6** | 0.5 barely moves off baseline loss (0.755 vs. 0.869); 8 is already destroyed pre-generation (loss 19.4) |
+| `n_sequences` | 15 (pilot) / 50 (exp41) | **64** | n=15 can't distinguish a ~5% vs ~15% concept-hit rate (arXiv:2502.09135's own top-1-vs-top-2 numbers) |
+| `mask_fraction` | 1.0 (pilot) | **0.15** | full remask every round can't let a locally-built motif persist into the next round |
+| `n_rounds` | 8 (exp41) / 20 (pilot) | **24** | cheap to raise now that each round perturbs less |
+| `t_start` | 0.5 (hardcoded default, never tuned) | *picked by `--t-start-pilot`* | the script already implements a `{0.3,0.5,0.7}` pilot sweep; neither prior run actually invoked it |
+
+## 6. Exp 4.1c — results
+
+Ran on MN5: t_start pilot (job 44541009) then the main sweep (job 44541070),
+`runs/uniref50_500m_4096_d24_steering/steering_exp41c/`. Both finished well inside
+acc_debug's 2h cap (no qos/time override needed in the end).
+
+**t_start pilot** (3 t_starts × 8 samples, mid-alpha=3.0): t_start=0.5 gave the
+lowest mean pseudo-perplexity (15.1, vs. 18.1 @0.3 and 15.5 @0.7) — it confirms
+the default both prior runs already used, rather than overturning it. Used
+`--t-start 0.5` for the main sweep.
+
+**Feature selection actually changed the pick.** The F1-based re-rank landed on
+**features 6158 and 4421** (val/test F1 ≈0.12/0.09 and ≈0.12/0.09) — nothing like
+the old AUC pick (7033, AUC 0.952). Lower-looking numbers, but F1 and AUC aren't
+on the same scale, so that's not a regression signal by itself; the peak-residue
+check below is the real test.
+
+**Peak-residue validity check — the fix holds.** Across all 640 finished
+sequences, `target_feature_peak_residue`:
+
+| residue | C | D | V | H | L | R | G | I | E | other |
+|---|---|---|---|---|---|---|---|---|---|---|
+| share | 13.9% | 12.2% | 11.6% | 9.1% | 7.2% | 7.2% | 6.9% | 6.2% | 5.5% | 20.2% |
+
+**Cys is now the single most common peak residue, and His shows up at 9.1%**
+(0% for the old AUC pick). C+H combined = 23.0%, well above the ~10% two-letter
+base rate. Still not overwhelming enrichment (D and V, not obviously
+motif-related, are close behind C), but this is a categorically different
+result from §3's 78.8% R/E/K-and-zero-His — the F1-selected features are
+plausibly reading *something* Cys/His-related, not purely a linker-composition
+proxy.
+
+**Concept score is no longer uniformly zero.** Strict C2H2 regex: **4/640
+(0.6%)**; loose regex: **31/640 (4.8%)**. Both still far short of
+arXiv:2502.09135's own 1.7%/13% (top-1/top-2), but no longer a flat null. The
+per-(alpha, corrected) breakdown:
+
+| alpha | corrected | pppl | diffusion_loss | strict hits | loose hits |
+|---|---|---|---|---|---|
+| 1 | naive | 17.19 | 0.709 | 0/64 | 0/64 |
+| 1 | GLP | 16.20 | 0.749 | 0/64 | 1/64 |
+| 2 | naive | 17.92 | 0.712 | 0/64 | 1/64 |
+| 2 | GLP | 17.34 | 0.728 | **1/64** | 6/64 |
+| 3 | naive | 17.93 | 0.690 | 0/64 | 4/64 |
+| 3 | GLP | 17.19 | 0.730 | **1/64** | 5/64 |
+| 4 | naive | 17.82 | 0.704 | 0/64 | 3/64 |
+| 4 | GLP | 16.97 | 0.743 | **2/64** | 9/64 |
+| 6 | naive | 17.00 | 0.724 | 0/64 | 0/64 |
+| 6 | GLP | 17.29 | 0.733 | 0/64 | 2/64 |
+
+Two real, checkable findings here, both small-n but internally consistent:
+
+- **All 4 strict hits, and the majority of loose hits (23/31), occurred under
+  `corrected=True`; zero naive (uncorrected) sequences ever hit the strict
+  regex**, at any alpha. That's the qualitative direction the whole thesis
+  predicts — GLP-correction helping the concept manifest — even though n per
+  cell is far too small (1–2 strict hits) to claim significance.
+- **GLP-correction is also more natural on average at every alpha except 6**
+  (e.g. alpha=4: pppl 16.97 corrected vs. 17.82 naive), consistent with the
+  Pareto framing, not just a lucky coincidence with the concept hits.
+- Alpha=6 is the outlier where correction stops helping on either axis (pppl
+  *worse* than naive, no strict hits) — plausibly past the point the SDEdit
+  cleanup can undo without erasing the clamp's signal along with the distortion.
+
+**The rescue-metric fix produces a sane, self-consistent number now.**
+`pareto_rescue_fraction` = 1% of 316 comparable points — which is exactly what
+falls out of the raw counts above (all naive strict scores are 0, so a
+matched-naturalness naive comparator's `best_naive` is always 0; only the 4
+corrected points with `concept_score>0` can clear that bar, giving ≈4/316 ≈ 1%).
+Contrast with exp41_pilot's vacuous 29% (§3) — this 1% is a real signal, just a
+small one, not an artifact of the old fallback.
+
+Off-manifold diagnostic (Part 0) still behaves correctly with the new features
+and alpha grid — loss rises monotonically (baseline 0.869 → 1.591 → 2.677 →
+4.600 → 8.049 → 17.645 @ alpha 1/2/3/4/6), confirming the clamp mechanism itself
+is unaffected by the feature-selection change.
+
+**Verdict:** the F1-based feature-selection fix is real and load-bearing — it
+moved peak-residue identity from "clearly wrong" (0% His) to "plausibly right"
+(9.1% His, Cys the top residue) and took the concept-hit rate off an
+unambiguous 0/590 to a small but nonzero, correction-favoring 4/640. It did
+**not** reproduce arXiv:2502.09135's headline hit rates (1.7%/13%) — this SAE's
+zinc-finger features are evidently weaker/less separable than theirs, or C2H2 in
+`facebook/esm2_t6_8M_UR50D`'s layer-4 residual stream is a harder target than in
+whatever model/layer that paper used. Whether this effect size is worth building
+the paper's steering claim on is a judgment call, not something this run
+settles — the direction is right, the magnitude is not yet compelling.
+
+## 7. Suggested next steps for exp41c (superseded by §12 for the current state)
+
+- **n is still small for the events that matter.** 1–2 strict hits per cell
+  means every ratio above is one generation away from doubling or vanishing.
+  If the effect is worth chasing further, the next lever is raising
+  `n_sequences` at just the alphas that showed hits (2/3/4), not a uniform
+  sweep.
+- **Alpha=6 both underperforms and adds cost** — worth dropping from the next
+  grid in favor of finer resolution between 2 and 4, where all the action is.
+- The peak-residue enrichment (23% C+H) is suggestive but not decisive; a
+  proper validity check would look at whether the *specific spacing* the
+  clamp's high-activation positions fall into resembles C2H2's Cys-X(2-4)-Cys
+  pattern, not just residue identity in isolation — not implemented here.
+
+## 8. `run_steering.py` v2 — Exp A/B split
+
+`run_steering.py` was rewritten around `glprot_steering_spec.md` v2 into two
+separate experiments sharing Part 0 (off-manifold diagnostic) and Part 3
+(Pareto/three-regime/rescue) infrastructure but otherwise deliberately not
+mechanically identical — see `docs/steering_methodology.md` for the
+current-state description, or the module docstring for the exact spec:
+
+- **Exp A** (`--experiment A`, out-dir `steering_sae_zinc[_variant]`) — SAE-feature
+  intervention on the zinc-finger features from §2-6 above, now with a choice of
+  `--sae-intervention clamp` (hard-set, the old behavior) or `scale_shift`
+  (`z* = a·z + b`, Villegas Garcia & Ansuini Eq. 7-8).
+- **Exp B** (`--experiment B`, out-dir `steering_diffmean_hydro`) — new: diff-of-means
+  steering on hydrophobicity (GRAVY), following Huang et al. (arXiv:2509.07983)
+  §4.1.1. Real held-out low-GRAVY sequences as init (not random-AA), 10%-mask
+  partial refinement, paired naive-vs-corrected design by `init_sequence_id`.
+  Needs `scripts/build_gravy_contrast.py` (auto-built on first run).
+
+Both experiments' outputs now live under
+`runs/uniref50_500m_4096_d24_steering/steering_<name>/` (this run replaced the
+older `uniref50_500m_4096_d24_steering` config path used for §2-6's runs — check
+`launches.jsonl` in that run dir for the exact job IDs/args behind any number
+below).
+
+## 9. Exp A scale-shift — results: worse than plain clamp, not a partial win
+
+Job 44578361 (`steering_sae_zinc_scaleshift`): same F1-selected features as
+§6's `exp41c` (6158, 4421 — the pair that got 4/640 strict C2H2 hits under plain
+clamp), now via `--sae-intervention scale_shift --shift-b 10`,
+`alphas=2,5,10,20,30`.
+
+**Off-manifold diagnostic saturates immediately and never moves again:**
+
+| alpha | baseline | 2 | 5 | 10 | 20 | 30 |
+|---|---|---|---|---|---|---|
+| mean diffusion loss | 0.869 | 43.95 | 43.95 | 44.01 | 44.18 | 44.16 |
+
+`diagnostic_A_monotonic: false` — a ~50x jump at the *lowest* alpha tested,
+flat for the next order of magnitude. The additive `b=10` dominates; `a`
+barely matters once it's added, so the whole alpha sweep is exploring one
+already-destroyed region rather than a graduated one.
+
+**Zero strict C2H2 hits across all 1200 sequences** (600 naive + 600
+corrected; loose-regex hits 0-4/100 per cell, no trend, no correction
+advantage) — worse than `exp41c`'s 4/640 with the *identical* features.
+Sequences aren't degenerate by the §10 criteria below (homopolymer run ~2,
+unique-AA ~16 in every cell) — this is a real null, not a collapse artifact:
+the intervention lands in a region that still decodes to fluent-looking
+protein but is nowhere GLP has ever seen, and never produces the concept.
+
+**Verdict: `scale_shift` with `b=10` is a strictly worse intervention choice
+than `clamp` for this target**, not an alternative worth keeping alongside it.
+`b=10` was never validated against the feature's natural activation scale
+before this run — see §12.
+
+## 10. Exp B diff-of-means/GRAVY — results, and two rounds of a naturalness-metric artifact
+
+Jobs 44578271/44578326 (`steering_diffmean_hydro`): 15 held-out low-GRAVY
+sequences, `alphas=0,0.05,0.25,0.5,1,2,5,20`, naive vs. GLP-corrected, paired by
+`init_sequence_id`.
+
+**Off-manifold diagnostic behaves correctly** — loss rises monotonically with
+alpha (0.869 baseline -> 0.863 @0.05 -> 0.869 @0.25 -> 0.885 @0.5 -> 0.953 @1 ->
+1.140 @2 -> 1.737 @5 -> 3.181 @20).
+
+**First pass (raw CSV) looked like a clean win for GLP-correction at every
+alpha, but the Pareto plot told a different story:** naive's mean trajectory
+sat up-and-left of (i.e. dominating) GLP-corrected's, driven entirely by
+naive's alpha=20 point (mean pppl 3.5, mean ΔGRAVY 3.9). That point turned out
+to be sequence collapse: 13/15 of naive's alpha=20 rows are dominated by a
+single homopolymer run (mean max-homopolymer-run 13.3 vs. ~3 everywhere else,
+mean unique-AA-count 12.9 vs. ~19 everywhere else). Pseudo-perplexity scores
+a repetitive sequence as artificially *more* natural — it's trivially
+self-predictable, not actually fluent — so this one degenerate cell was
+dominating both the Pareto plot and `pareto_B_rescue_fraction` (the naturalness-
+matched comparator for nearly every corrected point).
+
+**Second pass (composition-aware filter) found the same failure mode is not
+naive-only.** `unique_aa_count`/`max_homopolymer_run` alone miss sequences that
+interleave a dominant residue with occasional others rather than running it
+solid — caught instead by overall composition (any one amino acid making up
+>=30% of the sequence; random 20-AA composition is ~5%). Checking that
+revealed **GLP-correction itself, not just naive at high alpha, degenerates
+sequences** — and specifically, that at alpha=5 it is *correction* causing the
+collapse, not the raw clamp:
+
+| alpha=5, `init_sequence_id=8` | pseudo-perplexity | delta-GRAVY | sequence |
+|---|---|---|---|
+| naive | 14.8 | 1.78 | `MWTIDVGKAFLAHLKLHVGLAKLLVLKSLPLSCRLLLSKFDEILTFCRNLLLAAEPGVDDYGLKLVEFHVKAVMLFGLVLFCIGLVLGIRSLCDSSAACGVKTRLVAFSLPASLQLAALKQVLRERGLLLL` |
+| GLP-corrected | 5.5 | 3.61 | `MLLTLGLLVLAVILLLLLLVKPLLLTELLLLLLLSLVLSPLVFPVSLPGLLAVLLLLVKLLVPLVPVVVSVLLLVLLLVDLLFLLLVLVPVLLLGLDVALVLGVLLVLLLLLLLLLPFLLLLVPLTLVLFL` (55% Leucine, runs of 9+) |
+
+At alpha=5, naive stayed clean (15/15 pass the filter, Leu-fraction 0.12-0.26,
+pppl 12-17) while GLP-correction collapsed 13/15 sequences into Leucine
+homopolymers (Leu-fraction 0.22-0.55, pppl as low as 5.3). Correction is
+supposed to pull off-manifold points *back toward* realistic proteins; here it
+is doing the opposite. At alpha=20 both arms collapse (0/15 naive, 1/15
+corrected pass) — there the raw clamp itself is already too strong for
+anything to survive, a different (and expected) failure mode.
+
+**With the composition filter applied and alphas 5/20 dropped** (fewer than 5
+clean samples in one arm — too few to trust a mean; still present in the CSV,
+just excluded from Part 3 analysis, see `is_degenerate_sequence` in
+`run_steering.py`), the six remaining alphas (0, 0.05, 0.25, 0.5, 1, 2) show a
+consistent, real win:
+
+| alpha | n(naive,corr) | naive pppl / dGRAVY | corrected pppl / dGRAVY |
+|---|---|---|---|
+| 0 | 15,14 | 15.03 / 0.40 | 13.86 / 1.35 |
+| 0.05 | 14,14 | 15.01 / 0.12 | 12.19 / 1.39 |
+| 0.25 | 14,15 | 13.85 / 0.37 | 12.40 / 1.54 |
+| 0.5 | 14,11 | 15.06 / 0.35 | 11.34 / 1.73 |
+| 1 | 14,11 | 14.95 / 0.36 | 12.47 / 1.71 |
+| 2 | 15,9 | 14.64 / 0.28 | 11.21 / 2.08 |
+
+GLP-corrected beats naive on *both* naturalness (lower pppl) and concept score
+(higher dGRAVY) at every one of these six alphas — not a tradeoff. Paired
+Wilcoxon (by `init_sequence_id`) is significant at all six (p <= 0.004,
+n=9-14 pairs; mean paired delta +0.93 to +1.87 dGRAVY in favor of correction).
+
+`pareto_B_rescue_fraction` (naturalness-matched, corrected beats best
+naturalness-matched naive) is now **0.68 (52/77 comparable)** — up from
+~0.01-0.02 pre-filter, where the metric was being sabotaged by exactly the
+degenerate rows above. Three-regime breakdown (naive diffusion-loss terciles,
+cutpoints 0.700/0.764): rescue fraction is 0.50 (safe, n=2 comparable — thin),
+0.235 (transition, n=17), 0.818 (broken, n=55) — rescue is strongest in the
+most-off-manifold naive bucket, weakest in the middle one.
+
+**Caveat carried over from the original interpretation:** even the alpha=0 arm
+(no clamp at all, `diffmean_clamp`'s algebraic no-op) shows correction raising
+dGRAVY (paired delta +0.93, p=0.0001) — `corrected=True` always runs the SDEdit
+pass regardless of alpha, so part of every alpha's win is SDEdit alone pulling
+these deliberately-low-GRAVY held-out sequences toward the training
+manifold's typical (higher) GRAVY, not an alpha-dependent steering-rescue
+effect specifically. The alpha 0.05-2 deltas (1.2-1.9) exceed this alpha=0
+baseline (0.93), so there is a real incremental effect on top, but a citable
+version of this result should report deltas net of the alpha=0 control, not
+the raw per-alpha numbers above.
+
+## 11. Fixes applied to `run_steering.py`
+
+- **`is_degenerate_sequence(row, min_unique_aa=8, min_homopolymer_run=8,
+  max_single_aa_fraction=0.30)`** — excludes collapsed/low-complexity rows from
+  Part 3 analysis only (Pareto plot, three-regime breakdown, rescue fraction,
+  paired Wilcoxon); the raw row stays in the written CSV. Composition check
+  (>=30% one amino acid) added after the homopolymer-run/unique-AA check alone
+  was shown (§10) to miss corrected-arm degeneracy that interleaves the
+  dominant residue instead of running it solid. Wired in for both experiments
+  right before the `is_a` branch that calls `pareto_exp_a`/`pareto_exp_b` /
+  `three_regime_breakdown`; excluded-row count logged to `run.log_summary` as
+  `n_degenerate_excluded`.
+- Applying this to the existing `steering_diffmean_hydro` run's artifacts
+  (without re-running the GPU job): `pareto.png` was regenerated with alphas
+  5/20 dropped (originals kept as `pareto_unfiltered.png`), and
+  `metrics/summary.json` was recomputed on the clean rows (original kept as
+  `summary_unfiltered.json`). `steering_sae_zinc_scaleshift`'s artifacts were
+  **not** regenerated — only 3/1200 rows are flagged there and the result is
+  already a flat 0/1200 strict hits either way, so it doesn't change anything.
+- Not yet done: an equivalent redraw for the *plot's readability* itself (mean
+  ± SEM trajectories with naive->corrected arrows per alpha, no per-sample
+  scatter clutter, excluded points dropped from the figure rather than shown
+  grayed-out) was done ad hoc for this conversation but the plotting code in
+  `pareto_exp_b`/`pareto_exp_a` itself still draws the old dense-scatter style
+  — worth porting the arrow/SEM version back into the script if it's kept.
+
+## 12. Suggested next steps
+
+**Exp B (diff-of-means/GRAVY) — where the signal is:**
+- **Isolate whether alpha=5's collapse is `glp_correct` itself or the 30-round
+  masked-Gibbs loop compounding it.** Run `glp_correct` once on an
+  alpha=5-clamped held-out activation (same shape as the Part 0 diagnostic,
+  no generation loop) and check composition directly, vs. turning on
+  `--log-round-diagnostics` (writes `round_gravy.csv`) for a small alpha=5
+  pilot to see which round it tips over in.
+- **Fill in the alpha grid between 2 and 5** (e.g. 3, 4) — naive stays clean at
+  5 but corrected doesn't, so the breakdown is likely a sharp threshold, not
+  gradual; worth finding before calling "alpha 0-2" the paper's operating
+  envelope.
+- **Re-run `--t-start-pilot` for Exp B specifically** (`t_start=0.5` was picked
+  for the old zinc-finger experiment and reused here by default, never
+  re-validated for GRAVY/diff-of-means) — a smaller `t_start` adds less noise
+  before the reverse pass, which may keep correction from having enough room
+  to wander into the Leucine attractor at higher alpha.
+- **Report the headline numbers net of the alpha=0 control** (§10's last
+  caveat) rather than the raw per-alpha paired deltas, for anything citable.
+
+**Exp A (SAE scale-shift/clamp on zinc-finger) — lower priority, weaker
+signal even before this run:**
+- `scale_shift`'s `--shift-b 10` was never tuned against the feature's natural
+  activation scale before this run destroyed the whole alpha range; worth a
+  quick sweep of smaller `b` (or `b=0`, scale-only) before concluding
+  `scale_shift` itself (not just this `b`) is the wrong idea.
+- §7's still-open items (raise `n_sequences` at the alphas that showed hits
+  under plain `clamp`, drop alpha=6, check C2H2 spacing not just residue
+  identity) remain open and untouched by this run.
