@@ -72,9 +72,9 @@ whole comparison.
 **`mask_fraction` defaults differ sharply between the two experiments, and
 that's not an incidental knob difference.** Exp A defaults to
 `mask_fraction=1.0` — every round re-masks and re-samples the *entire*
-sequence from scratch, for 100 rounds (`plm-sae`'s own protocol: full
-resample each round, keep the round that maximizes the clamped feature's
-activation). Exp B defaults to `mask_fraction=0.10` — only ~10% of positions
+sequence from scratch, for 100 rounds (`plm-sae`'s own full-resample-per-round
+protocol — which round ends up as the output is a separate question, see
+below). Exp B defaults to `mask_fraction=0.10` — only ~10% of positions
 are touched per round, so each round is a small edit on top of the previous
 round's output, for 30 rounds (Huang et al.'s partial-refinement protocol,
 starting from a real sequence rather than random noise). So "the generation
