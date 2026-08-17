@@ -162,9 +162,33 @@ apparent "breakdown at alpha=5", which was a t_start artefact, not a property of
 `scripts/apply_interplm_patches.sh`; re-run it after any `git submodule update` (SETUP.md
 step 0). Without it generation dies in `nnsight` with an `expand()` shape error.
 
+5. **The generation loop, not GLP, costs foldability.** The 80 natural held-out starting
+   proteins fold at pTM 0.373 (low-GRAVY set) / 0.629 (high-GRAVY set); the alpha=0 **naive**
+   arm — no steering, no GLP — comes out at 0.275 / 0.319. Masked-Gibbs roughly halves
+   foldability on its own and both arms land in the same place, so the naturalness claim
+   fails for a reason unrelated to GLP. Two defensible operating points: 30 rounds/T=1.0
+   (divergence +3.38 at alpha=5, pTM 0.275/0.319) and 5 rounds/T=0.5 (+1.56, pTM
+   0.332/0.435, 6x cheaper). **Do not raise rounds at T=0.5** — it mode-collapses, and the
+   collapsed sequences score HIGH pTM, so it looks like an improvement to any analysis that
+   drops degenerate rows instead of counting them.
+6. **The degeneracy gate is calibrated, and must not be tightened on complexity.** It
+   rejects 3/80 (3.8%) of real proteins vs 2.9% of our output — not tuned against us.
+   Complexity is affected by the treatment, so gating on it removes the successfully-steered
+   sequences; SEG's standard 2.2-bit trigger would reject 75% of the natural starts. Quote
+   effects **gated and ungated** — they agree to ~1%.
+
+**Baseline discipline:** compare foldability against the held-out set the run actually
+generates from (0.373 or 0.629), never the pooled 0.501 average.
+
 **Still open (steering):** Exp A has never been re-run with any of the above; the
-degenerate filter's thresholds need a sensitivity check; ESMFold2 folding is a separate
-stage in its own Python 3.12 venv (`submit_fold.sh`) because the project venv has no `esm`.
+correction's own foldability cost is suggested by three marginal signals but unestablished;
+we steer one layer / masked positions only where Huang et al. steer all layers and tokens
+(the untested deviation); neither operating point reaches natural foldability. ESMFold2
+folding is a separate stage in its own Python 3.12 venv (`submit_fold.sh`) because the
+project venv has no `esm`.
+
+Full record: `docs/steering_history.md` §13; current pipeline:
+`docs/steering_methodology.md`.
 
 ## Local-scale gotchas (learned the hard way — don't regress these)
 From the retired Mac PoC phase (dev Mac had **16 GB RAM**, RAM/disk — not compute — was
