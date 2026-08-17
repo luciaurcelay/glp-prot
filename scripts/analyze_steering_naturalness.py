@@ -128,6 +128,50 @@ def kde_1d(vals: List[float], grid: np.ndarray):
         return None
 
 
+def pass_rate_by_alpha(rows: List[dict], key: str, thresholds: List[float],
+                       higher_is_better: bool = True) -> Dict[str, dict]:
+    """Fraction of ALL generations in each (alpha, arm) cell that clear a confidence threshold.
+
+    This is the lab-standard "filter at pLDDT>=70" idea turned into an OUTCOME instead of a
+    filter, which matters because using it as a filter here does two bad things:
+
+      1. It selects FOR the artefact. On this run, pLDDT>=70 keeps 87% of the degenerate
+         poly-Leu/Val sequences and only 12% of the clean ones, taking a set that is 8% junk
+         to 38% junk (73% at >=80). The conventional cutoff assumes pLDDT tracks quality; on
+         these sequences it is inverted.
+      2. The arms survive at different rates (naive ~17% vs corrected ~7.5% overall, 40% vs
+         13% at alpha=2), so comparing survivors compares the best 13% of one arm against the
+         best 40% of the other — survivor bias, the same trap the degenerate filter created
+         at t_start=0.5.
+
+    As a rate it has neither problem: the denominator is every sequence generated, and a
+    sequence counts as passing only if it is BOTH non-degenerate AND above threshold — so the
+    junk counts as failure rather than being quietly excluded. It answers the question the lab
+    practice is really asking ("how often does this method produce something confidently
+    foldable?") and generating more sequences buys precision with no selection effect.
+
+    Reported at several thresholds because any single cutoff is arbitrary."""
+    out: Dict[str, dict] = {}
+    for a in sorted({r["alpha"] for r in rows}):
+        entry: Dict[str, object] = {}
+        for corrected, name in ((False, "naive"), (True, "corrected")):
+            cell = [r for r in rows if r["alpha"] == a and r["corrected"] == corrected]
+            if not cell:
+                continue
+            entry[f"{name}_n_generated"] = len(cell)
+            for thr in thresholds:
+                ok = 0
+                for r in cell:
+                    v = r.get(key)
+                    if r["_degenerate"] or v is None:
+                        continue   # degenerate counts as a failure, not an exclusion
+                    ok += (v >= thr) if higher_is_better else (v <= thr)
+                entry[f"{name}_pass_{thr:g}"] = ok / len(cell)
+        if entry:
+            out[str(a)] = entry
+    return out
+
+
 def load(run_dir: Path, csv_name: Optional[str]) -> Tuple[List[dict], List[dict]]:
     gen_path = None
     for name in ([csv_name] if csv_name else
@@ -433,6 +477,46 @@ def main():
                          ha="right", va="bottom", fontsize=8, color=style.SECONDARY)
         p2 = style.save_fig(fig2, run.figures_dir / f"pareto_path_{key}{tag}.png")
         print(f"[naturalness] wrote {p2}")
+
+    # ---- pass rate: the "filter at pLDDT>=70" practice as an unbiased outcome ----
+    thr_map = {"ptm": [0.3, 0.4, 0.5], "plddt": [60.0, 70.0, 80.0], "pppl": [10.0, 8.0]}
+    thresholds = thr_map[key]
+    rates = pass_rate_by_alpha(rows, key, thresholds, higher_is_better)
+    run.log_summary(**{f"pass_rate_{key}": {"thresholds": thresholds, "by_alpha": rates}})
+    print(f"\n[naturalness] pass rate on {key} (non-degenerate AND past threshold; "
+          "denominator = every sequence generated)")
+    hdr = "  alpha | " + " | ".join(f"{'≥' if higher_is_better else '≤'}{t:g} nv/cor".rjust(16)
+                                    for t in thresholds)
+    print(hdr)
+    for a, e in rates.items():
+        cells = []
+        for t in thresholds:
+            nv, cr = e.get(f"naive_pass_{t:g}"), e.get(f"corrected_pass_{t:g}")
+            cells.append(f"{'--' if nv is None else f'{nv:.0%}'}"
+                         f" / {'--' if cr is None else f'{cr:.0%}'}".rjust(16))
+        print(f"  {a:>5} | " + " | ".join(cells))
+
+    fig3, ax3 = plt.subplots(figsize=(7.4, 5.0))
+    mid = thresholds[len(thresholds) // 2]
+    for corrected, colour, lab in arms:
+        xs, ys = [], []
+        for a, e in rates.items():
+            v = e.get(f"{'corrected' if corrected else 'naive'}_pass_{mid:g}")
+            if v is not None:
+                xs.append(float(a)); ys.append(v * 100)
+        if xs:
+            order = np.argsort(xs)
+            ax3.plot(np.array(xs)[order], np.array(ys)[order], "o-", color=colour,
+                     linewidth=2, ms=6, label=lab)
+    ax3.set_xscale("symlog", linthresh=0.05)
+    ax3.set_xlabel("steering strength α (symlog)")
+    ax3.set_ylabel(f"% of generations that are clean AND {key} "
+                   f"{'≥' if higher_is_better else '≤'} {mid:g}")
+    ax3.set_title(f"Confidently-foldable yield vs α\ndenominator is every sequence "
+                  "generated, so degenerate output counts as failure", loc="left")
+    ax3.legend(loc="best", fontsize=9)
+    p3 = style.save_fig(fig3, run.figures_dir / f"pass_rate_{key}.png")
+    print(f"[naturalness] wrote {p3}")
 
     # ---- the gate-check figure: why this axis and not the others ----
     fig2, axs = plt.subplots(1, 3, figsize=(12.5, 4.4))
