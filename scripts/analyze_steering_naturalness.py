@@ -401,7 +401,7 @@ def main():
             continue
         ax.boxplot([c, d], widths=0.55, medianprops={"color": style.INK})
         ax.set_xticks([1, 2])
-        ax.set_xticklabels(["clean", "degenerate\n(non-protein)"])
+        ax.set_xticklabels(["passed the\ncomposition filter", "rejected as\nnon-protein"])
         if k in UBIQUITIN_REF:
             ax.axhline(UBIQUITIN_REF[k], color=style.method_color("glp"), linestyle="--",
                        linewidth=1.6, label="natural protein (ubiquitin)")
