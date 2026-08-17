@@ -278,8 +278,8 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
     ax.set_ylabel("GLP diffusion loss (mean ± 95% CI)")
     ax.set_title(f"Off-manifold diagnostic ({experiment}): steering vs. GLP diffusion loss")
     ax.legend()
-    style.save_fig(fig, out_dir / "off_manifold_diagnostic.png")
-    print(f"[diagnostic-{experiment}] wrote {csv_path} + off_manifold_diagnostic.png (monotonic={monotonic})")
+    fig_path = style.save_fig(fig, run.figures_dir / "off_manifold_diagnostic.png")
+    print(f"[diagnostic-{experiment}] wrote {csv_path} + {fig_path} (monotonic={monotonic})")
 
 
 def _stub_ipython_if_broken() -> None:
@@ -747,7 +747,7 @@ def pareto_exp_a(rows: List[dict], out_dir: Path, run: RunLogger, alphas: List[f
     ax.set_ylabel("motif hit rate (fraction with ≥1 C2H2 match)")
     ax.set_title("Exp A Pareto: zinc-finger hit rate vs. naturalness")
     ax.legend()
-    style.save_fig(fig, out_dir / "pareto.png")
+    style.save_fig(fig, run.figures_dir / "pareto.png")
 
     frac, n_comp = _rescue_fraction(naive_agg, corr_agg)
     _log_rescue(run, "A", frac, n_comp, len(corr_agg))
@@ -784,7 +784,7 @@ def pareto_exp_b(rows: List[dict], out_dir: Path, run: RunLogger):
     ax.set_ylabel("ΔGRAVY (final - init)")
     ax.set_title("Exp B Pareto: hydrophobicity shift vs. naturalness")
     ax.legend()
-    style.save_fig(fig, out_dir / "pareto.png")
+    style.save_fig(fig, run.figures_dir / "pareto.png")
 
     frac, n_comp = _rescue_fraction(naive, corrected)
     _log_rescue(run, "B", frac, n_comp, len(corrected))
@@ -1308,7 +1308,7 @@ def main():
                 print(f"[exp-b] paired Wilcoxon alpha={a}: n={s['n_pairs']} mean_delta_gravy="
                      f"{s['mean_delta']:+.4f} p={s['wilcoxon_p']:.4f}")
         run.log_summary(three_regime=regimes)
-        print(f"[steering] wrote {csv_path} + pareto.png")
+        print(f"[steering] wrote {csv_path} + {run.figures_dir / 'pareto.png'}")
 
     print(f"[steering] done. outputs under {out_dir}")
 
