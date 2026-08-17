@@ -82,6 +82,52 @@ def rescue_fraction(naive: List[dict], corrected: List[dict], key: str,
     return (rescued / comparable if comparable else float("nan")), comparable
 
 
+def pareto_front(pts: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """Non-dominated subset of (x, y) under maximise-x, maximise-y, sorted by x ascending.
+
+    This is the actual Pareto content of a "Pareto plot": a point survives only if no other
+    point beats it on BOTH objectives. Drawn as a staircase it is the attainment front, and
+    comparing two arms' fronts is the dominance statement — which a scatter plus a mean line
+    does not make. Scanning from the largest x leftwards and keeping a running max of y is
+    O(n log n) and needs no pairwise comparison."""
+    best_y = -float("inf")
+    front: List[Tuple[float, float]] = []
+    for x, y in sorted(pts, key=lambda p: p[0], reverse=True):
+        if y > best_y:
+            front.append((x, y))
+            best_y = y
+    return list(reversed(front))
+
+
+def hdr_levels(kde, xy: np.ndarray, fractions=(0.9, 0.5)) -> List[float]:
+    """Density levels enclosing the given fractions of the sample (highest-density regions).
+
+    Contouring at arbitrary density values says nothing interpretable; contouring at the
+    level that encloses 50%/90% of the points does — it is the 2-D analogue of a quartile
+    box, so two arms' contours are directly comparable even at different sample sizes."""
+    d = np.sort(kde(xy))[::-1]
+    total = d.sum()
+    out = []
+    for f in fractions:
+        c = np.cumsum(d)
+        idx = int(np.searchsorted(c, f * total))
+        out.append(float(d[min(idx, len(d) - 1)]))
+    return sorted(set(out))
+
+
+def kde_1d(vals: List[float], grid: np.ndarray):
+    """gaussian_kde over `vals`, or None when the sample can't support one."""
+    from scipy.stats import gaussian_kde
+
+    v = np.asarray([x for x in vals if x is not None], dtype=float)
+    if len(v) < 5 or np.allclose(v.std(), 0):
+        return None
+    try:
+        return gaussian_kde(v)(grid)
+    except np.linalg.LinAlgError:
+        return None
+
+
 def load(run_dir: Path, csv_name: Optional[str]) -> Tuple[List[dict], List[dict]]:
     gen_path = None
     for name in ([csv_name] if csv_name else
@@ -144,12 +190,38 @@ def main():
     ap.add_argument("--axis", default="ptm", choices=["ptm", "plddt", "pppl"],
                     help="naturalness axis for the rescue/Pareto rebuild. Default pTM — see "
                          "this script's docstring for why not pLDDT or pppl")
+    ap.add_argument("--y-metric", default="attributable", choices=["attributable", "raw"],
+                    help="concept axis. 'attributable' subtracts, per sample, the same init's "
+                         "own alpha=0 run in the same arm and direction, so the plot shows "
+                         "what STEERING did rather than what the correction does on its own "
+                         "(that drift is 65-97%% of raw ΔGRAVY at alpha<=2). 'raw' is the "
+                         "unadjusted final-minus-init")
+    ap.add_argument("--neutral-alpha", type=float, default=0.0,
+                    help="the no-steering alpha that 'attributable' differences against")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
     rows, _ = load(run_dir, args.csv_name)
     run = RunLogger(run_dir)
     higher_is_better = args.axis != "pppl"
+
+    # per-sample concept value for the plots. Differencing against the SAME init's alpha=0 run
+    # within the same arm/direction removes both the correction's own no-steering drift and
+    # per-init variation; rows whose baseline is missing (e.g. it was degenerate-filtered) get
+    # None and drop out of the plots rather than silently comparing against nothing.
+    base = {(r["direction"], r["corrected"], r.get("init_sequence_id")): r["concept_score"]
+            for r in rows if r["alpha"] == args.neutral_alpha}
+    n_nobase = 0
+    for r in rows:
+        if args.y_metric == "raw":
+            r["_y"] = r["concept_score"]
+            continue
+        b = base.get((r["direction"], r["corrected"], r.get("init_sequence_id")))
+        r["_y"] = None if b is None else r["concept_score"] - b
+        n_nobase += b is None
+    if args.y_metric == "attributable":
+        print(f"[naturalness] y = steering-attributable ΔGRAVY "
+              f"(alpha={args.neutral_alpha} baseline; {n_nobase} row(s) had no baseline)")
 
     # ---- the justification: how each axis rates the sequences the filter rejects ----
     deg = [r for r in rows if r["_degenerate"]]
@@ -193,39 +265,134 @@ def main():
         out[d]["rescue_fraction_pppl_legacy"] = old
     run.log_summary(**{f"rescue_{key}": out})
 
-    # ---- Pareto on the chosen axis ----
+    # ---- Pareto: attainment front + densities, and the alpha path, as separate views ----
     style.apply_style()
     import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
 
+    ylab = ("steering-attributable ΔGRAVY" if args.y_metric == "attributable"
+            else "ΔGRAVY (final − init)")
+    xlab = f"{key} ({'higher' if higher_is_better else 'lower'} = more natural)"
     dirs = sorted({r["direction"] for r in clean}, key=lambda x: 0 if x == "up" else 1)
-    fig, axes = plt.subplots(1, len(dirs), figsize=(6.5 * len(dirs), 5.2), squeeze=False)
-    for ax, d in zip(axes[0], dirs):
-        sub = [r for r in clean if r["direction"] == d]
-        for corrected, colour, lab in ((False, style.ACCENT, "naive"),
-                                       (True, style.method_color("glp"), "GLP-corrected")):
-            cell = [r for r in sub if r["corrected"] == corrected and r[key] is not None]
-            if not cell:
-                continue
-            ax.scatter([r[key] for r in cell], [r["concept_score"] for r in cell],
-                       c=colour, alpha=0.35, s=18, label=f"{lab} (per-sample)")
-            alphas = sorted({r["alpha"] for r in cell})
-            pts = [(float(np.mean([r[key] for r in cell if r["alpha"] == a])),
-                    float(np.mean([r["concept_score"] for r in cell if r["alpha"] == a])))
-                   for a in alphas]
-            xs, ys = zip(*sorted(pts))
-            ax.plot(xs, ys, "o-", color=colour, linewidth=2, label=f"{lab} (mean per α)")
+    arms = ((False, style.ACCENT, "naive"), (True, style.method_color("glp"), "GLP-corrected"))
+    # where the sequences the filter REJECTED sit on this axis — the figure should carry its
+    # own warning that a high score here is not automatically good
+    junk = [r[key] for r in deg if r[key] is not None]
+
+    for d in dirs:
+        sub = [r for r in clean if r["direction"] == d
+               and r[key] is not None and r["_y"] is not None]
+        tag = "" if len(dirs) == 1 else f"_{d}"
+
+        # --- view 1: joint plot, attainment fronts + 2-D HDR contours + marginal KDEs ---
+        fig = plt.figure(figsize=(8.2, 7.4))
+        gs = GridSpec(2, 2, width_ratios=[4, 1], height_ratios=[1, 4],
+                      hspace=0.04, wspace=0.04, figure=fig)
+        ax = fig.add_subplot(gs[1, 0])
+        axt = fig.add_subplot(gs[0, 0], sharex=ax)
+        axr = fig.add_subplot(gs[1, 1], sharey=ax)
+        for a in (axt, axr):
+            a.tick_params(labelbottom=False, labelleft=False, length=0)
+            for sp in a.spines.values():
+                sp.set_visible(False)
+            a.grid(False)
+
+        if junk:
+            ax.axvspan(min(junk), max(junk), color=style.BASELINE, alpha=0.18, zorder=0)
+            ax.annotate("range of the sequences\nthe filter rejected", xy=(np.mean(junk), 0.01),
+                        xycoords=("data", "axes fraction"), ha="center", va="bottom",
+                        fontsize=8, color=style.SECONDARY)
         if key in UBIQUITIN_REF:
             ax.axvline(UBIQUITIN_REF[key], color=style.BASELINE, linestyle=":", linewidth=1.4)
-            ax.annotate("natural protein\n(ubiquitin)", xy=(UBIQUITIN_REF[key], ax.get_ylim()[1]),
-                        xytext=(-6, -28), textcoords="offset points", ha="right", fontsize=9,
-                        color=style.SECONDARY)
-        ax.set_xlabel(f"{key} ({'higher' if higher_is_better else 'lower'} = more natural)")
-        ax.set_ylabel("ΔGRAVY (final − init)")
-        ax.set_title(f"Exp B Pareto on {key}" + (f" — {d} direction" if len(dirs) > 1 else ""),
-                     loc="left")
-        ax.legend(fontsize=9)
-    path = style.save_fig(fig, run.figures_dir / f"pareto_{key}.png")
-    print(f"\n[naturalness] wrote {path}")
+            # rotated, pinned low: the previous version anchored this to the top of the axes
+            # where it collided with the legend
+            ax.annotate("natural protein (ubiquitin)", xy=(UBIQUITIN_REF[key], 0.02),
+                        xycoords=("data", "axes fraction"), rotation=90, ha="right",
+                        va="bottom", fontsize=8, color=style.SECONDARY)
+
+        for corrected, colour, lab in arms:
+            cell = [r for r in sub if r["corrected"] == corrected]
+            if not cell:
+                continue
+            xs = np.array([r[key] for r in cell]); ys = np.array([r["_y"] for r in cell])
+            ax.scatter(xs, ys, s=11, c=colour, alpha=0.28, linewidths=0, zorder=2)
+            # 2-D HDR contours instead of relying on the scatter, which is a hairball at n~140
+            if len(cell) >= 10:
+                from scipy.stats import gaussian_kde
+                try:
+                    k = gaussian_kde(np.vstack([xs, ys]))
+                    gx = np.linspace(xs.min(), xs.max(), 90)
+                    gy = np.linspace(ys.min(), ys.max(), 90)
+                    GX, GY = np.meshgrid(gx, gy)
+                    Z = k(np.vstack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
+                    lv = hdr_levels(k, np.vstack([xs, ys]))
+                    if len(lv) >= 1:
+                        ax.contour(GX, GY, Z, levels=lv, colors=[colour], linewidths=1.1,
+                                   alpha=0.85, zorder=3)
+                except np.linalg.LinAlgError:
+                    pass
+            front = pareto_front(list(zip(xs, ys)))
+            fx, fy = zip(*front)
+            ax.step(fx, fy, where="post", color=colour, linewidth=2.4, zorder=4,
+                    label=f"{lab} — attainment front (n={len(front)}/{len(cell)})")
+            ax.plot(fx, fy, "o", ms=4.5, color=colour, zorder=5)
+            # marginals
+            gxm = np.linspace(min(xs), max(xs), 200)
+            dv = kde_1d(list(xs), gxm)
+            if dv is not None:
+                axt.fill_between(gxm, dv, color=colour, alpha=0.28, linewidth=0)
+                axt.plot(gxm, dv, color=colour, linewidth=1.4)
+            gym = np.linspace(min(ys), max(ys), 200)
+            dh = kde_1d(list(ys), gym)
+            if dh is not None:
+                axr.fill_betweenx(gym, dh, color=colour, alpha=0.28, linewidth=0)
+                axr.plot(dh, gym, color=colour, linewidth=1.4)
+
+        ax.set_xlabel(xlab)
+        ax.set_ylabel(ylab)
+        ax.legend(loc="upper left", fontsize=9)
+        axt.set_title(f"Exp B objective space on {key}"
+                      + ("" if len(dirs) == 1 else f" — {d} direction")
+                      + "\nstaircase = attainment front; contours = 50% / 90% of samples",
+                      loc="left", fontsize=11)
+        p1 = style.save_fig(fig, run.figures_dir / f"pareto_front_{key}{tag}.png")
+        print(f"[naturalness] wrote {p1}")
+
+        # --- view 2: the alpha path, ordered BY ALPHA (the previous line sorted by x, which
+        # made the connecting segments meaningless) with SEM bars on both noisy objectives ---
+        fig2, ax2 = plt.subplots(figsize=(7.4, 6.0))
+        if junk:
+            ax2.axvspan(min(junk), max(junk), color=style.BASELINE, alpha=0.18, zorder=0)
+        if key in UBIQUITIN_REF:
+            ax2.axvline(UBIQUITIN_REF[key], color=style.BASELINE, linestyle=":", linewidth=1.4)
+        for corrected, colour, lab in arms:
+            cell = [r for r in sub if r["corrected"] == corrected]
+            alphas_here = sorted({r["alpha"] for r in cell})
+            mx, my, ex, ey, keep = [], [], [], [], []
+            for a in alphas_here:
+                c = [r for r in cell if r["alpha"] == a]
+                if len(c) < 2:
+                    continue
+                xv = np.array([r[key] for r in c]); yv = np.array([r["_y"] for r in c])
+                mx.append(xv.mean()); my.append(yv.mean())
+                ex.append(xv.std(ddof=1) / np.sqrt(len(xv)))
+                ey.append(yv.std(ddof=1) / np.sqrt(len(yv)))
+                keep.append(a)
+            if not mx:
+                continue
+            ax2.errorbar(mx, my, xerr=ex, yerr=ey, color=colour, linewidth=2, marker="o",
+                         ms=6, capsize=2.5, elinewidth=1, label=f"{lab} (mean ± SEM per α)")
+            for a, x, y in zip(keep, mx, my):
+                ax2.annotate(f"{a:g}", (x, y), xytext=(6, 5), textcoords="offset points",
+                             fontsize=8, color=style.SECONDARY)
+        ax2.set_xlabel(xlab)
+        ax2.set_ylabel(ylab)
+        ax2.set_title(f"Exp B dose-response path in objective space"
+                      + ("" if len(dirs) == 1 else f" — {d} direction")
+                      + "\nlabels are α; ordered by α, not by naturalness", loc="left")
+        ax2.legend(loc="upper left", fontsize=9)
+        p2 = style.save_fig(fig2, run.figures_dir / f"pareto_path_{key}{tag}.png")
+        print(f"[naturalness] wrote {p2}")
 
     # ---- the gate-check figure: why this axis and not the others ----
     fig2, axs = plt.subplots(1, 3, figsize=(12.5, 4.4))
