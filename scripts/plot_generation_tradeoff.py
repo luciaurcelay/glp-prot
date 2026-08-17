@@ -34,6 +34,24 @@ def sem(v: List[float]) -> float:
     return stdev(v) / len(v) ** 0.5 if len(v) > 1 else float("nan")
 
 
+def is_degenerate(seq: str) -> bool:
+    """Same gate every main-run analysis applies. The pilot analyses originally omitted it,
+    which inverted the temperature conclusion: low-temperature sampling MODE-COLLAPSES, and
+    the collapsed sequences score high pTM (they are the artefact that also fools pLDDT and
+    pseudo-perplexity). Without this filter T=0.5 at 30 rounds looked like the best setting
+    in the grid while actually producing 8/15 non-proteins."""
+    from collections import Counter
+    if not seq:
+        return True
+    if max(Counter(seq).values()) / len(seq) >= 0.30:
+        return True
+    run = best = 1
+    for i in range(1, len(seq)):
+        run = run + 1 if seq[i] == seq[i - 1] else 1
+        best = max(best, run)
+    return len(set(seq)) <= 8 or best >= 12
+
+
 def load(run_dir: Path, temperature: Optional[float]) -> List[dict]:
     gen = list(csv.DictReader(open(run_dir / "generation_pilot.csv")))
     fold = {f["sample_id"]: f for f in csv.DictReader(open(run_dir / "generation_pilot_fold.csv"))
@@ -50,7 +68,8 @@ def load(run_dir: Path, temperature: Optional[float]) -> List[dict]:
                     "mask": float(g.get("mask_fraction") or 0.10),
                     "temp": t, "alpha": float(g["alpha"]),
                     "corr": g["corrected"] == "True", "init": g["init_sequence_id"],
-                    "dgravy": float(g["delta_gravy"]), "ptm": float(f["ptm"])})
+                    "dgravy": float(g["delta_gravy"]), "ptm": float(f["ptm"]),
+                    "degenerate": is_degenerate(g["sequence"])})
     return out
 
 
@@ -87,26 +106,40 @@ def main():
     cells: Dict[Tuple[float, int], dict] = {}
     for mask in sorted({r["mask"] for r in rows}):
         for rr in sorted({r["rounds"] for r in rows}):
-            unsteered = [r["ptm"] for r in rows if r["mask"] == mask and r["rounds"] == rr
-                         and r["alpha"] == args.neutral_alpha and not r["corr"]]
+            all_uns = [r for r in rows if r["mask"] == mask and r["rounds"] == rr
+                       and r["alpha"] == args.neutral_alpha and not r["corr"]]
+            unsteered = [r["ptm"] for r in all_uns if not r["degenerate"]]
+            # degenerate output is a FAILURE of the setting, not a row to drop quietly: pTM
+            # among survivors alone is survivor-biased, and at T=0.5/30 rounds only 7 of 15
+            # survive, so the surviving mean says little about the setting.
+            deg_rate = (sum(r["degenerate"] for r in all_uns) / len(all_uns)) if all_uns else None
             base = {r["init"]: r["dgravy"] for r in rows if r["mask"] == mask
-                    and r["rounds"] == rr and r["alpha"] == args.neutral_alpha and r["corr"]}
+                    and r["rounds"] == rr and r["alpha"] == args.neutral_alpha and r["corr"]
+                    and not r["degenerate"]}
             eff = [r["dgravy"] - base[r["init"]] for r in rows if r["mask"] == mask
                    and r["rounds"] == rr and r["alpha"] == args.steered_alpha and r["corr"]
-                   and r["init"] in base]
+                   and not r["degenerate"] and r["init"] in base]
             if len(unsteered) < 3 or len(eff) < 3:
                 continue
             cells[(mask, rr)] = {"ptm": mean(unsteered), "ptm_sem": sem(unsteered),
                                  "effect": mean(eff), "effect_sem": sem(eff),
-                                 "n": min(len(unsteered), len(eff))}
+                                 "n": min(len(unsteered), len(eff)),
+                                 "degenerate_rate": deg_rate}
 
-    print(f"\n{'mask':>5} {'rounds':>7} | {'pTM (no steering)':>20} | {'steering effect':>20}")
+    print(f"\n{'mask':>5} {'rounds':>7} | {'pTM (no steering)':>20} | {'steering effect':>20} "
+          f"| {'degenerate':>11}")
     for (mask, rr), c in sorted(cells.items()):
+        dr = c.get("degenerate_rate")
+        flag = "  <-- unusable" if dr is not None and dr >= 0.25 else ""
         print(f"{mask:>5.2f} {rr:>7} | {c['ptm']:>10.3f} ±{c['ptm_sem']:.3f} | "
-              f"{c['effect']:>+10.3f} ±{c['effect_sem']:.3f}")
+              f"{c['effect']:>+10.3f} ±{c['effect_sem']:.3f} | "
+              f"{'--' if dr is None else f'{dr:>10.0%}'}{flag}")
 
     # non-dominated set under maximise-both
-    pts = [(c["ptm"], c["effect"], k) for k, c in cells.items()]
+    # a setting whose output is mostly degenerate is not a candidate, whatever its surviving
+    # sequences score
+    pts = [(c["ptm"], c["effect"], k) for k, c in cells.items()
+           if (c.get("degenerate_rate") or 0) < 0.25]
     best_y, front = -float("inf"), []
     for x, y, k in sorted(pts, key=lambda p: p[0], reverse=True):
         if y > best_y:
