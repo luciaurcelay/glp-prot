@@ -62,17 +62,25 @@ def sample_gravy_pool(n_raw: int, min_len: int, max_len: int, seed: int
 
 
 def build_contrast(pool: List[Tuple[str, float]], n_per_set: int, n_heldout: int,
-                   seed: int) -> dict:
-    """Bottom/top quartile by GRAVY; n_heldout held-out low-GRAVY sequences carved out
-    first (excluded from the vector), then n_per_set drawn from each quartile's remainder."""
+                   seed: int, n_heldout_high: int = 0) -> dict:
+    """Bottom/top quartile by GRAVY; held-out generation starting points carved out of each
+    quartile FIRST (so they never enter the vector), then n_per_set drawn from each
+    quartile's remainder.
+
+    `n_heldout` low-GRAVY starts drive the "up" steering direction (+alpha*v raises GRAVY);
+    `n_heldout_high` high-GRAVY starts drive the "down" direction (-alpha*v lowers it), for
+    bidirectional steering. Both are excluded from their own side of the contrast, keeping
+    the two directions symmetric — otherwise the down direction's starting points would sit
+    inside the very set that defined v's positive end."""
     pool_sorted = sorted(pool, key=lambda t: t[1])
     n = len(pool_sorted)
     q = n // 4
     needed_low = n_per_set + n_heldout
-    if q < needed_low or q < n_per_set:
+    needed_high = n_per_set + n_heldout_high
+    if q < max(needed_low, needed_high):
         raise ValueError(f"quartile size {q} (of {n} length-filtered seqs) can't cover "
-                         f"n_per_set={n_per_set} (+{n_heldout} heldout for the low set) "
-                         f"— raise --n-raw-seqs")
+                         f"n_per_set={n_per_set} (+{n_heldout} low / +{n_heldout_high} high "
+                         f"heldout starts) — raise --n-raw-seqs")
     low_quartile = pool_sorted[:q]
     high_quartile = pool_sorted[n - q:]
 
@@ -81,10 +89,14 @@ def build_contrast(pool: List[Tuple[str, float]], n_per_set: int, n_heldout: int
     low_sel = [low_quartile[i] for i in low_idx]
     heldout, low_in = low_sel[:n_heldout], low_sel[n_heldout:]
 
-    high_idx = rng.choice(len(high_quartile), size=n_per_set, replace=False)
+    high_idx = rng.choice(len(high_quartile), size=needed_high, replace=False)
     high_sel = [high_quartile[i] for i in high_idx]
+    # take the high heldout from the TOP of the quartile ordering for symmetry with the low
+    # side (which takes the most extreme low-GRAVY draws first via the sorted quartile)
+    heldout_high, high_in = high_sel[:n_heldout_high], high_sel[n_heldout_high:]
 
-    return {"high": high_sel, "low_in": low_in, "heldout": heldout}
+    return {"high": high_in, "low_in": low_in,
+            "heldout": heldout, "heldout_high": heldout_high}
 
 
 def whole_seq_mean_acts(extractor: ActivationExtractor, seqs: List[str]) -> np.ndarray:
@@ -94,7 +106,8 @@ def whole_seq_mean_acts(extractor: ActivationExtractor, seqs: List[str]) -> np.n
 
 def build_gravy_contrast(cfg, out_path: Path, n_raw_seqs: int = 8000, min_len: int = 100,
                          max_len: int = 200, n_per_set: int = 100, n_heldout: int = 15,
-                         seed: int = 0, restart: bool = False, device=None) -> Path:
+                         seed: int = 0, restart: bool = False, device=None,
+                         n_heldout_high: int = 15) -> Path:
     """Core builder, callable directly (run_steering.py's Exp B path calls this to
     lazy-build `gravy_contrast.json` if missing — same auto-build-then-cache convention
     as `select_zinc_finger_features`/`compute_diffmean_vector` there) as well as from
@@ -110,20 +123,22 @@ def build_gravy_contrast(cfg, out_path: Path, n_raw_seqs: int = 8000, min_len: i
     for attempt in range(4):
         pool = sample_gravy_pool(n_raw, min_len, max_len, seed)
         needed_low = n_per_set + n_heldout
+        needed_high = n_per_set + n_heldout_high
         n = len(pool)
-        if n // 4 >= max(needed_low, n_per_set):
+        if n // 4 >= max(needed_low, needed_high):
             break
         print(f"[build_gravy_contrast] only {n} sequences survived length filter "
              f"[{min_len},{max_len}] from {n_raw} raw draws (need >= "
-             f"{4 * max(needed_low, n_per_set)} total) — retrying with a bigger pool")
+             f"{4 * max(needed_low, needed_high)} total) — retrying with a bigger pool")
         n_raw *= 2
     else:
         raise RuntimeError("could not assemble a large-enough length-filtered UniRef50 pool "
                           "after 4 retries — raise --n-raw-seqs/n_raw_seqs manually")
 
-    sets = build_contrast(pool, n_per_set, n_heldout, seed)
+    sets = build_contrast(pool, n_per_set, n_heldout, seed, n_heldout_high=n_heldout_high)
     print(f"[build_gravy_contrast] pool={n} filtered seqs; high={len(sets['high'])} "
-         f"low_in={len(sets['low_in'])} heldout={len(sets['heldout'])}")
+         f"low_in={len(sets['low_in'])} heldout_low={len(sets['heldout'])} "
+         f"heldout_high={len(sets['heldout_high'])}")
 
     extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
     high_means = whole_seq_mean_acts(extractor, [s for s, _ in sets["high"]])
@@ -137,13 +152,26 @@ def build_gravy_contrast(cfg, out_path: Path, n_raw_seqs: int = 8000, min_len: i
         "vector": vector.tolist(),
         "vector_norm": float(np.linalg.norm(vector)),
         "n_high": len(sets["high"]), "n_low_in": len(sets["low_in"]),
-        "n_heldout": len(sets["heldout"]),
+        "n_heldout": len(sets["heldout"]), "n_heldout_high": len(sets["heldout_high"]),
         "gravy_high_mean": float(np.mean(high_gravy)), "gravy_high_min": float(np.min(high_gravy)),
         "gravy_low_in_mean": float(np.mean(low_gravy)), "gravy_low_in_max": float(np.max(low_gravy)),
         "min_len": min_len, "max_len": max_len, "seed": seed,
         "heldout": [{"id": i, "sequence": s, "gravy": g}
                     for i, (s, g) in enumerate(sets["heldout"])],
+        # high-GRAVY starting points for the "down" steering direction (-alpha*v). Ids are
+        # numbered independently of the low set; run_steering.py keys pairing on
+        # (direction, init_sequence_id), so the two id spaces never collide.
+        "heldout_high": [{"id": i, "sequence": s, "gravy": g}
+                         for i, (s, g) in enumerate(sets["heldout_high"])],
     }
+    if sets["heldout_high"]:
+        hg = [g for _, g in sets["heldout_high"]]
+        payload["gravy_heldout_high_mean"] = float(np.mean(hg))
+        payload["gravy_heldout_high_min"] = float(np.min(hg))
+    if sets["heldout"]:
+        lg = [g for _, g in sets["heldout"]]
+        payload["gravy_heldout_low_mean"] = float(np.mean(lg))
+        payload["gravy_heldout_low_max"] = float(np.max(lg))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2))
     print(f"[build_gravy_contrast] wrote {out_path} "
@@ -171,6 +199,10 @@ def main():
                     help="low-GRAVY sequences carved out of the low quartile as Exp B "
                          "generation starting points (spec's 10-20 range); excluded from "
                          "the vector")
+    ap.add_argument("--n-heldout-high", type=int, default=15,
+                    help="high-GRAVY sequences carved out of the high quartile as starting "
+                         "points for the DOWN steering direction (bidirectional steering); "
+                         "excluded from the vector. 0 disables the down direction.")
     ap.add_argument("--restart", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -182,7 +214,8 @@ def main():
 
     build_gravy_contrast(cfg, out_path, n_raw_seqs=args.n_raw_seqs, min_len=args.min_len,
                          max_len=args.max_len, n_per_set=args.n_per_set,
-                         n_heldout=args.n_heldout, seed=args.seed, restart=args.restart)
+                         n_heldout=args.n_heldout, seed=args.seed, restart=args.restart,
+                         n_heldout_high=args.n_heldout_high)
 
 
 if __name__ == "__main__":

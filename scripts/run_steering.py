@@ -669,9 +669,33 @@ def pseudo_perplexity(steerer: ESMSteerer, seq: str, device: str, batch_size: in
     return float(np.exp(np.mean(nlls)))
 
 
-def fold_plddt(seq: str, device: str, _cache: dict = {}) -> Optional[float]:
-    """Best-effort ESMFold pLDDT (Exp A default-on: spec's "Needs folding: Yes"; PLAN.md
-    D4 flags this Tier-2/feasibility-gated: 16-24GB GPU mem)."""
+def fold_confidence(seq: str, device: str,
+                    _cache: dict = {}) -> Tuple[Optional[float], Optional[float]]:
+    """Best-effort ESMFold confidence for `seq`, as (pLDDT on 0-100, pTM on 0-1).
+
+    The field-standard naturalness axis for generated sequences, and the one Exp B was
+    missing: pseudo-perplexity asks "is this sequence statistically typical", pLDDT/pTM ask
+    "does it specify a structure" — an independent signal, which matters here because the
+    correction's Leu/Val enrichment *improves* pppl while pushing composition away from
+    natural (see `composition_distance`). Hydrophobic-enriched sequences are also
+    aggregation-prone, so folding confidence is a real test of whether the steered
+    sequences are plausible proteins at all rather than pppl-flattering junk.
+
+    Both are reported because they fail differently: pLDDT is per-residue local confidence
+    (averaged over CA atoms here), so a high mean can hide "confident fragments, incoherent
+    global fold" — which pTM, a single global TM-score estimate, is meant to catch.
+
+    Scales verified against the installed transformers (5.14.1), not assumed:
+      * pLDDT — `categorical_lddt` -> `EsmCategoricalMixture(..., start=0, end=1).mean()`,
+        a softmax-weighted average of bin centres on a 0-1 grid, so the output is in [0,1]
+        and IS multiplied by 100 here for conventional reporting. (The previous comment
+        claimed it already arrived 0-100, which would have made this a 10x inflation; it
+        does not.)
+      * pTM — openfold's `compute_tm`, which reduces over residues to a scalar already in
+        TM-score units [0,1], so it is recorded as-is.
+
+    Heavy: ESMFold is ~16-24GB GPU mem (PLAN.md D4 flags it Tier-2/feasibility-gated) and
+    adds a fold per generated sequence, hence opt-in via --fold."""
     try:
         if "model" not in _cache:
             from transformers import AutoTokenizer, EsmForProteinFolding
@@ -682,11 +706,13 @@ def fold_plddt(seq: str, device: str, _cache: dict = {}) -> Optional[float]:
         inputs = tok([seq], return_tensors="pt", add_special_tokens=False).to(device)
         with torch.no_grad():
             out = model(**inputs)
-        # per-atom pLDDT, (1, L, 37); CA = atom index 1. Reported on a 0-100 scale upstream.
-        return float(out["plddt"][0, :, 1].mean()) * 100.0
+        # per-atom pLDDT, (1, L, 37); CA = atom index 1
+        plddt = float(out["plddt"][0, :, 1].mean()) * 100.0
+        ptm_val = getattr(out, "ptm", None)
+        return plddt, (float(ptm_val) if ptm_val is not None else None)
     except Exception as e:  # opt-in path; don't take down the run over a folding failure
-        print(f"[steering] WARNING: --fold pLDDT failed for one sequence ({e}); recording None")
-        return None
+        print(f"[steering] WARNING: --fold failed for one sequence ({e}); recording None")
+        return None, None
 
 
 # --------------------------------------------------------------------------- #
@@ -828,6 +854,60 @@ def steering_attributable_by_alpha(rows: List[dict], alphas: List[float],
     return out
 
 
+def divergence_by_alpha(rows: List[dict], alphas: List[float],
+                        neutral_alpha: float = 0.0) -> Dict[str, dict]:
+    """Bidirectional steering: how far the up and down trajectories separate at each alpha.
+
+    Steering the SAME vector both ways (+alpha*v from low-GRAVY starts, -alpha*v from
+    high-GRAVY starts) is a much stronger test than one rising curve, because a real
+    steering direction must push the two apart while any direction-independent artefact
+    pushes them the same way and cancels in the difference. Two flavours are reported:
+
+      raw          mean(delta up) - mean(delta down). Cancels drift only to the extent the
+                   drift is direction-independent — which is exactly what the alpha=0 arms
+                   let you check rather than assume.
+      attributable each direction first differenced against its OWN alpha=0 run per init
+                   (see `steering_attributable_by_alpha`), then subtracted. Robust even when
+                   the two directions' drifts differ (e.g. if the correction mean-reverts,
+                   pushing GRAVY up from low starts but down from high ones).
+
+    Positive = up finished more hydrophobic than down, i.e. the intended separation. Should
+    grow monotonically with alpha, and grow faster for the GLP-corrected arm than the naive
+    one if the correction is what makes steering effective."""
+    up = [r for r in rows if r.get("direction", "up") == "up"]
+    down = [r for r in rows if r.get("direction", "up") == "down"]
+    if not up or not down:
+        return {}
+    attr = {"up": steering_attributable_by_alpha(up, alphas, neutral_alpha),
+            "down": steering_attributable_by_alpha(down, alphas, neutral_alpha)}
+
+    out: Dict[str, dict] = {}
+    for a in alphas:
+        entry: Dict[str, dict] = {}
+        for corrected, arm in ((False, "naive"), (True, "corrected")):
+            cell = {}
+            u_raw = [r["concept_score"] for r in up
+                     if r["alpha"] == a and r["corrected"] == corrected]
+            d_raw = [r["concept_score"] for r in down
+                     if r["alpha"] == a and r["corrected"] == corrected]
+            if u_raw and d_raw:
+                cell["raw"] = {"up": float(np.mean(u_raw)), "down": float(np.mean(d_raw)),
+                               "divergence": float(np.mean(u_raw) - np.mean(d_raw)),
+                               "n_up": len(u_raw), "n_down": len(d_raw)}
+            u_a = attr["up"].get(str(a), {}).get(arm)
+            d_a = attr["down"].get(str(a), {}).get(arm)
+            if u_a and d_a:
+                cell["attributable"] = {
+                    "up": u_a["mean"], "down": d_a["mean"],
+                    "divergence": u_a["mean"] - d_a["mean"],
+                    "n_up": u_a["n"], "n_down": d_a["n"]}
+            if cell:
+                entry[arm] = cell
+        if entry:
+            out[str(a)] = entry
+    return out
+
+
 def composition_by_alpha(rows: List[dict], alphas: List[float]) -> Dict[str, dict]:
     """Mean `composition_distance` per (alpha, arm) — makes the correction's compositional
     drift visible next to pseudo-perplexity, which moves the opposite way (see
@@ -840,6 +920,37 @@ def composition_by_alpha(rows: List[dict], alphas: List[float]) -> Dict[str, dic
                  if r["alpha"] == a and r["corrected"] == corrected and r.get("sequence")]
             if v:
                 entry[name] = float(np.mean(v))
+        if entry:
+            out[str(a)] = entry
+    return out
+
+
+def fold_by_alpha(rows: List[dict], alphas: List[float]) -> Dict[str, dict]:
+    """Mean ESMFold pLDDT / pTM per (alpha, arm), for rows where --fold produced a value.
+
+    The structural counterpart to `composition_by_alpha`: reported next to
+    pseudo-perplexity so the naturalness claim rests on an axis the correction's Leu/Val
+    enrichment can't flatter. Skips rows with a missing/failed fold rather than treating
+    them as zeros."""
+    def num(r, key):
+        v = r.get(key)
+        if v in (None, "", "None"):
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    out: Dict[str, dict] = {}
+    for a in alphas:
+        entry = {}
+        for corrected, name in ((False, "naive"), (True, "corrected")):
+            cell = [r for r in rows if r["alpha"] == a and r["corrected"] == corrected]
+            for key in ("plddt", "ptm"):
+                v = [x for x in (num(r, key) for r in cell) if x is not None]
+                if v:
+                    entry[f"{name}_{key}"] = float(np.mean(v))
+                    entry[f"{name}_{key}_n"] = len(v)
         if entry:
             out[str(a)] = entry
     return out
@@ -918,7 +1029,7 @@ def pareto_exp_a(rows: List[dict], out_dir: Path, run: RunLogger, alphas: List[f
     _log_rescue(run, "A", frac, n_comp, len(corr_agg))
 
 
-def pareto_exp_b(rows: List[dict], out_dir: Path, run: RunLogger):
+def pareto_exp_b(rows: List[dict], out_dir: Path, run: RunLogger, suffix: str = ""):
     """Per-sample scatter + mean trajectory overlay (spec explicitly allows this for
     Exp B's continuous ΔGRAVY score, unlike Exp A's aggregate-only)."""
     naive = [r for r in rows if not r["corrected"]]
@@ -947,12 +1058,13 @@ def pareto_exp_b(rows: List[dict], out_dir: Path, run: RunLogger):
             ax.plot(xs, ys, "o-", color=color, linewidth=2, label=label)
     ax.set_xlabel("naturalness (pseudo-perplexity; lower = more natural)")
     ax.set_ylabel("ΔGRAVY (final - init)")
-    ax.set_title("Exp B Pareto: hydrophobicity shift vs. naturalness")
+    label = f" ({suffix.lstrip('_')} direction)" if suffix else ""
+    ax.set_title(f"Exp B Pareto: hydrophobicity shift vs. naturalness{label}")
     ax.legend()
-    style.save_fig(fig, run.figures_dir / "pareto.png")
+    style.save_fig(fig, run.figures_dir / f"pareto{suffix}.png")
 
     frac, n_comp = _rescue_fraction(naive, corrected)
-    _log_rescue(run, "B", frac, n_comp, len(corrected))
+    _log_rescue(run, f"B{suffix}", frac, n_comp, len(corrected))
 
 
 def _log_rescue(run: RunLogger, experiment: str, frac: float, comparable: int, n_corrected: int):
@@ -1079,9 +1191,15 @@ def main():
                          "(kept low by default — this runs every round, not once per sequence)")
 
     ap.add_argument("--fold", action=argparse.BooleanOptionalAction, default=None,
-                    help="ESMFold pLDDT. Default: True for A (spec: 'Needs folding: Yes'), "
-                         "False for B (spec: 'Needs folding: No'). Heavy (16-24GB GPU mem) — "
-                         "use --no-fold for cheap A smoke tests.")
+                    help="ESMFold pLDDT + pTM. Default: True for A (spec: 'Needs folding: "
+                         "Yes'), False for B (spec: 'Needs folding: No'). Heavy (16-24GB GPU "
+                         "mem, one fold per generated sequence) — use --no-fold for cheap A "
+                         "smoke tests, and --fold on B when you need the structural "
+                         "naturalness axis rather than pseudo-perplexity (which the "
+                         "correction's Leu/Val enrichment flatters — see "
+                         "composition_distance). NOTE: for Exp B this flag was previously a "
+                         "silent no-op (the only fold call sat inside the Exp A branch and "
+                         "plddt was not a B column); it now works for both.")
     ap.add_argument("--skip-diagnostic", action="store_true")
     ap.add_argument("--skip-generate", action="store_true")
     ap.add_argument("--restart", action="store_true", help="ignore any existing partial CSVs")
@@ -1094,6 +1212,16 @@ def main():
                                        "metrics/figures — pick a fresh one per run.")
     ap.add_argument("--out-dir", help="explicit out-dir path, overrides --exp-name. Its basename "
                                       "is still the RunLogger redirect key, so keep it unique too.")
+    ap.add_argument("--directions", default="up,down",
+                    help="[B only] steering directions to run. 'up' starts from the held-out "
+                         "LOW-GRAVY sequences and applies +alpha*v (raise hydrophobicity); "
+                         "'down' starts from the held-out HIGH-GRAVY set and applies -alpha*v "
+                         "(lower it). Running both is bidirectional steering: the two "
+                         "trajectories should diverge monotonically, which is far stronger "
+                         "evidence than one rising curve, and their difference cancels any "
+                         "direction-independent drift. 'down' needs `heldout_high` in "
+                         "gravy_contrast.json (rebuild with --restart if absent). Doubles "
+                         "generation cost. Exp A is up-only.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -1174,15 +1302,27 @@ def main():
         gd = json.loads(gravy_path.read_text())
         diffmean_vec = torch.tensor(gd["vector"], dtype=torch.float32)
         heldout = gd["heldout"]
+        heldout_high = gd.get("heldout_high") or []
         print(f"[steering] gravy contrast: high={gd['gravy_high_mean']:.3f} vs "
               f"low={gd['gravy_low_in_mean']:.3f} (||v||={gd['vector_norm']:.4f}), "
               f"{len(heldout)} held-out starting sequences")
         default_alphas = "0,0.05,0.25,0.5,1,2,5,20"
         neutral_alpha = 0.0  # diffmean_clamp's alpha=0 -> x_new == x exactly, no special-casing
+        directions = [d.strip() for d in args.directions.split(",") if d.strip()]
+        bad = [d for d in directions if d not in ("up", "down")]
+        if bad:
+            ap.error(f"--directions must be 'up' and/or 'down', got {bad}")
+        if "down" in directions and not heldout_high:
+            ap.error(f"--directions includes 'down' but {gravy_path} has no `heldout_high` "
+                     "(it predates bidirectional steering). Rebuild it with "
+                     "`--gravy-contrast <path> --restart`, or pass --directions up.")
+        heldout_sets = {"up": heldout, "down": heldout_high}
         if args.n_sequences is not None and args.n_sequences != len(heldout):
-            print(f"[steering] --n-sequences ignored for experiment B — using all "
-                 f"{len(heldout)} held-out sequences (paired design)")
+            print(f"[steering] --n-sequences ignored for experiment B — using all held-out "
+                  "sequences per direction (paired design)")
         args.n_sequences = len(heldout)
+        print("[steering] directions=" + ",".join(
+            f"{d}(n={len(heldout_sets[d])})" for d in directions))
 
     if args.n_sequences is None:
         args.n_sequences = 100
@@ -1203,6 +1343,9 @@ def main():
         # anchor arm silently never runs.
         alphas = [neutral_alpha] + alphas
 
+    if is_a:
+        directions = ["up"]   # bidirectional is a diff-of-means (Exp B) construct
+
     steerer = ESMSteerer(cfg.data.model_name, cfg.data.layer, device)
 
     def b_for(alpha: float) -> float:
@@ -1210,11 +1353,14 @@ def main():
         algebraic identity); every other alpha uses the fixed --shift-b."""
         return 0.0 if alpha == neutral_alpha else args.shift_b
 
-    def build_init(i: int, generator: torch.Generator):
+    def build_init(i: int, generator: torch.Generator, direction: str = "up"):
+        """`direction` selects which held-out set the start comes from: 'up' -> the
+        low-GRAVY set (steered +v), 'down' -> the high-GRAVY set (steered -v). Exp A ignores
+        it (random-AA inits)."""
         if is_a:
             length = int(np.random.default_rng(args.seed * 7919 + i).integers(len_lo, len_hi + 1))
             return random_aa_init_tokens(steerer.tokenizer, length, generator), length, None, None
-        ho = heldout[i]
+        ho = heldout_sets[direction][i]
         return seq_to_init_tokens(steerer.tokenizer, ho["sequence"]), len(ho["sequence"]), ho["id"], ho["gravy"]
 
     if args.t_start_pilot:
@@ -1329,7 +1475,8 @@ def main():
                 existing = list(csv.DictReader(f))
         done_counts = {}
         for r in existing:
-            key = (r["alpha"], r["corrected"])
+            # legacy CSVs (pre-bidirectional) have no direction column -> they are all "up"
+            key = (r.get("direction") or "up", r["alpha"], r["corrected"])
             done_counts[key] = done_counts.get(key, 0) + 1
 
         if is_a:
@@ -1338,13 +1485,14 @@ def main():
                          "diffusion_loss", "max_homopolymer_run", "unique_aa_count",
                          "composition_distance",
                          "target_feature_activation_mean", "target_feature_activation_max",
-                         "target_feature_peak_residue", "plddt", "sequence"]
+                         "target_feature_peak_residue", "plddt", "ptm", "sequence"]
         else:
             fieldnames = ["sample_id", "init_sequence_id", "alpha", "corrected", "length",
                          "gravy_init", "gravy_final", "delta_gravy", "naturalness_score",
                          "diffusion_loss", "max_homopolymer_run", "unique_aa_count",
                          "composition_distance",
-                         "target_projection_mean", "target_projection_max", "sequence"]
+                         "target_projection_mean", "target_projection_max",
+                         "plddt", "ptm", "direction", "sequence"]
 
         mode = "a" if existing else "w"
         rows_for_analysis = []
@@ -1352,6 +1500,7 @@ def main():
             concept_score = (1.0 if r["motif_hit"] == "True" else 0.0) if is_a else float(r["delta_gravy"])
             rows_for_analysis.append({
                 **r, "alpha": float(r["alpha"]), "corrected": r["corrected"] == "True",
+                "direction": r.get("direction") or "up",
                 "naturalness_score": float(r["naturalness_score"]),
                 "diffusion_loss": float(r["diffusion_loss"]), "concept_score": concept_score,
             })
@@ -1385,136 +1534,154 @@ def main():
             w = csv.DictWriter(fcsv, fieldnames=fieldnames)
             if mode == "w":
                 w.writeheader()
-            for alpha in alphas:
-                for corrected in (False, True):
-                    key = (str(alpha), str(corrected))
-                    n_done = done_counts.get(key, 0)
-                    for i in range(n_done, args.n_sequences):
-                        seed_i = args.seed * 1_000_003 + sample_id
-                        g = torch.Generator().manual_seed(seed_i)
-                        g_dev = torch.Generator(device=device).manual_seed(seed_i)
+            for direction in directions:
+                # -v for the down direction; `alpha` stays the magnitude in the CSV so both
+                # directions share an x-axis and `direction` carries the sign.
+                sign = 1.0 if direction == "up" else -1.0
+                n_seq_dir = args.n_sequences if is_a else len(heldout_sets[direction])
+                for alpha in alphas:
+                    for corrected in (False, True):
+                        key = (direction, str(alpha), str(corrected))
+                        n_done = done_counts.get(key, 0)
+                        for i in range(n_done, n_seq_dir):
+                            seed_i = args.seed * 1_000_003 + sample_id
+                            g = torch.Generator().manual_seed(seed_i)
+                            g_dev = torch.Generator(device=device).manual_seed(seed_i)
 
-                        init_tokens, length, init_sequence_id, gravy_init = build_init(i, g)
-                        # spec's selection caveat: Exp A's no-steering anchor (alpha==
-                        # neutral_alpha) keeps the LAST round (select_fn=None), not the
-                        # z_k-argmax criterion, to avoid cherry-picking an unsteered run's
-                        # best-looking round. Exp B never selects (always last round).
-                        use_select = is_a and alpha != neutral_alpha
+                            init_tokens, length, init_sequence_id, gravy_init = build_init(
+                                i, g, direction)
+                            # spec's selection caveat: Exp A's no-steering anchor (alpha==
+                            # neutral_alpha) keeps the LAST round (select_fn=None), not the
+                            # z_k-argmax criterion, to avoid cherry-picking an unsteered run's
+                            # best-looking round. Exp B never selects (always last round).
+                            use_select = is_a and alpha != neutral_alpha
 
-                        steer_fn = make_steer_fn(method, alpha, sae=sae, feat_idxs=feat_idxs, v=diffmean_vec,
-                                                 intervention=args.sae_intervention,
-                                                 b=b_for(alpha) if is_a else 0.0)
+                            # sign flips the diff-of-means vector for the down direction;
+                            # alpha=0 is identity either way, which is what makes the
+                            # alpha=0 down arm a clean read on the correction's own drift
+                            # from a HIGH-GRAVY start (a fixed hydrophobic bias would still
+                            # push up there; mean-reversion would push down).
+                            steer_fn = make_steer_fn(method, sign * alpha, sae=sae,
+                                                     feat_idxs=feat_idxs, v=diffmean_vec,
+                                                     intervention=args.sae_intervention,
+                                                     b=b_for(alpha) if is_a else 0.0)
 
-                        def correct_fn(a, _corrected=corrected, _g=g_dev):
-                            if not _corrected:
-                                return a
-                            return glp_correct(model, scaler, a, t_start=args.t_start,
-                                              num_steps=args.sde_steps, device=device, generator=_g)
+                            def correct_fn(a, _corrected=corrected, _g=g_dev):
+                                if not _corrected:
+                                    return a
+                                return glp_correct(model, scaler, a, t_start=args.t_start,
+                                                  num_steps=args.sde_steps, device=device, generator=_g)
 
-                        diag_fn = None
-                        if diag_writer is not None and corrected:
-                            def diag_fn(round_idx, clamped, corrected_acts,
-                                       _sample_id=sample_id, _alpha=alpha, _g=g_dev):
-                                loss_pre = float(diffusion_loss(
-                                    model, scaler, clamped.detach(), n_repeats=args.diag_n_repeats,
-                                    device=device, generator=_g).mean())
-                                loss_post = float(diffusion_loss(
-                                    model, scaler, corrected_acts.detach(), n_repeats=args.diag_n_repeats,
-                                    device=device, generator=_g).mean())
-                                diag_writer.writerow({
-                                    "sample_id": _sample_id, "alpha": _alpha, "corrected": True,
-                                    "round": round_idx, "diffusion_loss_pre": loss_pre,
-                                    "diffusion_loss_post": loss_post})
-                                diag_file.flush()
+                            diag_fn = None
+                            if diag_writer is not None and corrected:
+                                def diag_fn(round_idx, clamped, corrected_acts,
+                                           _sample_id=sample_id, _alpha=alpha, _g=g_dev):
+                                    loss_pre = float(diffusion_loss(
+                                        model, scaler, clamped.detach(), n_repeats=args.diag_n_repeats,
+                                        device=device, generator=_g).mean())
+                                    loss_post = float(diffusion_loss(
+                                        model, scaler, corrected_acts.detach(), n_repeats=args.diag_n_repeats,
+                                        device=device, generator=_g).mean())
+                                    diag_writer.writerow({
+                                        "sample_id": _sample_id, "alpha": _alpha, "corrected": True,
+                                        "round": round_idx, "diffusion_loss_pre": loss_pre,
+                                        "diffusion_loss_post": loss_post})
+                                    diag_file.flush()
 
-                        select_fn = None
-                        if use_select:
-                            def select_fn(round_idx, cur_seq, _sample_id=sample_id, _alpha=alpha,
-                                         _corrected=corrected):
-                                acts = torch.from_numpy(extractor.extract_single(cur_seq)).float()
-                                mean_act, max_act = target_signal(method, acts, device, sae=sae,
-                                                                  feat_idxs=feat_idxs, v=diffmean_vec)
-                                if roundlog_writer is not None:
+                            select_fn = None
+                            if use_select:
+                                def select_fn(round_idx, cur_seq, _sample_id=sample_id, _alpha=alpha,
+                                             _corrected=corrected):
+                                    acts = torch.from_numpy(extractor.extract_single(cur_seq)).float()
+                                    mean_act, max_act = target_signal(method, acts, device, sae=sae,
+                                                                      feat_idxs=feat_idxs, v=diffmean_vec)
+                                    if roundlog_writer is not None:
+                                        roundlog_writer.writerow({
+                                            "sample_id": _sample_id, "alpha": _alpha, "corrected": _corrected,
+                                            "round": round_idx, "feature_activation_mean": mean_act,
+                                            "feature_activation_max": max_act})
+                                        roundlog_file.flush()
+                                    # max, not mean: the target feature is sparse (active at a
+                                    # handful of positions at most), so a length-diluted mean
+                                    # can't tell a round with a strong local hit from none at all.
+                                    return max_act
+
+                            log_fn = None
+                            if not is_a and roundlog_writer is not None:
+                                def log_fn(round_idx, cur_seq, _sample_id=sample_id, _alpha=alpha,
+                                          _corrected=corrected):
                                     roundlog_writer.writerow({
                                         "sample_id": _sample_id, "alpha": _alpha, "corrected": _corrected,
-                                        "round": round_idx, "feature_activation_mean": mean_act,
-                                        "feature_activation_max": max_act})
+                                        "round": round_idx, "gravy_current": gravy_score(cur_seq)})
                                     roundlog_file.flush()
-                                # max, not mean: the target feature is sparse (active at a
-                                # handful of positions at most), so a length-diluted mean
-                                # can't tell a round with a strong local hit from none at all.
-                                return max_act
 
-                        log_fn = None
-                        if not is_a and roundlog_writer is not None:
-                            def log_fn(round_idx, cur_seq, _sample_id=sample_id, _alpha=alpha,
-                                      _corrected=corrected):
-                                roundlog_writer.writerow({
-                                    "sample_id": _sample_id, "alpha": _alpha, "corrected": _corrected,
-                                    "round": round_idx, "gravy_current": gravy_score(cur_seq)})
-                                roundlog_file.flush()
+                            seq = masked_gibbs_generate(
+                                steerer, init_tokens, steer_fn, correct_fn, args.mask_fraction,
+                                args.n_rounds, args.stabilize_tol, args.sample_mode,
+                                args.temperature, g, device, diag_fn=diag_fn, select_fn=select_fn,
+                                log_fn=log_fn)
 
-                        seq = masked_gibbs_generate(
-                            steerer, init_tokens, steer_fn, correct_fn, args.mask_fraction,
-                            args.n_rounds, args.stabilize_tol, args.sample_mode,
-                            args.temperature, g, device, diag_fn=diag_fn, select_fn=select_fn,
-                            log_fn=log_fn)
+                            pppl = pseudo_perplexity(steerer, seq, device, batch_size=args.pppl_batch_size)
+                            acts_final = torch.from_numpy(extractor.extract_single(seq)).float()
+                            dloss = float(diffusion_loss(model, scaler, acts_final, n_repeats=args.n_repeats,
+                                                         device=device, generator=g_dev).mean())
 
-                        pppl = pseudo_perplexity(steerer, seq, device, batch_size=args.pppl_batch_size)
-                        acts_final = torch.from_numpy(extractor.extract_single(seq)).float()
-                        dloss = float(diffusion_loss(model, scaler, acts_final, n_repeats=args.n_repeats,
-                                                     device=device, generator=g_dev).mean())
+                            if is_a:
+                                concept_count = c2h2_concept_score(seq)
+                                concept_count_loose = c2h2_concept_score(seq, C2H2_RE_LOOSE)
+                                motif_hit = concept_count > 0
+                                feat_act_mean, feat_act_max = target_signal(method, acts_final, device,
+                                                                            sae=sae, feat_idxs=feat_idxs)
+                                peak_pos = target_peak_position(method, acts_final, device, sae=sae,
+                                                                feat_idxs=feat_idxs)
+                                peak_residue = seq[peak_pos] if 0 <= peak_pos < len(seq) else None
+                                plddt, ptm = fold_confidence(seq, device) if args.fold else (None, None)
+                                row = {"sample_id": sample_id, "alpha": alpha, "corrected": corrected,
+                                      "length": length, "motif_hit": motif_hit,
+                                      "concept_count": concept_count, "concept_count_loose": concept_count_loose,
+                                      "naturalness_score": pppl, "diffusion_loss": dloss,
+                                      "max_homopolymer_run": max_homopolymer_run(seq),
+                                      "unique_aa_count": len(set(seq)),
+                                      "composition_distance": composition_distance(seq),
+                                      "target_feature_activation_mean": feat_act_mean,
+                                      "target_feature_activation_max": feat_act_max,
+                                      "target_feature_peak_residue": peak_residue,
+                                      "plddt": plddt, "ptm": ptm, "sequence": seq}
+                                concept_score = float(motif_hit)
+                                log_line = (f"[exp-a] alpha={alpha} corrected={corrected} sample={i} "
+                                           f"motif_hit={motif_hit} count={concept_count}/{concept_count_loose} "
+                                           f"pppl={pppl:.2f} dloss={dloss:.4f} plddt={plddt} ptm={ptm}")
+                            else:
+                                gravy_final = gravy_score(seq)
+                                delta_gravy = gravy_final - gravy_init
+                                plddt, ptm = fold_confidence(seq, device) if args.fold else (None, None)
+                                proj_mean, proj_max = target_signal(method, acts_final, device, v=diffmean_vec)
+                                row = {"sample_id": sample_id, "init_sequence_id": init_sequence_id,
+                                      "alpha": alpha, "corrected": corrected, "length": length,
+                                      "gravy_init": gravy_init, "gravy_final": gravy_final,
+                                      "delta_gravy": delta_gravy, "naturalness_score": pppl,
+                                      "diffusion_loss": dloss, "max_homopolymer_run": max_homopolymer_run(seq),
+                                      "unique_aa_count": len(set(seq)),
+                                      "composition_distance": composition_distance(seq),
+                                      "target_projection_mean": proj_mean, "target_projection_max": proj_max,
+                                      "plddt": plddt, "ptm": ptm, "direction": direction,
+                                      "sequence": seq}
+                                concept_score = delta_gravy
+                                fold_str = (f" plddt={plddt:.1f} ptm={ptm:.3f}"
+                                            if plddt is not None and ptm is not None else "")
+                                log_line = (f"[exp-b] dir={direction} alpha={alpha} corrected={corrected} "
+                                           f"init_id={init_sequence_id} gravy {gravy_init:.3f}->"
+                                           f"{gravy_final:.3f} (d={delta_gravy:+.3f}) pppl={pppl:.2f} "
+                                           f"dloss={dloss:.4f}{fold_str}")
 
-                        if is_a:
-                            concept_count = c2h2_concept_score(seq)
-                            concept_count_loose = c2h2_concept_score(seq, C2H2_RE_LOOSE)
-                            motif_hit = concept_count > 0
-                            feat_act_mean, feat_act_max = target_signal(method, acts_final, device,
-                                                                        sae=sae, feat_idxs=feat_idxs)
-                            peak_pos = target_peak_position(method, acts_final, device, sae=sae,
-                                                            feat_idxs=feat_idxs)
-                            peak_residue = seq[peak_pos] if 0 <= peak_pos < len(seq) else None
-                            plddt = fold_plddt(seq, device) if args.fold else None
-                            row = {"sample_id": sample_id, "alpha": alpha, "corrected": corrected,
-                                  "length": length, "motif_hit": motif_hit,
-                                  "concept_count": concept_count, "concept_count_loose": concept_count_loose,
-                                  "naturalness_score": pppl, "diffusion_loss": dloss,
-                                  "max_homopolymer_run": max_homopolymer_run(seq),
-                                  "unique_aa_count": len(set(seq)),
-                                  "composition_distance": composition_distance(seq),
-                                  "target_feature_activation_mean": feat_act_mean,
-                                  "target_feature_activation_max": feat_act_max,
-                                  "target_feature_peak_residue": peak_residue,
-                                  "plddt": plddt, "sequence": seq}
-                            concept_score = float(motif_hit)
-                            log_line = (f"[exp-a] alpha={alpha} corrected={corrected} sample={i} "
-                                       f"motif_hit={motif_hit} count={concept_count}/{concept_count_loose} "
-                                       f"pppl={pppl:.2f} dloss={dloss:.4f} plddt={plddt}")
-                        else:
-                            gravy_final = gravy_score(seq)
-                            delta_gravy = gravy_final - gravy_init
-                            proj_mean, proj_max = target_signal(method, acts_final, device, v=diffmean_vec)
-                            row = {"sample_id": sample_id, "init_sequence_id": init_sequence_id,
-                                  "alpha": alpha, "corrected": corrected, "length": length,
-                                  "gravy_init": gravy_init, "gravy_final": gravy_final,
-                                  "delta_gravy": delta_gravy, "naturalness_score": pppl,
-                                  "diffusion_loss": dloss, "max_homopolymer_run": max_homopolymer_run(seq),
-                                  "unique_aa_count": len(set(seq)),
-                                  "composition_distance": composition_distance(seq),
-                                  "target_projection_mean": proj_mean, "target_projection_max": proj_max,
-                                  "sequence": seq}
-                            concept_score = delta_gravy
-                            log_line = (f"[exp-b] alpha={alpha} corrected={corrected} "
-                                       f"init_id={init_sequence_id} gravy {gravy_init:.3f}->"
-                                       f"{gravy_final:.3f} (d={delta_gravy:+.3f}) pppl={pppl:.2f} "
-                                       f"dloss={dloss:.4f}")
-
-                        w.writerow(row)
-                        fcsv.flush()
-                        rows_for_analysis.append({**row, "concept_score": concept_score,
-                                                  "naturalness_score": pppl, "diffusion_loss": dloss})
-                        sample_id += 1
-                        print(log_line, flush=True)
+                            w.writerow(row)
+                            fcsv.flush()
+                            rows_for_analysis.append({**row, "concept_score": concept_score,
+                                                      "naturalness_score": pppl,
+                                                      "diffusion_loss": dloss,
+                                                      "direction": direction})
+                            sample_id += 1
+                            print(log_line, flush=True)
 
         if diag_file is not None:
             diag_file.close()
@@ -1543,37 +1710,95 @@ def main():
                       "concept hits — the C2H2 regex's own false-positive rate on this model's "
                       "unsteered generation distribution.")
         else:
-            pareto_exp_b(rows_for_analysis, out_dir, run)
-            regimes = three_regime_breakdown(rows_for_analysis, [r for r in rows_for_analysis if not r["corrected"]])
-            wstats = paired_wilcoxon_by_alpha(rows_for_analysis, alphas)
-            run.log_summary(paired_wilcoxon=wstats)
-            for a, s in wstats.items():
-                print(f"[exp-b] paired Wilcoxon alpha={a}: n={s['n_pairs']} mean_delta_gravy="
-                     f"{s['mean_delta']:+.4f} p={s['wilcoxon_p']:.4f}")
+            # Pooling the directions would average a rising trajectory against a falling one
+            # and cancel the effect, so every per-alpha statistic is computed WITHIN a
+            # direction; `divergence_by_alpha` is what combines them.
+            dirs_present = sorted({r.get("direction", "up") for r in rows_for_analysis},
+                                  key=lambda d: 0 if d == "up" else 1)
+            attrib_by_dir, comp_by_dir, w_by_dir, regimes_by_dir = {}, {}, {}, {}
+            for d in dirs_present:
+                sub = [r for r in rows_for_analysis if r.get("direction", "up") == d]
+                tag = f"[exp-b/{d}]"
+                pareto_exp_b(sub, out_dir, run, suffix="" if d == "up" else f"_{d}")
+                regimes_by_dir[d] = three_regime_breakdown(
+                    sub, [r for r in sub if not r["corrected"]])
+                w_by_dir[d] = paired_wilcoxon_by_alpha(sub, alphas)
+                attrib_by_dir[d] = steering_attributable_by_alpha(sub, alphas, neutral_alpha)
+                comp_by_dir[d] = composition_by_alpha(sub, alphas)
 
-            # The raw gap above credits the correction's own no-steering drift to steering;
-            # these two separate it out. See steering_attributable_by_alpha's docstring.
-            attrib = steering_attributable_by_alpha(rows_for_analysis, alphas, neutral_alpha)
-            comp = composition_by_alpha(rows_for_analysis, alphas)
-            run.log_summary(steering_attributable=attrib, composition_distance=comp)
-            base_rows = [r for r in rows_for_analysis if r["alpha"] == neutral_alpha]
-            if base_rows:
+                for a, st in w_by_dir[d].items():
+                    print(f"{tag} paired Wilcoxon alpha={a}: n={st['n_pairs']} "
+                          f"mean_delta_gravy={st['mean_delta']:+.4f} p={st['wilcoxon_p']:.4f}")
+                # The alpha=0 arms are the drift read-out, and with both directions present
+                # they also identify its mechanism: a fixed hydrophobic bias stays positive
+                # from HIGH-GRAVY starts, whereas mean-reversion toward typical composition
+                # flips sign there.
+                base_rows = [r for r in sub if r["alpha"] == neutral_alpha]
                 for corrected, name in ((False, "naive"), (True, "corrected")):
                     v = [r["concept_score"] for r in base_rows if r["corrected"] == corrected]
                     if v:
-                        print(f"[exp-b] baseline drift (alpha={neutral_alpha}, NO steering) "
+                        print(f"{tag} baseline drift (alpha={neutral_alpha}, NO steering) "
                               f"{name}: mean_delta_gravy={np.mean(v):+.4f} (n={len(v)})")
-            for a, s in attrib.items():
-                parts = []
-                for name in ("naive", "corrected", "gap"):
-                    if name in s:
-                        p = s[name]["wilcoxon_p"]
-                        parts.append(f"{name}={s[name]['mean']:+.4f}"
-                                     f"(n={s[name]['n']},p={'n/a' if p is None else f'{p:.4f}'})")
-                print(f"[exp-b] steering-attributable alpha={a}: " + "  ".join(parts))
-            for a, s in comp.items():
-                print(f"[exp-b] composition distance alpha={a}: "
-                      + "  ".join(f"{k}={v:.2f}pp" for k, v in s.items()))
+                for a, st in attrib_by_dir[d].items():
+                    parts = []
+                    for name in ("naive", "corrected", "gap"):
+                        if name in st:
+                            pv = st[name]["wilcoxon_p"]
+                            parts.append(f"{name}={st[name]['mean']:+.4f}"
+                                         f"(n={st[name]['n']},p="
+                                         f"{'n/a' if pv is None else f'{pv:.4f}'})")
+                    print(f"{tag} steering-attributable alpha={a}: " + "  ".join(parts))
+                for a, st in comp_by_dir[d].items():
+                    print(f"{tag} composition distance alpha={a}: "
+                          + "  ".join(f"{k}={v:.2f}pp" for k, v in st.items()))
+
+            # single-direction runs keep the flat (unkeyed) schema so older readers still work
+            if len(dirs_present) == 1:
+                d = dirs_present[0]
+                run.log_summary(paired_wilcoxon=w_by_dir[d],
+                                steering_attributable=attrib_by_dir[d],
+                                composition_distance=comp_by_dir[d])
+                regimes = regimes_by_dir[d]
+            else:
+                run.log_summary(paired_wilcoxon_by_direction=w_by_dir,
+                                steering_attributable_by_direction=attrib_by_dir,
+                                composition_distance_by_direction=comp_by_dir)
+                regimes = regimes_by_dir
+
+            diverg = divergence_by_alpha(rows_for_analysis, alphas, neutral_alpha)
+            if diverg:
+                run.log_summary(divergence=diverg)
+                for a, st in diverg.items():
+                    for arm in ("naive", "corrected"):
+                        if arm not in st:
+                            continue
+                        bits = []
+                        for flavour in ("raw", "attributable"):
+                            if flavour in st[arm]:
+                                c = st[arm][flavour]
+                                bits.append(f"{flavour}: up={c['up']:+.4f} down={c['down']:+.4f} "
+                                            f"diverg={c['divergence']:+.4f} "
+                                            f"(n={c['n_up']}/{c['n_down']})")
+                        print(f"[exp-b] divergence alpha={a} {arm}: " + "  |  ".join(bits))
+            elif len(dirs_present) > 1:
+                print("[exp-b] WARNING: both directions present but divergence could not be "
+                      "computed (no shared alphas with usable rows).")
+        # structural naturalness axis (only populated when --fold ran); split per direction
+        # for the same reason the per-alpha stats are — the two trajectories aren't comparable
+        # pooled.
+        fold_dirs = sorted({r.get("direction", "up") for r in rows_for_analysis},
+                           key=lambda d: 0 if d == "up" else 1)
+        folds = {d: fold_by_alpha([r for r in rows_for_analysis
+                                   if r.get("direction", "up") == d], alphas)
+                 for d in fold_dirs}
+        folds = {d: v for d, v in folds.items() if v}
+        if folds:
+            run.log_summary(fold_confidence=(folds[fold_dirs[0]] if len(folds) == 1 else folds))
+            for d, per_alpha in folds.items():
+                for a, st in per_alpha.items():
+                    print(f"[exp-{args.experiment.lower()}/{d}] fold alpha={a}: "
+                          + "  ".join(f"{k}={v:.3f}" for k, v in st.items()
+                                      if not k.endswith("_n")))
         run.log_summary(three_regime=regimes)
         print(f"[steering] wrote {csv_path} + {run.figures_dir / 'pareto.png'}")
 
