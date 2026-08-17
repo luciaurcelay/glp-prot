@@ -135,7 +135,12 @@ def main():
     if torch.cuda.is_available():
         model = model.cuda()
     model = model.eval()
-    print(f"[fold] loaded {args.model_id} in {time.time()-t0:.1f}s", flush=True)
+    load_s = time.time() - t0
+    print(f"[fold] loaded {args.model_id} in {load_s:.1f}s", flush=True)
+    # rate/ETA must exclude the one-off model load, or the per-sequence figure is inflated
+    # (measured: a 20-sequence pass reported 5.7s/seq when folding actually cost ~2.6s/seq,
+    # because the ~61s load was being amortised into it — enough to mis-size a full run 2x)
+    t_fold = time.time()
 
     def scalar(out, key, scale=1.0):
         """Mean of `key` if present, else None. ESMFold2 returns tensors of varying rank
@@ -183,9 +188,9 @@ def main():
             w.writerow(rec)
             fout.flush()   # flush per row so an interrupted job resumes cleanly
             if i % 10 == 0 or i == len(todo):
-                el = time.time() - t0
-                print(f"[fold] {i}/{len(todo)}  ok={n_ok} err={n_err}  "
-                      f"{el/i:.1f}s/seq  eta={(len(todo)-i)*el/i/60:.1f}min", flush=True)
+                el = time.time() - t_fold
+                print(f"[fold] {i}/{len(todo)}  ok={n_ok} err={n_err}  {el/i:.1f}s/seq "
+                      f"(+{load_s:.0f}s load)  eta={(len(todo)-i)*el/i/60:.1f}min", flush=True)
 
     print(f"[fold] wrote {out_path} (ok={n_ok}, errors={n_err})")
     if n_err:
