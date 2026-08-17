@@ -23,9 +23,9 @@
 # no-fold loop. Reserve acc_debug for small --n-sequences pilots on EITHER
 # experiment; override qos/time for a real sweep, e.g.:
 #   sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_steering.sh \
-#     A configs/configs_lucia/esm8m_500m_4096_d24.yaml "" 100
+#     A zinc1 configs/configs_lucia/esm8m_500m_4096_d24.yaml "" 100
 #   sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_steering.sh \
-#     B configs/configs_lucia/esm8m_500m_4096_d24.yaml
+#     B hydro1 configs/configs_lucia/esm8m_500m_4096_d24.yaml
 #
 # Exp B's first run also builds runs/<run>/steering_diffmean_hydro/gravy_contrast.json
 # (UniRef50 GRAVY contrast sets — scripts/build_gravy_contrast.py) if it doesn't
@@ -40,20 +40,22 @@
 # `setfacl -R -m u:<you>:rwx` grant if you need real write access instead.
 #
 # Submit from the repo root:
-#   sbatch scripts/cluster/submit_steering.sh <A|B> [config] [alphas] [n_sequences] [extra run_steering.py args...]
-# Leave alphas/n_sequences as "" to use run_steering.py's per-experiment defaults.
+#   sbatch scripts/cluster/submit_steering.sh <A|B> <NAME> [config] [alphas] [n_sequences] [extra run_steering.py args...]
+# NAME is a REQUIRED unique tag for this run (out-dir leaf = steering_<exp>_<NAME>); reusing
+# a NAME clobbers that run's metrics/figures. Leave alphas/n_sequences as "" for defaults.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
 source scripts/cluster/env_mn5.sh
 
-EXPERIMENT="${1:?experiment (A or B) is required, e.g.: sbatch scripts/cluster/submit_steering.sh A}"
-CONFIG="${2:-configs/configs_lucia/esm8m_500m_4096_d24.yaml}"
-ALPHAS="${3:-}"
-N_SEQUENCES="${4:-}"
+EXPERIMENT="${1:?experiment (A or B) is required, e.g.: sbatch scripts/cluster/submit_steering.sh A run1}"
+NAME="${2:?a unique run NAME is required — the steering out-dir leaf becomes steering_<exp>_<NAME> and RunLogger keys the metrics/figures redirect on it, so a non-unique NAME clobbers another run. e.g.: sbatch scripts/cluster/submit_steering.sh B dani_hydro1}"
+CONFIG="${3:-configs/configs_lucia/esm8m_500m_4096_d24.yaml}"
+ALPHAS="${4:-}"
+N_SEQUENCES="${5:-}"
 OUT_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")"
 RUN_NAME="$(basename "$OUT_DIR")"
-shift $(( $# < 4 ? $# : 4 ))   # remaining "$@" (if any) forwarded verbatim below
+shift $(( $# < 5 ? $# : 5 ))   # remaining "$@" (if any) forwarded verbatim below
 
 EXTRA_ARGS=("$@")
 [ -n "$N_SEQUENCES" ] && EXTRA_ARGS=(--n-sequences "$N_SEQUENCES" "${EXTRA_ARGS[@]}")
@@ -63,4 +65,5 @@ EXTRA_ARGS=("$@")
 # launch ledger, and relocate Slurm's .out/.err there on exit (env_mn5.sh).
 record_launch "$RUN_NAME" "$CONFIG" "$EXPERIMENT" "$ALPHAS" "$N_SEQUENCES" "$@"
 
-python scripts/run_steering.py --config "$CONFIG" --experiment "$EXPERIMENT" "${EXTRA_ARGS[@]}"
+python scripts/run_steering.py --config "$CONFIG" --experiment "$EXPERIMENT" \
+  --exp-name "$NAME" "${EXTRA_ARGS[@]}"
