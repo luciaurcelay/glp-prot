@@ -1,0 +1,27 @@
+diff --git a/interplm/sae/intervention.py b/interplm/sae/intervention.py
+index c7b83e1..f94c736 100644
+--- a/interplm/sae/intervention.py
++++ b/interplm/sae/intervention.py
+@@ -60,11 +60,20 @@ def get_esm_output_with_intervention(
+             batch_tokens, attention_mask=batch_attn_mask
+         ) as tracer:
+             embd_to_patch = (
+-                submodule.input[0][0]
++                # nnsight's `.input` (singular) now returns the already-unwrapped
++                # first positional arg (a breaking change vs. the nnsight>=0.5.7
++                # this reference targeted, where `.input` was the raw (args, kwargs)
++                # tuple) — indexing it further with [0][0] here would double-unwrap
++                # down to a single (hidden,) row instead of the (batch, seq, hidden)
++                # tensor. `.inputs` (plural) still returns the raw tuple, so use
++                # that to keep this at the old `.input[0][0]` semantics.
++                submodule.inputs[0][0]
+                 if input_or_output == "input"
+                 else submodule.output
+             )
+             embd_to_patch[:] = hidden_state_override
+             modified_logits = nnsight_model.output.save()
+ 
+-        return modified_logits.value.logits, orig_output.hidden_states[hidden_layer_idx]
++        # nnsight's `.save()` now returns the resolved object directly (no more
++        # `.value` unwrap needed) — see the same version-skew note above.
++        return modified_logits.logits, orig_output.hidden_states[hidden_layer_idx]

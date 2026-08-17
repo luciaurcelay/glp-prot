@@ -16,6 +16,19 @@ git submodule update --init --recursive
 (`git submodule status` shows a leading `-` on an uninitialized submodule; no prefix
 once it's checked out.)
 
+Then apply our local InterPLM patches:
+```bash
+scripts/apply_interplm_patches.sh
+```
+InterPLM is pinned at upstream `ElanaPearl/InterPLM`, so we don't bump the submodule
+pointer for our fixes (a SHA not on upstream would break `git submodule update` on a
+fresh clone). Instead they live as patch files in `patches/` and this idempotent script
+applies them to the submodule working tree — **re-run it after any `git submodule
+update`**, which resets the submodule to the pinned commit and drops the patches.
+Currently: `interplm-nnsight-compat.patch` adapts `interplm/sae/intervention.py` to the
+installed `nnsight` API; without it, steering (`scripts/run_steering.py`) crashes during
+generation with an `expand()` shape error.
+
 InterPLM requires **Python 3.11** (the repo's system Python 3.9 is too old).
 
 ```bash
