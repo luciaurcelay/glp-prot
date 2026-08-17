@@ -1021,7 +1021,7 @@ def pareto_exp_a(rows: List[dict], out_dir: Path, run: RunLogger, alphas: List[f
                   zorder=5, label="unsteered anchor")
     ax.set_xlabel("naturalness (mean pseudo-perplexity; lower = more natural)")
     ax.set_ylabel("motif hit rate (fraction with ≥1 C2H2 match)")
-    ax.set_title("Exp A Pareto: zinc-finger hit rate vs. naturalness")
+    ax.set_title("Zinc-finger motif hit rate vs. naturalness")
     ax.legend()
     style.save_fig(fig, run.figures_dir / "pareto.png")
 
@@ -1059,9 +1059,14 @@ def pareto_exp_b(rows: List[dict], out_dir: Path, run: RunLogger, suffix: str = 
     ax.set_xlabel("naturalness (pseudo-perplexity; lower = more natural)")
     ax.set_ylabel("ΔGRAVY (final - init)")
     label = f" ({suffix.lstrip('_')} direction)" if suffix else ""
-    ax.set_title(f"Exp B Pareto: hydrophobicity shift vs. naturalness{label}")
+    ax.set_title(f"Hydrophobicity shift vs. naturalness{label}")
     ax.legend()
-    style.save_fig(fig, run.figures_dir / f"pareto{suffix}.png")
+    # Deliberately NOT written to disk. Its x-axis is pseudo-perplexity, which on this
+    # generation setup rates the degenerate poly-Leu/Val sequences as the most natural output
+    # in the run — so the figure ranks its points by a quantity that is inverted where it
+    # matters. The rescue fraction below is still logged (spec Part 3), and the figures that
+    # carry the claims are built by scripts/plot_steering_report.py against ESMFold2 pTM.
+    plt.close(fig)
 
     frac, n_comp = _rescue_fraction(naive, corrected)
     _log_rescue(run, f"B{suffix}", frac, n_comp, len(corrected))
@@ -1830,7 +1835,7 @@ def main():
                           + "  ".join(f"{k}={v:.3f}" for k, v in st.items()
                                       if not k.endswith("_n")))
         run.log_summary(three_regime=regimes)
-        print(f"[steering] wrote {csv_path} + {run.figures_dir / 'pareto.png'}")
+        print(f"[steering] wrote {csv_path}")
 
     print(f"[steering] done. outputs under {out_dir}")
 
