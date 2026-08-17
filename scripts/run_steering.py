@@ -1014,6 +1014,14 @@ def main():
                          "so the correction's own drift is separated from the steering gain "
                          "(see the pilot block's comment) — pick on attributable gain, not "
                          "raw concept score.")
+    ap.add_argument("--t-start-grid", default="0.3,0.5,0.7",
+                    help="[--t-start-pilot] t_start values to sweep (spec Part 1 uses "
+                         "0.3,0.5,0.7). Cost is len(grid) x --n-pilot x 2 generations.")
+    ap.add_argument("--n-pilot", type=int, default=8,
+                    help="[--t-start-pilot] sequences per (t_start, alpha) cell, capped at "
+                         "--n-sequences. Default 8 is a smoke-test size — the pilot is cheap "
+                         "(~2s/generation for Exp B), so raise it before drawing a conclusion: "
+                         "at n=8 the cells' sem on drift is +-0.14..0.30 GRAVY.")
     ap.add_argument("--sde-steps", type=int, default=20)
     ap.add_argument("--log-round-diagnostics", action="store_true",
                     help="log per-round diffusion loss before/after SDEdit (corrected=True "
@@ -1167,7 +1175,8 @@ def main():
     if args.t_start_pilot:
         extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
         mid_alpha = alphas[len(alphas) // 2]
-        n_pilot = min(8, args.n_sequences)
+        n_pilot = min(args.n_pilot, args.n_sequences)
+        t_start_grid = [float(t) for t in args.t_start_grid.split(",") if t.strip()]
         # Each t_start is run at BOTH the no-steering anchor and mid_alpha, on the same
         # seeds (so the two share a masking schedule and differ only by the steer_fn).
         # Scoring a t_start on its steered concept score alone would reward exactly the
@@ -1178,7 +1187,7 @@ def main():
         # t_start can be picked on the steering-ATTRIBUTABLE gain and its composition cost.
         pilot_alphas = [neutral_alpha, mid_alpha] if mid_alpha != neutral_alpha else [neutral_alpha]
         pilot_rows = []
-        for t_start in (0.3, 0.5, 0.7):
+        for t_start in t_start_grid:
             for i in range(n_pilot):
                 for alpha in pilot_alphas:
                     seed_i = args.seed * 1000 + i
@@ -1211,7 +1220,7 @@ def main():
         # per-t_start read-out: drift vs steering-attributable gain vs composition cost
         print(f"\n[t_start-pilot] anchor alpha={neutral_alpha}, steered alpha={mid_alpha}, "
               f"n={n_pilot} per cell")
-        for t_start in (0.3, 0.5, 0.7):
+        for t_start in t_start_grid:
             base = {r["sample_idx"]: r for r in pilot_rows
                     if r["t_start"] == t_start and r["alpha"] == neutral_alpha}
             steered = {r["sample_idx"]: r for r in pilot_rows
