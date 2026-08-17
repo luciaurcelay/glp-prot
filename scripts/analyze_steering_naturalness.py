@@ -405,12 +405,12 @@ def main():
         ax.boxplot([c, d], widths=0.55, medianprops={"color": style.INK})
         ax.set_xticks([1, 2])
         ax.set_xticklabels(["passed the\ncomposition filter", "rejected as\nnon-protein"])
-        if k in UBIQUITIN_REF:
-            ax.axhline(UBIQUITIN_REF[k], color=style.method_color("glp"), linestyle="--",
-                       linewidth=1.6, label="natural protein (ubiquitin)")
-            ax.legend(fontsize=8, loc="lower right")
-        ax.set_title({"pppl": "pseudo-perplexity\n(lower = 'more natural')",
-                      "plddt": "ESMFold2 pLDDT", "ptm": "ESMFold2 pTM"}[k], loc="left")
+        # every panel labels its own y-axis: the panel title alone leaves the quantity
+        # unnamed on the axis it is measured against
+        ax.set_ylabel({"pppl": "pseudo-perplexity (lower = 'more natural')",
+                       "plddt": "ESMFold2 pLDDT", "ptm": "ESMFold2 pTM"}[k])
+        ax.set_title({"pppl": "pseudo-perplexity", "plddt": "ESMFold2 pLDDT",
+                      "ptm": "ESMFold2 pTM"}[k], loc="left")
     # Descriptive, not a verdict. The tested verdicts are printed above and stored in
     # summary.json under naturalness_axis_gate_check; asserting a conclusion inside the image
     # risks it contradicting the panels when the data changes (it did once), and the

@@ -92,7 +92,6 @@ def main():
     dirs = sorted({r["direction"] for r in rows}, key=lambda d: 0 if d == "up" else 1)
 
     style.apply_style()
-    import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
 
     def title(ax, text, **kw):
@@ -222,11 +221,9 @@ def main():
             if xs3:
                 axB.errorbar(xs3, ys3, yerr=es3, color=colour[corrected], marker="o", ms=5.5,
                              linewidth=2, capsize=2.5, elinewidth=1, label=lab)
-        axB.axhline(0.74, color=style.BASELINE, linestyle=":", linewidth=1.4)
-        axB.annotate("a natural protein (ubiquitin) scores 0.74",
-                     xy=(0.99, 0.74), xycoords=("axes fraction", "data"), ha="right",
-                     va="bottom", fontsize=8.5, color=style.SECONDARY,
-                     path_effects=[pe.withStroke(linewidth=2.6, foreground=style.SURFACE)])
+        # No reference line for a natural protein here: a benchmark drawn on the panel is an
+        # interpretive anchor, and interpretation belongs in the caption. The value is in the
+        # run's summary.json if the caption wants to quote it.
         axB.set_ylabel("structural confidence\n(ESMFold2 pTM)")
         axB.set_ylim(0, 0.85)
     axs[-1][0].set_xticks(range(len(alphas)))
