@@ -243,9 +243,12 @@ def main():
             ax.legend(fontsize=8, loc="lower right")
         ax.set_title({"pppl": "pseudo-perplexity\n(lower = 'more natural')",
                       "plddt": "ESMFold2 pLDDT", "ptm": "ESMFold2 pTM"}[k], loc="left")
-    fig2.suptitle("Do the naturalness axes reject known non-proteins?  "
-                  "pppl and pLDDT do not; pTM does.", x=0.01, ha="left", fontsize=12,
-                  fontweight="bold")
+    # Be precise: ALL THREE axes rate the known non-proteins better than our clean output.
+    # pTM's only (but decisive) advantage is that it keeps a real protein ranked ABOVE the
+    # junk, whereas pLDDT inverts even that ordering (junk 81 vs ubiquitin 80).
+    fig2.suptitle("All three axes rate known non-proteins ABOVE our clean output.  "
+                  "Only pTM still ranks a real protein above the junk.",
+                  x=0.01, ha="left", fontsize=12, fontweight="bold")
     path2 = style.save_fig(fig2, run.figures_dir / "naturalness_axis_gate_check.png")
     print(f"[naturalness] wrote {path2}")
 
