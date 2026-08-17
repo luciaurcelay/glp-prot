@@ -279,14 +279,28 @@ def main():
         if not d or not c:
             continue
         ref = UBIQUITIN_REF.get(key)
-        # an axis is gamed if it rates known non-proteins BETTER than clean output, where
-        # "better" is lower for pppl and higher for plddt/ptm
-        gamed = np.mean(d) < np.mean(c) if key == "pppl" else np.mean(d) > np.mean(c)
+        # Test the verdict rather than reading it off two means: a bare inequality calls a
+        # 0.278-vs-0.268 gap "gamed" exactly as loudly as an 81-vs-55 one, and the figure
+        # headline is built from these verdicts.
+        from scipy.stats import mannwhitneyu
+        better_is_lower = (key == "pppl")
+        try:
+            pv = float(mannwhitneyu(d, c).pvalue)
+        except ValueError:
+            pv = float("nan")
+        deg_better = (np.mean(d) < np.mean(c)) if better_is_lower else (np.mean(d) > np.mean(c))
+        if pv == pv and pv < 0.05:
+            verdict = "gamed" if deg_better else "discriminates"
+        else:
+            verdict = "indistinguishable"
         gate[key] = {"degenerate_mean": float(np.mean(d)), "clean_mean": float(np.mean(c)),
-                     "n_degenerate": len(d), "gamed_by_degenerate": bool(gamed)}
+                     "n_degenerate": len(d), "n_clean": len(c), "mannwhitney_p": pv,
+                     "verdict": verdict}
+        blurb = {"gamed": "GAMED — scores known non-proteins better than our own output",
+                 "discriminates": "discriminates — rejects non-proteins",
+                 "indistinguishable": "cannot tell non-proteins from our output"}[verdict]
         print(f"{key:>10} {np.mean(d):>14.3f} {np.mean(c):>14.3f} "
-              f"{'' if ref is None else f'{ref:>12.2f}'}  "
-              f"{'GAMED — rates junk above clean output' if gamed else 'discriminates'}")
+              f"{'' if ref is None else f'{ref:>12.2f}'}  {blurb} (p={pv:.1e})")
     run.log_summary(naturalness_axis_gate_check=gate)
 
     # ---- rescue fraction on the chosen axis, per direction, degenerate hard-gated ----
@@ -394,12 +408,22 @@ def main():
             ax.legend(fontsize=8, loc="lower right")
         ax.set_title({"pppl": "pseudo-perplexity\n(lower = 'more natural')",
                       "plddt": "ESMFold2 pLDDT", "ptm": "ESMFold2 pTM"}[k], loc="left")
-    # Be precise: ALL THREE axes rate the known non-proteins better than our clean output.
-    # pTM's only (but decisive) advantage is that it keeps a real protein ranked ABOVE the
-    # junk, whereas pLDDT inverts even that ordering (junk 81 vs ubiquitin 80).
-    fig2.suptitle("All three axes rate known non-proteins ABOVE our clean output.  "
-                  "Only pTM still ranks a real protein above the junk.",
-                  x=0.01, ha="left", fontsize=12, fontweight="bold")
+    # Built from the tested verdicts, never hardcoded: the same figure is produced for runs
+    # where an axis behaves differently, and a fixed headline would then contradict its own
+    # panels (it did — pTM separated junk from clean output on one run and not on another).
+    pretty = {"pppl": "pseudo-perplexity", "plddt": "pLDDT", "ptm": "pTM"}
+    bad = [pretty[k] for k, v in gate.items() if v["verdict"] == "gamed"]
+    meh = [pretty[k] for k, v in gate.items() if v["verdict"] == "indistinguishable"]
+    ok = [pretty[k] for k, v in gate.items() if v["verdict"] == "discriminates"]
+    bits = []
+    if bad:
+        bits.append(f"scored BETTER than our own output by: {', '.join(bad)}")
+    if meh:
+        bits.append(f"indistinguishable from it by: {', '.join(meh)}")
+    if ok:
+        bits.append(f"correctly rejected by: {', '.join(ok)}")
+    fig2.suptitle("Sequences that are not proteins, " + "; ".join(bits),
+                  x=0.01, ha="left", fontsize=11.5, fontweight="bold")
     path2 = style.save_fig(fig2, run.figures_dir / "naturalness_axis_gate_check.png")
     print(f"[naturalness] wrote {path2}")
 
