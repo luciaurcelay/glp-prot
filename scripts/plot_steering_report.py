@@ -109,7 +109,7 @@ def main():
     # cannot show 0 at all; symlog can, but "symlog" is jargon on a published axis.
     xpos = {a: i for i, a in enumerate(alphas)}
     xlabels = [f"{a:g}" for a in alphas]
-    colour = {False: style.ACCENT, True: style.method_color("glp")}
+    colour = {c: style.steering_arm_color(c) for c in (False, True)}
 
     # ---------------- Figure 1: bidirectional divergence ----------------
     if len(dirs) > 1:
@@ -233,6 +233,120 @@ def main():
     print(f"[report] wrote {p3}")
     if not have_fold:
         print("[report] (no fold_confidence.csv yet — naturalness panel omitted)")
+
+    # ---------------- divergence, with a test ----------------
+    # The headline number was being reported as a difference of means with no test. The two
+    # directions use DIFFERENT held-out sequences, so this is unpaired between directions —
+    # Mann-Whitney on the two arms' per-sample attributable values, not a paired test.
+    if len(dirs) > 1:
+        from scipy.stats import mannwhitneyu
+
+        diverg: Dict[str, dict] = {}
+        print("\n[report] divergence between directions (Mann-Whitney, unpaired: the two "
+              "directions use different held-out sequences)")
+        for a in alphas:
+            if a == args.neutral_alpha:
+                continue
+            entry = {}
+            for corrected, lab in ARMS:
+                u = [r["attr"] for r in rows if r["direction"] == "up"
+                     and r["corrected"] == corrected and r["alpha"] == a and r["attr"] is not None]
+                d = [r["attr"] for r in rows if r["direction"] == "down"
+                     and r["corrected"] == corrected and r["alpha"] == a and r["attr"] is not None]
+                if len(u) < 3 or len(d) < 3:
+                    continue
+                try:
+                    pv = float(mannwhitneyu(u, d).pvalue)
+                except ValueError:
+                    pv = float("nan")
+                entry[lab] = {"up_mean": float(np.mean(u)), "down_mean": float(np.mean(d)),
+                              "divergence": float(np.mean(u) - np.mean(d)),
+                              "n_up": len(u), "n_down": len(d), "mannwhitney_p": pv}
+            if entry:
+                diverg[f"{a:g}"] = entry
+                bits = "  ".join(f"{k}: {v['divergence']:+.3f} (p={v['mannwhitney_p']:.2e})"
+                                 for k, v in entry.items())
+                print(f"  α={a:<5} {bits}")
+        run.log_summary(divergence_tested=diverg)
+
+    write_run_summary(run, run_dir, args)
+
+
+def write_run_summary(run, run_dir: Path, args) -> None:
+    """Emit run_summary.md from summary.json — the repo's per-run write-up convention.
+
+    Reads the logged metrics rather than recomputing, so the summary cannot drift from what
+    the pipeline actually recorded."""
+    s = run.load_summary()
+
+    def g(*keys, default=None):
+        cur = s
+        for k in keys:
+            if not isinstance(cur, dict) or k not in cur:
+                return default
+            cur = cur[k]
+        return cur
+
+    L = [f"# {run_dir.name}", ""]
+    L += [f"- git commit: `{s.get('git_commit', '?')}`"
+          f"{' (dirty)' if s.get('git_dirty') else ''}",
+          f"- steering property: {args.property}", ""]
+
+    L += ["## Steering effect (attributable, i.e. each arm differenced against its own α=0)", ""]
+    att = g("steering_attributable_by_direction") or {"up": g("steering_attributable", default={})}
+    for d, per_alpha in (att or {}).items():
+        L += [f"### direction: {d}", "",
+              "| α | naive | GLP-corrected | gap | gap p |", "|---|---|---|---|---|"]
+        for a, e in (per_alpha or {}).items():
+            def f(k):
+                v = e.get(k)
+                return "—" if not v else f"{v['mean']:+.3f} (n={v['n']})"
+            gp = (e.get("gap") or {}).get("wilcoxon_p")
+            L += [f"| {a} | {f('naive')} | {f('corrected')} | "
+                  f"{(e.get('gap') or {}).get('mean', float('nan')):+.3f} | "
+                  f"{'—' if gp is None else f'{gp:.2e}'} |"]
+        L += [""]
+
+    dv = g("divergence_tested")
+    if dv:
+        L += ["## Divergence between steering directions (unpaired Mann-Whitney)", "",
+              "| α | naive | p | GLP-corrected | p |", "|---|---|---|---|---|"]
+        for a, e in dv.items():
+            n_, c_ = e.get("naive"), e.get("GLP-corrected")
+            L += [f"| {a} | {n_['divergence']:+.3f} | {n_['mannwhitney_p']:.2e} | "
+                  f"{c_['divergence']:+.3f} | {c_['mannwhitney_p']:.2e} |"
+                  if n_ and c_ else f"| {a} | — | — | — | — |"]
+        L += [""]
+
+    gate = g("naturalness_axis_gate_check")
+    if gate:
+        L += ["## Do the naturalness axes reject known non-proteins?", "",
+              "| axis | rejected-sequence mean | kept mean | p | verdict |",
+              "|---|---|---|---|---|"]
+        for k, v in gate.items():
+            L += [f"| {k} | {v['degenerate_mean']:.3f} | {v['clean_mean']:.3f} | "
+                  f"{v['mannwhitney_p']:.1e} | **{v['verdict']}** |"]
+        L += ["", "The composition filter, not any of these metrics, is what keeps degenerate "
+              "output out of the results.", ""]
+
+    pr = g(f"pass_rate_ptm", "by_alpha")
+    if pr:
+        L += ["## Confidently-folded yield (non-degenerate AND above threshold)", "",
+              "| α | naive | GLP-corrected | Fisher p |", "|---|---|---|---|"]
+        thr = (g("pass_rate_ptm", "thresholds") or [0.4])
+        t = thr[len(thr) // 2]
+        for a, e in pr.items():
+            nv, cr = e.get(f"naive_pass_{t:g}"), e.get(f"corrected_pass_{t:g}")
+            pv = e.get(f"fisher_p_{t:g}")
+            L += [f"| {a} | {'—' if nv is None else f'{nv:.1%}'} | "
+                  f"{'—' if cr is None else f'{cr:.1%}'} | "
+                  f"{'—' if pv is None else f'{pv:.3f}'} |"]
+        L += ["", f"(threshold pTM ≥ {t:g}; every generation counted, so degenerate output "
+              "counts as a failure)", ""]
+
+    out = run_dir / "run_summary.md"
+    out.write_text("\n".join(L) + "\n")
+    print(f"[report] wrote {out}")
 
 
 if __name__ == "__main__":

@@ -310,13 +310,13 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
     sems = [float(np.std([r["diffusion_loss"] for r in rows if r["alpha"] == a]) / np.sqrt(
         max(sum(1 for r in rows if r["alpha"] == a), 1))) for a in alphas]
     ax.errorbar(xs, [means[a] for a in alphas], yerr=[1.96 * s for s in sems],
-               marker="o", color=style.ACCENT, label="steered")
+               marker="o", color=style.steering_arm_color(False), label="steered")
     if means_corr:
         sems_c = [float(np.std([r["diffusion_loss"] for r in rows
                                 if r["alpha"] == a and r["corrected"]]) / np.sqrt(
             max(sum(1 for r in rows if r["alpha"] == a and r["corrected"]), 1))) for a in alphas]
         ax.errorbar(xs, [means_corr[a] for a in alphas], yerr=[1.96 * s for s in sems_c],
-                   marker="o", color=style.method_color("glp"),
+                   marker="o", color=style.steering_arm_color(True),
                    label="steered + one correction pass (no generation)")
     ax.axhline(means["baseline"], color=style.BASELINE, linestyle="--", label="baseline (unsteered)")
     ax.set_xlabel("steering strength alpha")
@@ -1040,18 +1040,20 @@ def pareto_exp_b(rows: List[dict], out_dir: Path, run: RunLogger, suffix: str = 
     fig, ax = plt.subplots(figsize=(6, 5))
     if naive:
         ax.scatter([r["naturalness_score"] for r in naive], [r["concept_score"] for r in naive],
-                  c=style.ACCENT, alpha=0.35, s=18, label="naive (per-sample)")
+                  c=style.steering_arm_color(False), alpha=0.35, s=18, label="naive (per-sample)")
     if corrected:
         ax.scatter([r["naturalness_score"] for r in corrected], [r["concept_score"] for r in corrected],
-                  c=style.method_color("glp"), alpha=0.35, s=18, label="GLP-corrected (per-sample)")
+                  c=style.steering_arm_color(True), alpha=0.35, s=18,
+                  label="GLP-corrected (per-sample)")
 
     def mean_traj(subset):
         alphas = sorted(set(r["alpha"] for r in subset))
         return [(float(np.mean([r["naturalness_score"] for r in subset if r["alpha"] == a])),
                 float(np.mean([r["concept_score"] for r in subset if r["alpha"] == a]))) for a in alphas]
 
-    for subset, color, label in ((naive, style.ACCENT, "naive (mean)"),
-                                 (corrected, style.method_color("glp"), "GLP-corrected (mean)")):
+    for subset, color, label in ((naive, style.steering_arm_color(False), "naive (mean)"),
+                                 (corrected, style.steering_arm_color(True),
+                                  "GLP-corrected (mean)")):
         pts = mean_traj(subset)
         if pts:
             xs, ys = zip(*sorted(pts))

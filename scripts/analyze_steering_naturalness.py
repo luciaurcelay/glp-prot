@@ -167,6 +167,21 @@ def pass_rate_by_alpha(rows: List[dict], key: str, thresholds: List[float],
                         continue   # degenerate counts as a failure, not an exclusion
                     ok += (v >= thr) if higher_is_better else (v <= thr)
                 entry[f"{name}_pass_{thr:g}"] = ok / len(cell)
+                entry[f"{name}_pass_n_{thr:g}"] = ok   # counts, so the arms can be tested
+        # Fisher exact between the arms at each threshold. Without it the alpha=0 gap (naive
+        # 19% vs corrected 6% confidently folded) was something to notice by eye off the error
+        # bars rather than a reported result.
+        from scipy.stats import fisher_exact
+        for thr in thresholds:
+            no, nn = entry.get(f"naive_pass_n_{thr:g}"), entry.get("naive_n_generated")
+            co, cn = entry.get(f"corrected_pass_n_{thr:g}"), entry.get("corrected_n_generated")
+            if None in (no, nn, co, cn):
+                continue
+            try:
+                entry[f"fisher_p_{thr:g}"] = float(
+                    fisher_exact([[no, nn - no], [co, cn - co]]).pvalue)
+            except ValueError:
+                pass
         if entry:
             out[str(a)] = entry
     return out
@@ -334,7 +349,8 @@ def main():
     style.apply_style()
     import matplotlib.pyplot as plt
 
-    arms = ((False, style.ACCENT, "naive"), (True, style.method_color("glp"), "GLP-corrected"))
+    arms = ((False, style.steering_arm_color(False), "naive"),
+            (True, style.steering_arm_color(True), "GLP-corrected"))
 
     # ---- pass rate: the "filter at pLDDT>=70" practice as an unbiased outcome ----
     thr_map = {"ptm": [0.3, 0.4, 0.5], "plddt": [60.0, 70.0, 80.0], "pppl": [10.0, 8.0]}
@@ -350,8 +366,10 @@ def main():
         cells = []
         for t in thresholds:
             nv, cr = e.get(f"naive_pass_{t:g}"), e.get(f"corrected_pass_{t:g}")
-            cells.append(f"{'--' if nv is None else f'{nv:.0%}'}"
-                         f" / {'--' if cr is None else f'{cr:.0%}'}".rjust(16))
+            pv = e.get(f"fisher_p_{t:g}")
+            cells.append((f"{'--' if nv is None else f'{nv:.0%}'}"
+                          f"/{'--' if cr is None else f'{cr:.0%}'}"
+                          f"{'' if pv is None else f' p={pv:.3f}'}").rjust(20))
         print(f"  {a:>5} | " + " | ".join(cells))
 
     fig3, ax3 = plt.subplots(figsize=(7.6, 5.0))

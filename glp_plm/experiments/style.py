@@ -67,6 +67,19 @@ REAL_COLOR = PURPLE_MID
 # by design preference, decoupled from the glp/sae bar identity above.
 ACCENT = PURPLE_LIGHT
 
+# Steering arms (naive vs GLP-corrected). Named and fixed so an arm keeps its colour across
+# every steering figure. ORANGE_MID/PURPLE_LIGHT validated with the dataviz validator:
+# normal-vision dE 17.9, worst-CVD dE 17.5 (deutan) — both clear the 15 floor. ORANGE_MID sits
+# at 2.78:1 against the surface, under the 3:1 guidance, which is why every steering figure
+# carries a legend with visible text rather than relying on colour alone.
+STEERING_ARM_COLORS = {"naive": ORANGE_MID, "corrected": PURPLE_LIGHT}
+
+
+def steering_arm_color(corrected: bool) -> str:
+    """Colour for a steering arm, by identity rather than plot order."""
+    return STEERING_ARM_COLORS["corrected" if corrected else "naive"]
+
+
 # Generic categorical fallback for charts with no fixed entity set. Fixed order
 # (never cycled), validated end-to-end as one adjacent Hamiltonian path.
 PALETTE = [ORANGE_DARK, PURPLE_LIGHT, PURPLE_DARK, ORANGE_MID, PURPLE_MID, ORANGE_LIGHT]
