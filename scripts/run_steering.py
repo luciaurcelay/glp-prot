@@ -1183,6 +1183,20 @@ def main():
                          "below this. Default 0.0 effectively disables early stopping — the "
                          "spec wants fixed round counts for both experiments, not "
                          "convergence-gated ones; raise this to re-enable early stop.")
+    ap.add_argument("--generation-pilot", action="store_true",
+                    help="[B] sweep round count x sampling temperature at the anchor and a mid "
+                         "alpha, and exit. Diagnoses the foldability loss: the alpha=0 NAIVE "
+                         "arm (no steering, no correction) already drops pTM from the starting "
+                         "proteins' 0.50 to 0.26, so the masked-Gibbs decode loop — not "
+                         "steering and not GLP — is what costs foldability. Writes "
+                         "generation_pilot.csv in the run's own schema so submit_fold.sh can "
+                         "fold it directly.")
+    ap.add_argument("--rounds-grid", default="5,10,20,30",
+                    help="[--generation-pilot] round counts to sweep")
+    ap.add_argument("--temperature-grid", default="1.0,0.7,0.5",
+                    help="[--generation-pilot] sampling temperatures to sweep. Repeatedly "
+                         "sampling at T=1.0 from an 8M model is the suspected drift source: "
+                         "30 rounds at 10%% masking resample each position ~3x")
     ap.add_argument("--sample-mode", choices=["sample", "argmax"], default="sample")
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--pppl-batch-size", type=int, default=32)
@@ -1491,6 +1505,62 @@ def main():
             w.writeheader(); w.writerows(pilot_rows)
         print(f"[t_start-pilot] wrote {pilot_csv} — pick a t_start from this, then re-run "
               f"without --t-start-pilot (--t-start <chosen>).")
+        return
+
+    if args.generation_pilot:
+        if is_a:
+            ap.error("--generation-pilot is an Exp B diagnostic (it needs the real held-out "
+                     "starting proteins to measure what the decode loop costs)")
+        extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
+        mid_alpha = alphas[len(alphas) // 2]
+        pilot_alphas = sorted({neutral_alpha, mid_alpha})
+        rounds_grid = [int(x) for x in args.rounds_grid.split(",") if x.strip()]
+        temp_grid = [float(x) for x in args.temperature_grid.split(",") if x.strip()]
+        n_pilot = min(args.n_pilot, len(heldout_sets["up"]))
+        print(f"[gen-pilot] rounds={rounds_grid} temps={temp_grid} alphas={pilot_alphas} "
+              f"arms=naive,corrected n={n_pilot} (direction=up)", flush=True)
+        rows_p, sid = [], 0
+        for n_rounds in rounds_grid:
+            for temp in temp_grid:
+                for alpha in pilot_alphas:
+                    for corrected in (False, True):
+                        for i in range(n_pilot):
+                            seed_i = args.seed * 1000 + i
+                            g = torch.Generator().manual_seed(seed_i)
+                            g_dev = torch.Generator(device=device).manual_seed(seed_i)
+                            init_tokens, length, init_id, gravy_init = build_init(i, g, "up")
+                            seq = masked_gibbs_generate(
+                                steerer, init_tokens,
+                                steer_fn=make_steer_fn(method, alpha, v=diffmean_vec),
+                                correct_fn=(lambda a: glp_correct(
+                                    model, scaler, a, t_start=args.t_start,
+                                    num_steps=args.sde_steps, device=device, generator=g_dev))
+                                if corrected else (lambda a: a),
+                                mask_fraction=args.mask_fraction, n_rounds=n_rounds,
+                                stabilize_tol=args.stabilize_tol, sample_mode=args.sample_mode,
+                                temperature=temp, generator=g, device=device)
+                            rows_p.append({
+                                "sample_id": sid, "init_sequence_id": init_id,
+                                "n_rounds": n_rounds, "temperature": temp, "alpha": alpha,
+                                "corrected": corrected, "direction": "up", "length": length,
+                                "gravy_init": gravy_init, "gravy_final": gravy_score(seq),
+                                "delta_gravy": gravy_score(seq) - gravy_init,
+                                "naturalness_score": pseudo_perplexity(
+                                    steerer, seq, device, batch_size=args.pppl_batch_size),
+                                "max_homopolymer_run": max_homopolymer_run(seq),
+                                "unique_aa_count": len(set(seq)),
+                                "composition_distance": composition_distance(seq),
+                                "sequence": seq})
+                            sid += 1
+                        print(f"[gen-pilot] rounds={n_rounds} T={temp} alpha={alpha} "
+                              f"corrected={corrected} done ({sid} total)", flush=True)
+        out_csv = out_dir / "generation_pilot.csv"
+        with open(out_csv, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows_p[0].keys()))
+            w.writeheader(); w.writerows(rows_p)
+        print(f"[gen-pilot] wrote {out_csv} ({len(rows_p)} sequences). Fold it with:\n"
+              f"  sbatch scripts/cluster/submit_fold.sh <run-dir> --input {out_csv} "
+              f"--out {out_dir / 'generation_pilot_fold.csv'}")
         return
 
     if not args.skip_diagnostic:
