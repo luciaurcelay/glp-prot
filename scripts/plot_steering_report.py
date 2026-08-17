@@ -122,7 +122,7 @@ def main():
                      "only when the generative prior corrects the activations", loc="left")
         ax.legend(fontsize=9, loc="upper left")
         ax.annotate("solid = steered toward hydrophobic\ndashed = steered away",
-                    xy=(0.99, 0.03), xycoords="axes fraction", ha="right", fontsize=8.5,
+                    xy=(0.015, 0.03), xycoords="axes fraction", ha="left", fontsize=8.5,
                     color=style.SECONDARY)
         p = style.save_fig(fig, run.figures_dir / "fig_divergence.png")
         print(f"[report] wrote {p}")
@@ -141,8 +141,8 @@ def main():
                 color=colour[corrected], label=lab, edgecolor=style.SURFACE, linewidth=1)
     ax2.axhline(0, color=style.INK, linewidth=1)
     ax2.set_xticks(xs)
-    ax2.set_xticklabels(["started hydrophilic\n(steered up)" if d == "up"
-                         else "started hydrophobic\n(steered down)" for d in dirs])
+    ax2.set_xticklabels(["started hydrophilic\n(low-GRAVY held-out set)" if d == "up"
+                         else "started hydrophobic\n(high-GRAVY held-out set)" for d in dirs])
     ax2.set_ylabel(f"change in {args.property}\nwith NO steering applied (mean ± SEM)")
     ax2.set_title("What the correction does on its own\n"
                   "resampling reverts toward typical; the correction pushes one way regardless",
