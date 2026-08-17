@@ -487,6 +487,41 @@ def max_homopolymer_run(seq: str) -> int:
     return best
 
 
+# UniProtKB residue-composition statistics (%), the reference distribution for
+# `composition_distance`. Kept as a plain constant (not derived from the eval store) so the
+# naturalness axis doesn't shift between runs.
+AA_BACKGROUND = {"A": 8.25, "R": 5.53, "N": 4.06, "D": 5.45, "C": 1.38, "Q": 3.93,
+                 "E": 6.75, "G": 7.07, "H": 2.27, "I": 5.96, "L": 9.66, "K": 5.84,
+                 "M": 2.42, "F": 3.86, "P": 4.70, "S": 6.56, "T": 5.34, "W": 1.08,
+                 "Y": 2.92, "V": 6.87}
+
+
+def composition_distance(seq: str) -> float:
+    """L1 distance (percentage points, 0-200) between `seq`'s amino-acid composition and
+    the UniProtKB background. Higher = less protein-like composition.
+
+    A composition-aware companion to pseudo-perplexity, which on its own points the wrong
+    way here: measured on Exp B's alpha=0 GLP-corrected arm, pppl *improves* (15.0 -> 13.9,
+    i.e. reads as more natural) while the correction drives Leu to ~18% and Val to ~14%
+    — roughly 2x their natural abundance — and mechanically adds +1.35 GRAVY with no
+    steering applied. Those sequences pass `is_degenerate_sequence` (no long homopolymer
+    run, >8 unique AAs), so that filter doesn't catch this either. Reported per row and
+    summarized per (alpha, arm) so the drift is visible instead of being credited to
+    steering.
+
+    Read it COMPARATIVELY (naive vs corrected, across alpha), not against zero: a finite
+    sequence can't match a 20-way background exactly, so this has a length-dependent
+    sampling-noise floor (~40pp at the L~145 of Exp B's held-out inits). On that first run
+    the naive arm sat flat at 41-48pp for every alpha while the corrected arm rose
+    monotonically — 55pp at alpha=0 (no steering at all), 65pp at 0.5, 69pp at 2, 82pp at
+    20 — i.e. the correction, not the steering, is what degrades composition."""
+    if not seq:
+        return float("nan")
+    n = len(seq)
+    counts = Counter(seq)
+    return float(sum(abs(100.0 * counts.get(a, 0) / n - bg) for a, bg in AA_BACKGROUND.items()))
+
+
 @torch.no_grad()
 def sae_feature_activation(sae, acts_raw: torch.Tensor, feat_idxs, device: str):
     """Mean/max SAE activation of `feat_idxs` over all positions of a (raw,
@@ -677,6 +712,91 @@ def three_regime_breakdown(rows: List[dict], naive_rows: List[dict]) -> Dict[str
             "corrected_concept_mean": float(np.mean([r["concept_score"] for r in corr_r])) if corr_r else None,
             "rescue_fraction": rescue_frac, "rescue_comparable": n_comp,
         }
+    return out
+
+
+def _wilcoxon_p(vals: List[float]) -> Optional[float]:
+    """Signed-rank p for `vals` vs 0, or None when it isn't computable (too few pairs /
+    all-zero differences) — kept explicit so summary.json never carries a fake p."""
+    from scipy.stats import wilcoxon
+
+    if len(vals) < 5 or all(v == 0 for v in vals):
+        return None
+    try:
+        return float(wilcoxon(vals).pvalue)
+    except ValueError:
+        return None
+
+
+def steering_attributable_by_alpha(rows: List[dict], alphas: List[float],
+                                   neutral_alpha: float = 0.0) -> Dict[str, dict]:
+    """Exp B: concept score with each arm's OWN no-steering run subtracted, per init.
+
+    Motivation (measured on the first Exp B run): at alpha=0 — no steering at all, so the
+    two arms differ *only* by whether `glp_correct` ran — the GLP-corrected arm already
+    gains +1.35 ΔGRAVY vs the naive arm's +0.40, because SDEdit enriches Leu/Val to ~2x
+    natural abundance (see `composition_distance`). That drift is 65-97% of the corrected
+    arm's raw ΔGRAVY at every alpha <= 2, so the raw naive-vs-corrected gap
+    (`paired_wilcoxon_by_alpha`) credits the correction's compositional bias to steering.
+
+    Differencing within an arm against its own alpha==neutral_alpha run, paired by
+    `init_sequence_id`, removes both that drift and per-init variation, leaving the
+    steering-attributable effect. On that first run it cut the corrected-vs-naive gap
+    roughly in half (+0.93..+1.87 raw -> +0.28..+1.08) but *sharpened* the finding: naive
+    steering is flat-to-slightly-negative in the safe range (pooled -0.12) while corrected
+    scales monotonically with alpha (+0.23 -> +1.00, pooled +0.44, p=1e-4).
+
+    Returns {} when the grid has no neutral-alpha arm to difference against."""
+    base: Dict[Tuple[bool, str], float] = {
+        (r["corrected"], r["init_sequence_id"]): r["concept_score"]
+        for r in rows if r["alpha"] == neutral_alpha
+    }
+    if not base:
+        print(f"[exp-b] WARNING: no alpha=={neutral_alpha} arm in this grid — skipping the "
+              "steering-attributable breakdown (raw numbers include the correction's own "
+              "no-steering drift; add 0 to --alphas to separate them).")
+        return {}
+
+    out: Dict[str, dict] = {}
+    for a in alphas:
+        if a == neutral_alpha:
+            continue
+        arms: Dict[bool, Dict[str, float]] = {}
+        for corrected in (False, True):
+            arms[corrected] = {
+                r["init_sequence_id"]: r["concept_score"] - base[(corrected, r["init_sequence_id"])]
+                for r in rows
+                if r["alpha"] == a and r["corrected"] == corrected
+                and (corrected, r["init_sequence_id"]) in base
+            }
+        entry: Dict[str, dict] = {}
+        for corrected, name in ((False, "naive"), (True, "corrected")):
+            v = list(arms[corrected].values())
+            if v:
+                entry[name] = {"mean": float(np.mean(v)), "n": len(v), "wilcoxon_p": _wilcoxon_p(v)}
+        common = sorted(set(arms[False]) & set(arms[True]))
+        if len(common) >= 2:
+            gap = [arms[True][i] - arms[False][i] for i in common]
+            entry["gap"] = {"mean": float(np.mean(gap)), "n": len(gap), "wilcoxon_p": _wilcoxon_p(gap)}
+        if entry:
+            out[str(a)] = entry
+    return out
+
+
+def composition_by_alpha(rows: List[dict], alphas: List[float]) -> Dict[str, dict]:
+    """Mean `composition_distance` per (alpha, arm) — makes the correction's compositional
+    drift visible next to pseudo-perplexity, which moves the opposite way (see
+    `composition_distance`)."""
+    out: Dict[str, dict] = {}
+    for a in alphas:
+        entry = {}
+        for corrected, name in ((False, "naive"), (True, "corrected")):
+            v = [composition_distance(r["sequence"]) for r in rows
+                 if r["alpha"] == a and r["corrected"] == corrected and r.get("sequence")]
+            if v:
+                entry[name] = float(np.mean(v))
+        if entry:
+            out[str(a)] = entry
     return out
 
 
@@ -889,7 +1009,11 @@ def main():
 
     ap.add_argument("--t-start", type=float, default=0.5, help="GLP SDEdit start noise level")
     ap.add_argument("--t-start-pilot", action="store_true",
-                    help="run only the t_start in {0.3,0.5,0.7} pilot (spec Part 1) and exit")
+                    help="run only the t_start in {0.3,0.5,0.7} pilot (spec Part 1) and exit. "
+                         "Each t_start runs at both the no-steering anchor and the mid alpha "
+                         "so the correction's own drift is separated from the steering gain "
+                         "(see the pilot block's comment) — pick on attributable gain, not "
+                         "raw concept score.")
     ap.add_argument("--sde-steps", type=int, default=20)
     ap.add_argument("--log-round-diagnostics", action="store_true",
                     help="log per-round diffusion loss before/after SDEdit (corrected=True "
@@ -1044,32 +1168,70 @@ def main():
         extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
         mid_alpha = alphas[len(alphas) // 2]
         n_pilot = min(8, args.n_sequences)
+        # Each t_start is run at BOTH the no-steering anchor and mid_alpha, on the same
+        # seeds (so the two share a masking schedule and differ only by the steer_fn).
+        # Scoring a t_start on its steered concept score alone would reward exactly the
+        # pathology this pilot needs to avoid: a high t_start injects more noise, so the
+        # correction rewrites more of the sequence freely, and on Exp B that free rewriting
+        # is itself strongly concept-directed (+1.35 ΔGRAVY at alpha=0 via Leu/Val
+        # enrichment, at t_start=0.5). The anchor arm makes that drift measurable, so a
+        # t_start can be picked on the steering-ATTRIBUTABLE gain and its composition cost.
+        pilot_alphas = [neutral_alpha, mid_alpha] if mid_alpha != neutral_alpha else [neutral_alpha]
         pilot_rows = []
         for t_start in (0.3, 0.5, 0.7):
             for i in range(n_pilot):
-                seed_i = args.seed * 1000 + i
-                g = torch.Generator().manual_seed(seed_i)
-                g_dev = torch.Generator(device=device).manual_seed(seed_i)
-                init_tokens, length, init_id, gravy_init = build_init(i, g)
-                seq = masked_gibbs_generate(
-                    steerer, init_tokens,
-                    steer_fn=make_steer_fn(method, mid_alpha, sae=sae, feat_idxs=feat_idxs, v=diffmean_vec,
-                                           intervention=args.sae_intervention, b=b_for(mid_alpha)),
-                    correct_fn=lambda a: glp_correct(model, scaler, a, t_start=t_start,
-                                                     num_steps=args.sde_steps, device=device, generator=g_dev),
-                    mask_fraction=args.mask_fraction, n_rounds=args.n_rounds,
-                    stabilize_tol=args.stabilize_tol, sample_mode=args.sample_mode,
-                    temperature=args.temperature, generator=g, device=device)
-                acts = torch.from_numpy(extractor.extract_single(seq)).float()
-                dloss = float(diffusion_loss(model, scaler, acts, n_repeats=args.n_repeats,
-                                             device=device, generator=g_dev).mean())
-                concept = c2h2_concept_score(seq) if is_a else gravy_score(seq) - gravy_init
-                pilot_rows.append({"t_start": t_start, "sample_idx": i, "length": length,
-                                  "concept_score": concept,
-                                  "pseudo_perplexity": pseudo_perplexity(steerer, seq, device),
-                                  "diffusion_loss": dloss})
-                print(f"[t_start-pilot] t_start={t_start} sample={i} concept={pilot_rows[-1]['concept_score']} "
-                      f"pppl={pilot_rows[-1]['pseudo_perplexity']:.2f} dloss={dloss:.4f}")
+                for alpha in pilot_alphas:
+                    seed_i = args.seed * 1000 + i
+                    g = torch.Generator().manual_seed(seed_i)
+                    g_dev = torch.Generator(device=device).manual_seed(seed_i)
+                    init_tokens, length, init_id, gravy_init = build_init(i, g)
+                    seq = masked_gibbs_generate(
+                        steerer, init_tokens,
+                        steer_fn=make_steer_fn(method, alpha, sae=sae, feat_idxs=feat_idxs, v=diffmean_vec,
+                                               intervention=args.sae_intervention, b=b_for(alpha)),
+                        correct_fn=lambda a: glp_correct(model, scaler, a, t_start=t_start,
+                                                         num_steps=args.sde_steps, device=device, generator=g_dev),
+                        mask_fraction=args.mask_fraction, n_rounds=args.n_rounds,
+                        stabilize_tol=args.stabilize_tol, sample_mode=args.sample_mode,
+                        temperature=args.temperature, generator=g, device=device)
+                    acts = torch.from_numpy(extractor.extract_single(seq)).float()
+                    dloss = float(diffusion_loss(model, scaler, acts, n_repeats=args.n_repeats,
+                                                 device=device, generator=g_dev).mean())
+                    concept = c2h2_concept_score(seq) if is_a else gravy_score(seq) - gravy_init
+                    pilot_rows.append({"t_start": t_start, "alpha": alpha, "sample_idx": i,
+                                      "length": length, "concept_score": concept,
+                                      "pseudo_perplexity": pseudo_perplexity(steerer, seq, device),
+                                      "diffusion_loss": dloss,
+                                      "composition_distance": composition_distance(seq)})
+                    print(f"[t_start-pilot] t_start={t_start} alpha={alpha} sample={i} "
+                          f"concept={concept:+.4f} pppl={pilot_rows[-1]['pseudo_perplexity']:.2f} "
+                          f"dloss={dloss:.4f} comp={pilot_rows[-1]['composition_distance']:.1f}pp",
+                          flush=True)
+
+        # per-t_start read-out: drift vs steering-attributable gain vs composition cost
+        print(f"\n[t_start-pilot] anchor alpha={neutral_alpha}, steered alpha={mid_alpha}, "
+              f"n={n_pilot} per cell")
+        for t_start in (0.3, 0.5, 0.7):
+            base = {r["sample_idx"]: r for r in pilot_rows
+                    if r["t_start"] == t_start and r["alpha"] == neutral_alpha}
+            steered = {r["sample_idx"]: r for r in pilot_rows
+                       if r["t_start"] == t_start and r["alpha"] == mid_alpha}
+            if not base:
+                continue
+            drift = float(np.mean([r["concept_score"] for r in base.values()]))
+            comp_b = float(np.mean([r["composition_distance"] for r in base.values()]))
+            common = sorted(set(base) & set(steered))
+            attr = (float(np.mean([steered[i]["concept_score"] - base[i]["concept_score"]
+                                   for i in common])) if common else float("nan"))
+            comp_s = (float(np.mean([steered[i]["composition_distance"] for i in common]))
+                      if common else float("nan"))
+            pppl_s = (float(np.mean([steered[i]["pseudo_perplexity"] for i in common]))
+                      if common else float("nan"))
+            print(f"[t_start-pilot] t_start={t_start}: drift(no steering)={drift:+.4f}  "
+                  f"attributable={attr:+.4f}  composition={comp_b:.1f}->{comp_s:.1f}pp  "
+                  f"pppl={pppl_s:.2f}")
+        print("[t_start-pilot] pick the t_start with the best attributable gain per unit of "
+              "drift/composition cost — NOT the largest raw concept score.")
         pilot_csv = out_dir / "t_start_pilot.csv"
         with open(pilot_csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(pilot_rows[0].keys()))
@@ -1113,12 +1275,14 @@ def main():
             fieldnames = ["sample_id", "alpha", "corrected", "length", "motif_hit",
                          "concept_count", "concept_count_loose", "naturalness_score",
                          "diffusion_loss", "max_homopolymer_run", "unique_aa_count",
+                         "composition_distance",
                          "target_feature_activation_mean", "target_feature_activation_max",
                          "target_feature_peak_residue", "plddt", "sequence"]
         else:
             fieldnames = ["sample_id", "init_sequence_id", "alpha", "corrected", "length",
                          "gravy_init", "gravy_final", "delta_gravy", "naturalness_score",
                          "diffusion_loss", "max_homopolymer_run", "unique_aa_count",
+                         "composition_distance",
                          "target_projection_mean", "target_projection_max", "sequence"]
 
         mode = "a" if existing else "w"
@@ -1256,6 +1420,7 @@ def main():
                                   "naturalness_score": pppl, "diffusion_loss": dloss,
                                   "max_homopolymer_run": max_homopolymer_run(seq),
                                   "unique_aa_count": len(set(seq)),
+                                  "composition_distance": composition_distance(seq),
                                   "target_feature_activation_mean": feat_act_mean,
                                   "target_feature_activation_max": feat_act_max,
                                   "target_feature_peak_residue": peak_residue,
@@ -1274,6 +1439,7 @@ def main():
                                   "delta_gravy": delta_gravy, "naturalness_score": pppl,
                                   "diffusion_loss": dloss, "max_homopolymer_run": max_homopolymer_run(seq),
                                   "unique_aa_count": len(set(seq)),
+                                  "composition_distance": composition_distance(seq),
                                   "target_projection_mean": proj_mean, "target_projection_max": proj_max,
                                   "sequence": seq}
                             concept_score = delta_gravy
@@ -1323,6 +1489,30 @@ def main():
             for a, s in wstats.items():
                 print(f"[exp-b] paired Wilcoxon alpha={a}: n={s['n_pairs']} mean_delta_gravy="
                      f"{s['mean_delta']:+.4f} p={s['wilcoxon_p']:.4f}")
+
+            # The raw gap above credits the correction's own no-steering drift to steering;
+            # these two separate it out. See steering_attributable_by_alpha's docstring.
+            attrib = steering_attributable_by_alpha(rows_for_analysis, alphas, neutral_alpha)
+            comp = composition_by_alpha(rows_for_analysis, alphas)
+            run.log_summary(steering_attributable=attrib, composition_distance=comp)
+            base_rows = [r for r in rows_for_analysis if r["alpha"] == neutral_alpha]
+            if base_rows:
+                for corrected, name in ((False, "naive"), (True, "corrected")):
+                    v = [r["concept_score"] for r in base_rows if r["corrected"] == corrected]
+                    if v:
+                        print(f"[exp-b] baseline drift (alpha={neutral_alpha}, NO steering) "
+                              f"{name}: mean_delta_gravy={np.mean(v):+.4f} (n={len(v)})")
+            for a, s in attrib.items():
+                parts = []
+                for name in ("naive", "corrected", "gap"):
+                    if name in s:
+                        p = s[name]["wilcoxon_p"]
+                        parts.append(f"{name}={s[name]['mean']:+.4f}"
+                                     f"(n={s[name]['n']},p={'n/a' if p is None else f'{p:.4f}'})")
+                print(f"[exp-b] steering-attributable alpha={a}: " + "  ".join(parts))
+            for a, s in comp.items():
+                print(f"[exp-b] composition distance alpha={a}: "
+                      + "  ".join(f"{k}={v:.2f}pp" for k, v in s.items()))
         run.log_summary(three_regime=regimes)
         print(f"[steering] wrote {csv_path} + {run.figures_dir / 'pareto.png'}")
 
