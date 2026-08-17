@@ -267,6 +267,7 @@ def main():
 
     # ---- Pareto: attainment front + densities, and the alpha path, as separate views ----
     style.apply_style()
+    import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
     from matplotlib.gridspec import GridSpec
 
@@ -297,11 +298,14 @@ def main():
                 sp.set_visible(False)
             a.grid(False)
 
-        if junk:
-            ax.axvspan(min(junk), max(junk), color=style.BASELINE, alpha=0.18, zorder=0)
-            ax.annotate("range of the sequences\nthe filter rejected", xy=(np.mean(junk), 0.01),
-                        xycoords=("data", "axes fraction"), ha="center", va="bottom",
-                        fontsize=8, color=style.SECONDARY)
+        if len(junk) >= 4:
+            # IQR, not min-max: the full range of 23 points spans nearly the whole panel and
+            # reads as alarm rather than information
+            q1, q3 = np.percentile(junk, [25, 75])
+            ax.axvspan(q1, q3, color=style.BASELINE, alpha=0.22, zorder=0)
+            ax.annotate("middle 50% of the sequences\nthe filter rejected",
+                        xy=((q1 + q3) / 2, 0.01), xycoords=("data", "axes fraction"),
+                        ha="center", va="bottom", fontsize=8, color=style.SECONDARY)
         if key in UBIQUITIN_REF:
             ax.axvline(UBIQUITIN_REF[key], color=style.BASELINE, linestyle=":", linewidth=1.4)
             # rotated, pinned low: the previous version anchored this to the top of the axes
@@ -331,11 +335,22 @@ def main():
                                    alpha=0.85, zorder=3)
                 except np.linalg.LinAlgError:
                     pass
-            front = pareto_front(list(zip(xs, ys)))
-            fx, fy = zip(*front)
-            ax.step(fx, fy, where="post", color=colour, linewidth=2.4, zorder=4,
-                    label=f"{lab} — attainment front (n={len(front)}/{len(cell)})")
-            ax.plot(fx, fy, "o", ms=4.5, color=colour, zorder=5)
+            # Front over per-alpha MEANS. A front over individual samples is a maximum
+            # statistic — it is fixed by whichever few points happen to be extreme (4 of 146
+            # here), i.e. by the noisiest part of the data. Per-alpha means are stable
+            # estimates, so their non-dominated subset is the defensible dominance statement.
+            means = []
+            for a in sorted({r["alpha"] for r in cell}):
+                c = [r for r in cell if r["alpha"] == a]
+                if len(c) >= 2:
+                    means.append((float(np.mean([r[key] for r in c])),
+                                  float(np.mean([r["_y"] for r in c]))))
+            front = pareto_front(means)
+            if front:
+                fx, fy = zip(*front)
+                ax.step(fx, fy, where="post", color=colour, linewidth=2.4, zorder=4,
+                        label=f"{lab} — front over per-α means ({len(front)}/{len(means)} α)")
+                ax.plot(fx, fy, "o", ms=5.5, color=colour, zorder=5)
             # marginals
             gxm = np.linspace(min(xs), max(xs), 200)
             dv = kde_1d(list(xs), gxm)
@@ -353,7 +368,8 @@ def main():
         ax.legend(loc="upper left", fontsize=9)
         axt.set_title(f"Exp B objective space on {key}"
                       + ("" if len(dirs) == 1 else f" — {d} direction")
-                      + "\nstaircase = attainment front; contours = 50% / 90% of samples",
+                      + "\nstaircase = attainment front over per-α means; "
+                        "contours = 50% / 90% of samples",
                       loc="left", fontsize=11)
         p1 = style.save_fig(fig, run.figures_dir / f"pareto_front_{key}{tag}.png")
         print(f"[naturalness] wrote {p1}")
@@ -361,10 +377,9 @@ def main():
         # --- view 2: the alpha path, ordered BY ALPHA (the previous line sorted by x, which
         # made the connecting segments meaningless) with SEM bars on both noisy objectives ---
         fig2, ax2 = plt.subplots(figsize=(7.4, 6.0))
-        if junk:
-            ax2.axvspan(min(junk), max(junk), color=style.BASELINE, alpha=0.18, zorder=0)
-        if key in UBIQUITIN_REF:
-            ax2.axvline(UBIQUITIN_REF[key], color=style.BASELINE, linestyle=":", linewidth=1.4)
+        if len(junk) >= 4:
+            q1, q3 = np.percentile(junk, [25, 75])
+            ax2.axvspan(q1, q3, color=style.BASELINE, alpha=0.22, zorder=0)
         for corrected, colour, lab in arms:
             cell = [r for r in sub if r["corrected"] == corrected]
             alphas_here = sorted({r["alpha"] for r in cell})
@@ -382,15 +397,28 @@ def main():
                 continue
             ax2.errorbar(mx, my, xerr=ex, yerr=ey, color=colour, linewidth=2, marker="o",
                          ms=6, capsize=2.5, elinewidth=1, label=f"{lab} (mean ± SEM per α)")
+            # label selectively: the ends plus a few landmarks. Labelling all ten alphas
+            # made the low-alpha cluster illegible (they pile up within ~0.05 pTM).
+            show = {keep[0], keep[-1]} | {a for a in keep if a in (1.0, 2.0, 5.0)}
             for a, x, y in zip(keep, mx, my):
-                ax2.annotate(f"{a:g}", (x, y), xytext=(6, 5), textcoords="offset points",
-                             fontsize=8, color=style.SECONDARY)
+                if a not in show:
+                    continue
+                ax2.annotate(f"α={a:g}", (x, y), xytext=(7, 6), textcoords="offset points",
+                             fontsize=8.5, color=style.INK,
+                             path_effects=[pe.withStroke(linewidth=2.6,
+                                                         foreground=style.SURFACE)])
         ax2.set_xlabel(xlab)
         ax2.set_ylabel(ylab)
         ax2.set_title(f"Exp B dose-response path in objective space"
                       + ("" if len(dirs) == 1 else f" — {d} direction")
-                      + "\nlabels are α; ordered by α, not by naturalness", loc="left")
+                      + "\nordered by α, not by naturalness", loc="left")
         ax2.legend(loc="upper left", fontsize=9)
+        if key in UBIQUITIN_REF:
+            # kept as text rather than a line: at pTM 0.74 it is far off the data range and a
+            # line there leaves most of the panel empty
+            ax2.annotate(f"natural protein (ubiquitin) sits at {key} = {UBIQUITIN_REF[key]:g},"
+                         " off-scale right", xy=(0.99, 0.015), xycoords="axes fraction",
+                         ha="right", va="bottom", fontsize=8, color=style.SECONDARY)
         p2 = style.save_fig(fig2, run.figures_dir / f"pareto_path_{key}{tag}.png")
         print(f"[naturalness] wrote {p2}")
 
