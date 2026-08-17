@@ -380,6 +380,9 @@ def main():
         if len(junk) >= 4:
             q1, q3 = np.percentile(junk, [25, 75])
             ax2.axvspan(q1, q3, color=style.BASELINE, alpha=0.22, zorder=0)
+            ax2.annotate("rejected\nsequences\n(middle 50%)", xy=((q1 + q3) / 2, 0.97),
+                         xycoords=("data", "axes fraction"), ha="center", va="top",
+                         fontsize=8, color=style.SECONDARY)
         for corrected, colour, lab in arms:
             cell = [r for r in sub if r["corrected"] == corrected]
             alphas_here = sorted({r["alpha"] for r in cell})
@@ -400,9 +403,18 @@ def main():
             # label selectively: the ends plus a few landmarks. Labelling all ten alphas
             # made the low-alpha cluster illegible (they pile up within ~0.05 pTM).
             show = {keep[0], keep[-1]} | {a for a in keep if a in (1.0, 2.0, 5.0)}
+            xr = (max(mx) - min(mx)) or 1.0
+            yr = (max(my) - min(my)) or 1.0
+            placed: List[Tuple[float, float]] = []
             for a, x, y in zip(keep, mx, my):
                 if a not in show:
                     continue
+                # alpha=5 and alpha=20 can land within a hair of each other; drop the label
+                # rather than overprint it
+                if any(abs(x - px) / xr < 0.06 and abs(y - py) / yr < 0.06
+                       for px, py in placed):
+                    continue
+                placed.append((x, y))
                 ax2.annotate(f"α={a:g}", (x, y), xytext=(7, 6), textcoords="offset points",
                              fontsize=8.5, color=style.INK,
                              path_effects=[pe.withStroke(linewidth=2.6,
