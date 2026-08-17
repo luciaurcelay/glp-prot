@@ -124,6 +124,39 @@ def main():
     print(f"[complexity] SEG-style window={args.window}, low-complexity trigger "
           f"{SEG_K1} bits (max possible {math.log2(args.window):.2f} at this window)")
 
+    # ---- 0. the reference that decides whether any threshold is meaningful ----
+    # SEG's 2.2-bit trigger was calibrated on natural proteins at large. Our held-out starting
+    # sequences ARE natural proteins (real UniRef50 entries), and they are the right yardstick:
+    # they were drawn from GRAVY extremes, so if very hydrophobic natural proteins are
+    # themselves locally low-complexity — transmembrane stretches are — then a threshold that
+    # flags them is measuring the property we steer toward, not degeneracy.
+    import json
+    natural: Dict[str, List[dict]] = {}
+    gc = run_dir / "gravy_contrast.json"
+    if gc.exists():
+        d = json.loads(gc.read_text())
+        for setname, entries in (("held-out, low-GRAVY (up starts)", d.get("heldout") or []),
+                                 ("held-out, high-GRAVY (down starts)", d.get("heldout_high") or [])):
+            natural[setname] = [complexity(e["sequence"], args.window) for e in entries]
+    print("\n0. NATURAL PROTEINS, SAME MEASURE (the reference for any threshold)")
+    for setname, cs in natural.items():
+        if not cs:
+            continue
+        me = [c["min_entropy"] for c in cs]
+        below = sum(m < SEG_K1 for m in me)
+        print(f"   {setname:<38} min_entropy {np.mean(me):5.3f}  "
+              f"below {SEG_K1} bits: {below}/{len(me)} ({below/len(me):.0%})")
+    gen_me = [r["min_entropy"] for r in rows]
+    print(f"   {'our generations':<38} min_entropy {np.mean(gen_me):5.3f}  "
+          f"below {SEG_K1} bits: {sum(m < SEG_K1 for m in gen_me)}/{len(gen_me)} "
+          f"({np.mean([m < SEG_K1 for m in gen_me]):.0%})")
+    if natural:
+        run.log_summary(complexity_natural_reference={
+            k: {"mean_min_entropy": float(np.mean([c["min_entropy"] for c in v])),
+                "frac_below_seg_k1": float(np.mean([c["min_entropy"] < SEG_K1 for c in v])),
+                "n": len(v)}
+            for k, v in natural.items() if v})
+
     # ---- 1. validity: does complexity see what the gate sees? ----
     from scipy.stats import mannwhitneyu
     print("\\n1. DOES COMPLEXITY AGREE WITH THE GATE?")
