@@ -340,25 +340,41 @@ def main():
                          f" / {'--' if cr is None else f'{cr:.0%}'}".rjust(16))
         print(f"  {a:>5} | " + " | ".join(cells))
 
-    fig3, ax3 = plt.subplots(figsize=(7.4, 5.0))
+    fig3, ax3 = plt.subplots(figsize=(7.6, 5.0))
     mid = thresholds[len(thresholds) // 2]
+    order = sorted(rates, key=float)
+    # evenly-spaced categorical ticks: the alpha grid contains 0, which a log axis cannot show
+    # and symlog only displays by putting jargon on the axis
+    xi = {a: i for i, a in enumerate(order)}
     for corrected, colour, lab in arms:
-        xs, ys = [], []
-        for a, e in rates.items():
-            v = e.get(f"{'corrected' if corrected else 'naive'}_pass_{mid:g}")
-            if v is not None:
-                xs.append(float(a)); ys.append(v * 100)
+        nm = "corrected" if corrected else "naive"
+        xs, ys, es = [], [], []
+        for a in order:
+            e = rates[a]
+            v, n = e.get(f"{nm}_pass_{mid:g}"), e.get(f"{nm}_n_generated")
+            if v is None or not n:
+                continue
+            xs.append(xi[a]); ys.append(v * 100)
+            # binomial standard error — without it the wiggles invite over-reading, and here
+            # every difference between the arms sits inside about one SE
+            es.append(100 * (v * (1 - v) / n) ** 0.5)
         if xs:
-            order = np.argsort(xs)
-            ax3.plot(np.array(xs)[order], np.array(ys)[order], "o-", color=colour,
-                     linewidth=2, ms=6, label=lab)
-    ax3.set_xscale("symlog", linthresh=0.05)
-    ax3.set_xlabel("steering strength α (symlog)")
-    ax3.set_ylabel(f"% of generations that are clean AND {key} "
-                   f"{'≥' if higher_is_better else '≤'} {mid:g}")
-    ax3.set_title(f"Confidently-foldable yield vs α\ndenominator is every sequence "
-                  "generated, so degenerate output counts as failure", loc="left")
-    ax3.legend(loc="best", fontsize=9)
+            ax3.errorbar(xs, ys, yerr=es, color=colour, marker="o", linewidth=2, ms=6,
+                         capsize=2.5, elinewidth=1, label=lab)
+    ax3.set_xticks(range(len(order)))
+    ax3.set_xticklabels([f"{float(a):g}" for a in order])
+    ax3.set_ylim(bottom=0)
+    ax3.set_xlabel("steering strength α")
+    ax3.set_ylabel(f"% of generated sequences that pass\n(not degenerate, and "
+                   f"{'pTM' if key == 'ptm' else key} "
+                   f"{'≥' if higher_is_better else '≤'} {mid:g})")
+    ax3.set_title("How often steering yields a confidently-folded sequence\n"
+                  "every generation counted, so degenerate output counts as a failure",
+                  loc="left")
+    ax3.legend(fontsize=9, loc="upper right")
+    ax3.annotate("bars are binomial SE; both directions pooled",
+                 xy=(0.99, 0.02), xycoords="axes fraction", ha="right", fontsize=8,
+                 color=style.SECONDARY)
     p3 = style.save_fig(fig3, run.figures_dir / f"pass_rate_{key}.png")
     print(f"[naturalness] wrote {p3}")
 
