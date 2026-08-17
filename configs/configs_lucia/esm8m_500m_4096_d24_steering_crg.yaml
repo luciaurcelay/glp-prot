@@ -1,0 +1,71 @@
+# Steering config (W4) — same model/data as esm8m_500m_4096_d24.yaml, but with an
+# `output_dir` owned by crg562661 so RunLogger/record_launch can write.
+#
+# Why a separate config: the d24 grid cell's own output_dir
+# (runs/uniref50_500m_4096_d24_steering) belongs to bsc070332 (Dani). Steering only needs
+# to READ that run's checkpoint + scaler, so pass those explicitly and keep our writes
+# under our own run dir:
+#
+#   sbatch --account=ehpc394 scripts/cluster/submit_steering.sh B <NAME> \
+#     configs/configs_lucia/esm8m_500m_4096_d24_steering_crg.yaml "" "" \
+#     --ckpt   $GLP_RUNS_ROOT/uniref50_500m_4096_d24/checkpoints/glp_final.pt \
+#     --scaler $GLP_RUNS_ROOT/uniref50_500m_4096_d24/checkpoints/rep_statistics.pt
+#
+# NAME is required and must be unique per run: the steering out-dir leaf becomes
+# steering_<exp>_<NAME>, and RunLogger keys the metrics/figures redirect on that leaf
+# alone — a reused NAME clobbers that run's metrics/figures.
+#
+# `data.eval_dir` is set here (resolved under $GLP_DATA_ROOT) so launches don't need
+# --eval-dir; it supplies the off-manifold diagnostic's baseline test activations.
+# Exp B additionally needs gravy_contrast.json — pass --gravy-contrast pointing at an
+# existing one to skip the ~12GB UniRef50 rebuild.
+
+device: cuda
+precision: fp32
+seed: 0
+output_dir: runs/steering_crg
+
+model:
+  activation_dim: 320
+  d_model: null         # -> 640
+  d_mlp: null           # -> 1280
+  n_blocks: 24
+
+data:
+  model_name: facebook/esm2_t6_8M_UR50D
+  layer: 4
+  n_train_activations: 500000000
+  store_mode: precache
+  activation_dtype: float16
+  train_fasta: uniref50
+  store_dir: uniref50_500m/train_store
+  eval_dir: uniref50_100m/swissprot/processed   # steering reads test-split acts for Part 0
+  eval_uniprot_tsv: null
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20
+  fd_num_steps: 1000
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5
+  batch_size: 4096
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 50
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]
+  topk: 512
+  seed: 42
