@@ -1871,7 +1871,7 @@ def main():
         rows_for_analysis = [r for r in rows_for_analysis if not is_degenerate_sequence(r)]
         if degenerate_rows:
             print(f"[steering] excluded {len(degenerate_rows)}/{n_before_filter} degenerate sequences "
-                  "(unique_aa<=8 or max_homopolymer_run>=8) from Part 3 analysis — still present in "
+                  "(see is_degenerate_sequence) from Part 3 analysis — still present in "
                   f"{csv_path.name} for inspection.")
             run.log_summary(n_degenerate_excluded=len(degenerate_rows))
 
