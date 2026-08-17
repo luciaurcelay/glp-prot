@@ -39,17 +39,18 @@ def is_degenerate(row: dict) -> bool:
     if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
         return True
     return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 8)
+            or int(float(row["max_homopolymer_run"])) >= 12)   # 12, not 8: 8 rejected a real
+            # protein with a run of 9 (see run_steering.is_degenerate_sequence)
 
 
-def load_rows(run_dir: Path, neutral_alpha: float) -> List[dict]:
+def load_rows(run_dir: Path, neutral_alpha: float, apply_gate: bool = True) -> List[dict]:
     path = run_dir / "expB_diffmean_gravy.csv"
     if not path.exists():
         raise SystemExit(f"{path} not found")
     raw = [r for r in csv.DictReader(open(path))]
     rows = []
     for r in raw:
-        if is_degenerate(r):
+        if apply_gate and is_degenerate(r):
             continue          # degenerate output is excluded from effect estimates
         rows.append({"alpha": float(r["alpha"]), "corrected": r["corrected"] == "True",
                      "direction": r.get("direction") or "up",
@@ -61,7 +62,8 @@ def load_rows(run_dir: Path, neutral_alpha: float) -> List[dict]:
     for r in rows:
         b = base.get((r["direction"], r["corrected"], r["init"]))
         r["attr"] = None if b is None else r["dgravy"] - b
-    print(f"[report] {len(rows)}/{len(raw)} non-degenerate rows")
+    if apply_gate:
+        print(f"[report] {len(rows)}/{len(raw)} non-degenerate rows")
     return rows
 
 
@@ -268,6 +270,36 @@ def main():
                                  for k, v in entry.items())
                 print(f"  α={a:<5} {bits}")
         run.log_summary(divergence_tested=diverg)
+
+        # The quality gate is applied AFTER generation and complexity is affected by the
+        # treatment, so gating is post-treatment selection: it preferentially removes
+        # successfully-steered sequences. The gate here is mild (~3%) and the two estimates
+        # agree, which is a stronger statement than choosing one — so report both.
+        ungated = load_rows(run_dir, args.neutral_alpha, apply_gate=False)
+        ung: Dict[str, dict] = {}
+        print("\n[report] same divergence WITHOUT the quality gate (the gate is "
+              "post-treatment; agreement between the two is the point)")
+        for a in alphas:
+            if a == args.neutral_alpha:
+                continue
+            entry = {}
+            for corrected, lab in ARMS:
+                u = [r["attr"] for r in ungated if r["direction"] == "up"
+                     and r["corrected"] == corrected and r["alpha"] == a and r["attr"] is not None]
+                d = [r["attr"] for r in ungated if r["direction"] == "down"
+                     and r["corrected"] == corrected and r["alpha"] == a and r["attr"] is not None]
+                if len(u) >= 3 and len(d) >= 3:
+                    entry[lab] = {"divergence": float(np.mean(u) - np.mean(d)),
+                                  "n_up": len(u), "n_down": len(d)}
+            if entry:
+                ung[f"{a:g}"] = entry
+        for a, e in ung.items():
+            g = diverg.get(a, {})
+            bits = "  ".join(
+                f"{k}: ungated {v['divergence']:+.3f} vs gated "
+                f"{g.get(k, {}).get('divergence', float('nan')):+.3f}" for k, v in e.items())
+            print(f"  α={a:<5} {bits}")
+        run.log_summary(divergence_ungated=ung)
 
     write_run_summary(run, run_dir, args)
 

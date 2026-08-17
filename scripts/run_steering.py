@@ -718,7 +718,7 @@ def fold_confidence(seq: str, device: str,
 # --------------------------------------------------------------------------- #
 #  Part 3 — analysis: Pareto plots, three-regime breakdown, rescue sanity check
 # --------------------------------------------------------------------------- #
-def is_degenerate_sequence(row: dict, min_unique_aa: int = 8, min_homopolymer_run: int = 8,
+def is_degenerate_sequence(row: dict, min_unique_aa: int = 8, min_homopolymer_run: int = 12,
                            max_single_aa_fraction: float = 0.30) -> bool:
     """Flags collapsed/low-complexity generations (observed in Exp B naive
     diff-of-means steering at high alpha: sequences collapse into long homopolymer
@@ -732,7 +732,23 @@ def is_degenerate_sequence(row: dict, min_unique_aa: int = 8, min_homopolymer_ru
     dominant residue with occasional others (e.g. long L-runs broken up every few
     residues) without ever hitting a single long run or collapsing unique-AA count
     — caught here by overall single-residue composition instead (>=30% of the
-    sequence being one amino acid; random 20-AA composition is ~5%)."""
+    sequence being one amino acid; random 20-AA composition is ~5%).
+
+    Calibrated against real proteins rather than by eye (scripts/analyze_sequence_complexity.py
+    reproduces this). Applied to the 80 natural held-out UniRef50 proteins the run starts from,
+    this rejects 3/80 (3.8%) — comparable to the 2.9% it rejects of our own generations, i.e.
+    it is not a filter tuned to target our failure mode specifically. Two of those three are
+    genuinely low-complexity natural proteins (66% and 68% single-residue). The third was a
+    false positive at the old `min_homopolymer_run=8`: an otherwise ordinary protein with a
+    run of 9. Natural runs here have median 3 and p95 5.1, so 12 still sits far into the tail
+    while no longer rejecting that sequence.
+
+    Do NOT tighten this on local complexity. Complexity is affected by the treatment — in the
+    corrected arm the minimum window entropy falls from 2.09 at alpha=0 to 1.73 at alpha=5,
+    because steering toward hydrophobicity draws on a smaller sub-alphabet — so a complexity
+    cut removes the successfully-steered sequences and biases the effect toward zero. Measured:
+    the alpha=2 divergence goes 1.59 (no gate) -> 1.58 (this gate) -> 0.93 at SEG's 2.2-bit
+    trigger, which would also reject 75% of the natural starting proteins."""
     seq = row.get("sequence")
     if seq and (max(Counter(seq).values()) / len(seq)) >= max_single_aa_fraction:
         return True

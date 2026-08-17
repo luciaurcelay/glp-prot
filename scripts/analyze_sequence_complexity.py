@@ -71,7 +71,8 @@ def is_degenerate(row: dict) -> bool:
     if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
         return True
     return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 8)
+            or int(float(row["max_homopolymer_run"])) >= 12)   # 12, not 8: 8 rejected a real
+            # protein with a run of 9 (see run_steering.is_degenerate_sequence)
 
 
 def attributable(rows: List[dict], neutral_alpha: float) -> None:
