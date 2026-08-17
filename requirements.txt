@@ -12,6 +12,7 @@ pandas
 scikit-learn
 transformers>=4.57
 biopython
+modlamp    # continuous-property probing only (aliphatic index) — glp_plm/eval/continuous_properties.py
 huggingface-hub>=0.28
 h5py
 einops

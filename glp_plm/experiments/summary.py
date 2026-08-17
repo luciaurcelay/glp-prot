@@ -67,44 +67,24 @@ def _generation_section(s: Dict[str, Any], run: RunLogger) -> Optional[str]:
 
 def _paired_comparisons(results: List[Dict[str, Any]], key: str, primary: str,
                         others: List[str]) -> List[Dict[str, Any]]:
-    """Paired bootstrap on per-concept deltas (matched concepts) -> local_clean-style table."""
-    from glp_plm.eval.probing_1d import bootstrap_ci
+    """Paired bootstrap on per-concept deltas (matched concepts) -> local_clean-style table.
 
-    by_concept: Dict[str, Dict[str, float]] = {}
-    for r in results:
-        by_concept.setdefault(r["concept"], {})[r["method"]] = r[key]
-    rows = []
-    for other in others:
-        diffs = [m[primary] - m[other] for m in by_concept.values() if primary in m and other in m]
-        if not diffs:
-            continue
-        mean, lo, hi = bootstrap_ci(diffs)
-        wins = sum(1 for d in diffs if d > 0)
-        verdict = "significant" if (lo > 0 or hi < 0) else "NOT significant"
-        rows.append({"comparison": f"{primary} - {other}", "mean": mean, "lo": lo, "hi": hi,
-                     "wins": wins, "n": len(diffs), "verdict": verdict})
+    Thin wrapper over glp_plm.eval.stats (shared with scripts/make_probing_outputs.py,
+    GLProt probing spec Part 5) — kept here so callers below don't need to change.
+    """
+    from glp_plm.eval import stats as pstats
+
+    rows = pstats.paired_comparisons(results, key, primary, others)
+    for r in rows:
+        r["mean"], r["lo"], r["hi"] = r["mean_diff"], r["ci_low"], r["ci_high"]
     return rows
 
 
 def _category_breakdown(results: List[Dict[str, Any]], key: str, methods: List[str]) -> Optional[str]:
-    from glp_plm.eval.concept_selection import categorize
+    from glp_plm.eval import stats as pstats
 
-    by_cat: Dict[str, Dict[str, List[float]]] = {}
-    concepts_per_cat: Dict[str, set] = {}
-    for r in results:
-        cat = categorize(r["concept"])
-        if cat is None:
-            continue
-        by_cat.setdefault(cat, {}).setdefault(r["method"], []).append(r[key])
-        concepts_per_cat.setdefault(cat, set()).add(r["concept"])
-    if not by_cat:
-        return None
-    lines = ["| category | n | " + " | ".join(methods) + " |", "|---|---|" + "---|" * len(methods)]
-    for cat in sorted(by_cat, key=lambda c: -len(concepts_per_cat[c])):
-        vals = [f"{sum(by_cat[cat][m]) / len(by_cat[cat][m]):.3f}" if m in by_cat[cat] else "—"
-               for m in methods]
-        lines.append(f"| {cat} | {len(concepts_per_cat[cat])} | " + " | ".join(vals) + " |")
-    return "\n".join(lines)
+    table = pstats.category_table(results, key, methods)
+    return pstats.category_table_markdown(table, methods) if table else None
 
 
 def _probing_section(run: RunLogger, metric: str) -> Optional[str]:
@@ -143,6 +123,42 @@ def _probing_section(run: RunLogger, metric: str) -> Optional[str]:
     return "\n".join(lines)
 
 
+def _continuous_probing_section(run: RunLogger) -> Optional[str]:
+    """Continuous-property probing (GRAVY, MW, pI, ...) — its OWN section, never
+    merged into the discrete AUC/F1 tables above: different label type (Spearman rho
+    on a continuous per-protein score, not AUC on a binary per-residue concept) and
+    different unit (protein, not residue) — mixing them would silently average two
+    incomparable statistics."""
+    path = run.metrics_dir / "probing_continuous.json"
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text())
+    agg = data.get("aggregate", {})
+    if not agg:
+        return None
+    # Sorted by |rho| (association strength, sign-agnostic) — AUC's plain -mean sort
+    # would put a strongly NEGATIVE correlation last, which misrepresents it.
+    methods = sorted(agg, key=lambda m: -abs(agg[m].get("mean_test_spearman", 0)))
+    n = agg[methods[0]].get("n_properties", "?")
+    lines = [f"## Probing — continuous properties ({n} properties, pool={data.get('pool', '?')})", "",
+            "| method | mean test ρ | 95% CI |", "|---|---|---|"]
+    for m in methods:
+        a = agg[m]
+        bold = lambda x: f"**{x}**" if m == methods[0] else str(x)
+        mean_str = bold(f"{a.get('mean_test_spearman', float('nan')):+.4f}")
+        lines.append(f"| {bold(m)} | {mean_str} | "
+                     f"[{a.get('ci_low', float('nan')):+.4f}, {a.get('ci_high', float('nan')):+.4f}] |")
+
+    comparisons = _paired_comparisons(data["results"], "test_spearman", methods[0], methods[1:])
+    if comparisons:
+        lines += ["", "Paired bootstrap on per-property differences (matched properties):", "",
+                 "| comparison | mean delta | 95% CI | wins | verdict |", "|---|---|---|---|---|"]
+        for c in comparisons:
+            lines.append(f"| {c['comparison']} | {c['mean']:+.4f} | [{c['lo']:+.4f}, {c['hi']:+.4f}] | "
+                         f"{c['wins']}/{c['n']} | {c['verdict']} |")
+    return "\n".join(lines)
+
+
 def _artifacts_section(run: RunLogger) -> str:
     lines = ["## Artifacts", ""]
     metric_files = sorted(p.name for p in run.metrics_dir.glob("*") if p.is_file())
@@ -173,6 +189,7 @@ def write_run_summary(run_dir: str | Path, verbose: bool = True) -> Optional[Pat
         _generation_section(s, run),
         _probing_section(run, "auc"),
         _probing_section(run, "f1"),
+        _continuous_probing_section(run),
     ]
     body = [sec for sec in sections if sec]
     body.append(_artifacts_section(run))

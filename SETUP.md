@@ -24,9 +24,11 @@ brew install python@3.11
 .venv/bin/pip install --upgrade pip
 
 # Runtime deps for the W1 pipeline (torch, transformers, sklearn, scipy, pandas,
-# h5py, einops, huggingface-hub, biopython, typed-argument-parser, matplotlib, pytest)
+# h5py, einops, huggingface-hub, biopython, typed-argument-parser, matplotlib, pytest);
+# modlAMP is only needed for continuous-property probing (aliphatic index —
+# glp_plm/eval/continuous_properties.py, GLProt probing spec Part 1)
 .venv/bin/pip install "torch>=2.8" "numpy>=2.2,<2.3" scipy pandas scikit-learn \
-  "transformers>=4.57" biopython "huggingface-hub>=0.28" h5py einops \
+  "transformers>=4.57" biopython modlamp "huggingface-hub>=0.28" h5py einops \
   pyyaml tqdm typed-argument-parser matplotlib pytest wandb
 ```
 

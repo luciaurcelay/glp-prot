@@ -172,10 +172,14 @@ def fig_probing_auc(run: RunLogger) -> Optional[str]:
 
 @register("probing_per_concept", needs=["metrics/probing.json"])
 def fig_probing_per_concept(run: RunLogger) -> Optional[str]:
-    """Per-concept GLP-vs-SAE scatter: above the diagonal = GLP isolates it better."""
+    """Per-concept GLP-vs-SAE scatter, colored by Swiss-Prot category (spec Part 7
+    fig 2) — above the diagonal = GLP isolates it better; color shows WHERE the
+    margins concentrate, not just how many."""
     import json
 
     import matplotlib.pyplot as plt
+
+    from glp_plm.eval.concept_selection import categorize
 
     d = json.loads((run.metrics_dir / "probing.json").read_text())
     rows = d.get("results", [])
@@ -186,18 +190,97 @@ def fig_probing_per_concept(run: RunLogger) -> Optional[str]:
         return None
     xs = [sae[c] for c in shared]
     ys = [glp[c] for c in shared]
+    cats = [categorize(c) or "other" for c in shared]
 
-    fig, ax = plt.subplots(figsize=(5.2, 5))
+    fig, ax = plt.subplots(figsize=(6, 5.2))
     lim = [min(0.5, min(xs + ys)) - 0.02, 1.005]
     ax.plot(lim, lim, color=style.BASELINE, lw=1.2, ls="--", zorder=1)
-    ax.scatter(xs, ys, s=42, color=style.ACCENT, alpha=0.75,
-               edgecolors=style.SURFACE, linewidths=1.5, zorder=2)
+    # Fixed color-per-category (never cycled — style.color()'s validated Hamiltonian
+    # palette), one legend entry per category actually present in this run.
+    present = sorted(set(cats), key=lambda c: (c == "other", c))
+    cat_color = {c: style.color(i) for i, c in enumerate(present)}
+    for c in present:
+        idx = [i for i, cc in enumerate(cats) if cc == c]
+        ax.scatter([xs[i] for i in idx], [ys[i] for i in idx], s=42, color=cat_color[c],
+                   alpha=0.8, edgecolors=style.SURFACE, linewidths=1.2, zorder=2, label=c)
     ax.set_xlim(lim); ax.set_ylim(lim)
     ax.set_xlabel("SAE feature — test AUC")
     ax.set_ylabel("GLP meta-neuron — test AUC")
     n_win = sum(1 for a, b in zip(xs, ys) if b > a)
     ax.set_title(f"Per-concept: GLP vs SAE ({n_win}/{len(shared)} above diagonal)")
+    ax.legend(loc="lower right", fontsize=8, markerscale=1.2)
     return str(style.save_fig(fig, run.figures_dir / "probing_per_concept.png"))
+
+
+@register("probing_by_category", needs=["metrics/probing.json"])
+def fig_probing_by_category(run: RunLogger) -> Optional[str]:
+    """Per-category grouped bars, one group per Swiss-Prot category, one bar per
+    representation (spec Part 7 fig 3) — the aggregate is dominated by domain/motif,
+    so this is the honest per-bucket read (PLAN §7 level (c))."""
+    import json
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from glp_plm.eval import stats as pstats
+
+    d = json.loads((run.metrics_dir / "probing.json").read_text())
+    rows = d.get("results", [])
+    if not rows:
+        return None
+    methods = [m for m in style.METHOD_ORDER if any(r["method"] == m for r in rows)]
+    table = pstats.category_table(rows, "test_auc", methods)
+    if not table:
+        return None
+
+    cats = list(table.keys())
+    x = np.arange(len(cats))
+    w = 0.8 / len(methods)
+    fig, ax = plt.subplots(figsize=(1.8 * len(cats) + 2, 4.5))
+    for i, m in enumerate(methods):
+        vals = [table[c].get(m, np.nan) for c in cats]
+        ax.bar(x + (i - (len(methods) - 1) / 2) * w, vals, w,
+              color=style.method_color(m), label=m)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"{c}\n(n={table[c]['n']})" for c in cats], fontsize=9)
+    ax.axhline(0.5, color=style.BASELINE, lw=1.2, ls="--")
+    ax.set_ylabel("mean test AUC")
+    ax.set_ylim(0.4, 1.0)
+    ax.set_title("1-D probing: mean test AUC by category")
+    ax.legend(fontsize=9)
+    return str(style.save_fig(fig, run.figures_dir / "probing_by_category.png"))
+
+
+@register("gravy_panel", needs=["metrics/gravy_panel.npz", "metrics/probing_continuous.json"])
+def fig_gravy_panel(run: RunLogger) -> Optional[str]:
+    """GRAVY-specific panel (spec Part 7 fig 4): the best-probing GLP meta-neuron's
+    TEST activation vs GRAVY — the bridge to the DiffMean hydrophobicity steering
+    experiment (build_gravy_contrast.py)."""
+    import json
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    d = np.load(run.metrics_dir / "gravy_panel.npz")
+    act, gravy, u = d["activation"], d["gravy"], float(d["u"])
+    cont = json.loads((run.metrics_dir / "probing_continuous.json").read_text())
+    rho = next((r["test_spearman"] for r in cont["results"]
+               if r["property"] == "gravy" and r["method"] == "glp"), None)
+
+    fig, ax = plt.subplots(figsize=(5.5, 5))
+    ax.scatter(gravy, act, s=30, color=style.ACCENT, alpha=0.75,
+              edgecolors=style.SURFACE, linewidths=1.0)
+    if len(gravy) > 1:
+        coef = np.polyfit(gravy, act, 1)
+        xs = np.linspace(gravy.min(), gravy.max(), 100)
+        ax.plot(xs, np.polyval(coef, xs), color=style.SECONDARY, lw=1.5, ls="--")
+    ax.set_xlabel("GRAVY (hydrophobicity)")
+    ax.set_ylabel(f"winning meta-neuron activation (u={u:g})")
+    title = "Best-probing GLP meta-neuron vs GRAVY"
+    if rho is not None:
+        title += f" (test ρ={rho:.3f})"
+    ax.set_title(title)
+    return str(style.save_fig(fig, run.figures_dir / "gravy_panel.png"))
 
 
 @register("probing_f1", needs=["metrics/probing_f1.json"])

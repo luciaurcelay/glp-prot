@@ -9,7 +9,11 @@ Per concept and per method:
   4. report that candidate's TEST auc                       (never select on test)
 
 Positions are per-amino-acid (PLAN §6.5 H4 — a deliberate divergence from GLP's
-last-token probing, because Swiss-Prot concepts are per-residue).
+last-token probing, because Swiss-Prot concepts are per-residue). Negatives are
+sampled from the SAME proteins as each concept's positives (`balanced_indices`'
+`protein_id` arg, fed by `swissprot_labels.residue_protein_ids`) — otherwise a unit
+can win by recognizing protein identity/family rather than localizing the motif
+within a protein that has it, the "proxy problem" for per-residue probing.
 
 `⚠ FAIRNESS`: identical k, identical subsampling, identical splits for all methods.
 """
@@ -57,14 +61,40 @@ def topk_filter(F: np.ndarray, y: np.ndarray, k: int) -> np.ndarray:
 #  balanced subsampling (keeps the CV affordable and classes non-degenerate)
 # --------------------------------------------------------------------------- #
 def balanced_indices(y: np.ndarray, max_pos: int, neg_per_pos: float,
-                     seed: int = 0) -> np.ndarray:
+                     seed: int = 0, protein_id: Optional[np.ndarray] = None) -> np.ndarray:
+    """Positive/negative residue subsample for one concept.
+
+    `protein_id` (per-residue protein index, `swissprot_labels.residue_protein_ids`)
+    restricts negatives to the SAME proteins that carry a positive instance of the
+    concept — without this, a unit can win by recognizing protein identity/family
+    ("is this protein type X at all?") instead of localizing the motif within a
+    protein that has it, which is the thing 1-D probing is actually meant to test.
+    Falls back to sampling negatives from anywhere in the split only if a concept's
+    own positive-carrying proteins don't have enough non-positive residues to fill
+    the requested ratio (rare — most annotations cover a handful of residues out of
+    a protein's hundreds), and only for the shortfall.
+    """
     rng = np.random.default_rng(seed)
     pos = np.flatnonzero(y == 1)
-    neg = np.flatnonzero(y == 0)
     if len(pos) > max_pos:
         pos = rng.choice(pos, max_pos, replace=False)
-    n_neg = min(len(neg), int(round(len(pos) * neg_per_pos)))
-    neg = rng.choice(neg, n_neg, replace=False)
+    n_neg = int(round(len(pos) * neg_per_pos))
+
+    if protein_id is None:
+        neg_pool = np.flatnonzero(y == 0)
+        neg = rng.choice(neg_pool, min(len(neg_pool), n_neg), replace=False)
+    else:
+        pos_proteins = np.unique(protein_id[pos])
+        in_pos_protein = np.isin(protein_id, pos_proteins)
+        same = np.flatnonzero((y == 0) & in_pos_protein)
+        take = min(len(same), n_neg)
+        neg = rng.choice(same, take, replace=False) if take else np.empty(0, dtype=np.int64)
+        if take < n_neg:                      # same-protein pool exhausted — top up globally
+            other = np.flatnonzero((y == 0) & ~in_pos_protein)
+            extra = min(len(other), n_neg - take)
+            if extra:
+                neg = np.concatenate([neg, rng.choice(other, extra, replace=False)])
+
     idx = np.concatenate([pos, neg])
     rng.shuffle(idx)
     return idx

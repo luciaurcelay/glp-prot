@@ -205,6 +205,30 @@ sbatch scripts/cluster/submit_make_report.sh               # re-render figures
 These still chain fine with `--dependency=afterok` one at a time if you're not on
 `acc_debug` (e.g. `acc_bsccs`, which does allow multiple queued jobs).
 
+**Probing extras** (GLProt probing spec: continuous-property probing, the
+nonlinearity falsification test, and Part 7 output assembly — `probe_continuous.py`,
+`test_nonlinearity.py`, `make_probing_outputs.py`, on top of `run_probing.py`) follow
+the same one-job pattern as the main pipeline, via `submit_probing_pipeline.sh`,
+rather than a separate per-stage launcher for each — `acc`/`acc_bsccs` congestion
+(2026-08-17) made a 3-job `--dependency=afterok` chain for these impractically slow
+to even start, and unlike the main pipeline's per-stage launchers (each independently
+useful — rerun training, rerun just the FD gate, etc.), these three have no track
+record of standalone use, so bundling them is not a loss of flexibility:
+```bash
+sbatch scripts/cluster/submit_probing_pipeline.sh [config] [eval_dir] [ckpt] [scaler] \
+    [n_shards_per_split] [max_proteins]
+```
+`eval_dir`/`ckpt`/`scaler` override the config's own defaults — needed when reusing a
+checkpoint whose output_dir was renamed after training, or a shared eval store built
+under a different run (see the script's header). `run_probing.py` itself keeps its
+own `submit_run_probing.sh` launcher above (proven standalone use: AUC vs F1 reruns).
+
+Leakage verification (`verify_no_leakage.py` — exact-sequence check between a
+training manifest and every eval protein, PLAN §7 `⚠ FAIRNESS`) is its own launcher,
+`submit_verify_no_leakage.sh`, since its natural point in the workflow is right after
+`extract_activations.py`, independent of any particular probing run; `run_probing.py`
+and `probe_continuous.py` also run this gate automatically by default.
+
 ### Config unification (2026-07-29)
 
 There used to be three near-identical configs (`mid_mn5.yaml`, `uniref50_100m.yaml`,

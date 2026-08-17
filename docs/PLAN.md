@@ -460,7 +460,10 @@ which now holds only reference docs, not run outputs).
 - [x] **1-D AUC probing, all four methods, 104 concepts:** GLP **0.945** > raw-MLP 0.916 > SAE 0.900 > raw-layer 0.861; all paired-bootstrap significant (GLP−SAE +0.045, GLP−rawMLP +0.029). Three-level reporting (§7 a/b/c) produced.
 - [x] **InterPLM F1 (secondary), 14 frozen concepts:** SAE 0.286 > GLP **0.264** > raw-MLP 0.186 > raw-layer 0.134. Recall is rate-matched, so gaps are **precision** (SAE 0.347 vs GLP 0.241). ⚠ SAE−GLP is **NOT significant** at n=14 (CI [−0.008, +0.060]); GLP−rawMLP **is** (+0.078, 12/14).
 - [ ] Extend F1 to all 104 concepts (~3.5 h locally) — no new code, `run_probing.py --metric f1` already implements this; just point it at the full qualifying set instead of the 14-concept frozen headline subset.
-- [ ] Nonlinearity falsification test (§6.5.1) — cheap (3–5 concepts), promoted to MVP (see priority order above); needs a new `scripts/test_nonlinearity.py` (not started — listed as "planned" in §11, doesn't exist yet).
+- [~] Nonlinearity falsification test (§6.5.1) — `scripts/test_nonlinearity.py` + `glp_plm/eval/falsification.py` implemented (RidgeCV of every GLP-beats-SAE meta-neuron's activation on the full 10,240-dim SAE dictionary, R² held out on a fresh random residue sample). Smoke-tested on cluster (12-block checkpoint, 5 concepts, all GLP wins, R² 0.46–0.96) 2026-08-17; full 24-block/500M run in progress.
+- [~] Continuous-property probing (GLProt probing spec Part 1/4, new axis beyond §6.5 — GRAVY/MW/pI/aromaticity/instability/charge/aliphatic index/helix-turn-sheet fraction via BioPython + modlAMP, `scripts/probe_continuous.py` + `glp_plm/eval/{continuous_properties,probing_continuous}.py`) — protein-level pooled features (mean-pool over residues; a deliberate divergence from §6.5's residue-level discrete probing, forced by continuous labels having no per-residue value), 1-D linear regression + Spearman ρ, same select-on-valid/report-on-test discipline. Smoke-tested on cluster 2026-08-17 (including the same-protein negative-sampling fix to `probing_1d.balanced_indices` — negatives for a concept are now restricted to proteins carrying at least one positive instance of it, closing a protein-identity shortcut); full run in progress.
+- [~] Train/eval leakage now asserted in code (not just prevented by `--exclude-from`) — `swissprot_labels.assert_no_leakage` (exact-sequence-hash check against every eval protein), wired into `extract_activations.py` (writes `train_manifest.json`), `run_probing.py`/`probe_continuous.py` (gate by default), and a standalone `scripts/verify_no_leakage.py`. Verified 2026-08-17 against the real `uniref50_100m` eval store (positive + negative controls both correct); no existing training store has a manifest yet (predates the feature), so the gate currently warns-and-skips on all of them until re-extracted.
+- [~] Part 7 output assembly — `scripts/make_probing_outputs.py` writes `probing_discrete.csv`/`concepts_frozen.json`/`probing_summary.json` (per-representation mean+CI, paired bootstrap with win counts, per-category table, via new shared `glp_plm/eval/stats.py`); `probing_continuous.csv`/`probing_falsification.csv` are written directly by their producing scripts. Figures added: category-colored per-concept scatter, per-category grouped bars, GRAVY activation-vs-property panel. Smoke-tested on cluster 2026-08-17 (schema verified against spec); full run in progress. Cluster launcher: `scripts/cluster/submit_probing_pipeline.sh` (bundles all four stages into one `acc_debug` job — `acc`/`acc_bsccs` was congested enough on 2026-08-17 that a `--dependency=afterok` chain wasn't practical).
 - [ ] *(stretch, not MVP)* Auto-interp; assemble novel-candidate subsection with structure-free held-out signal. `scripts/auto_interp_metaneurons.py` exists but is a `NotImplementedError` stub.
 - [~] **Deliverable D2 has a defensible local result**; cluster-scale numbers still pending.
 
@@ -532,18 +535,27 @@ python scripts/make_report.py            --config configs/local_clean.yaml      
 pytest tests/ -q                                                              # 6 pass
 
 # --- W3 probing (§7: freeze BEFORE probing) ---
+python scripts/verify_no_leakage.py --config configs/local_clean.yaml      # PLAN §7 ⚠ FAIRNESS; run_probing.py/probe_continuous.py also gate on this automatically
 python scripts/freeze_concepts.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed
 python scripts/run_probing.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed --concepts runs/local_clean/swissprot/processed/frozen_concepts.json --n-shards-per-split 1 [--metric auc|f1] [--max-concepts N] [--restart]
 # resumable: every (concept, method) checkpoints to metrics/probing_partial[_f1].jsonl
+
+# --- continuous-property probing + falsification (GLProt probing spec Parts 1/4/6) ---
+python scripts/probe_continuous.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed [--max-proteins N] [--pool mean|max] [--restart]
+python scripts/test_nonlinearity.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed   # needs run_probing.py --metric auc first
+python scripts/make_probing_outputs.py --config configs/local_clean.yaml --eval-dir runs/local_clean/swissprot/processed  # assembles spec Part 7: probing_discrete.csv, concepts_frozen.json, probing_summary.json
 
 # --- W2 cluster (config swap only, no code changes — D8) ---
 python scripts/train_glp.py       --config configs/esm8m_h100.yaml
 python scripts/eval_generation.py --config configs/esm8m_h100.yaml   # + SAE-recon FD + %LR (G2)
 
+# --- cluster: probing extras bundled into one job (scripts/cluster/README.md "Probing extras") ---
+sbatch scripts/cluster/submit_probing_pipeline.sh [config] [eval_dir] [ckpt] [scaler] [n_shards_per_split] [max_proteins]
+
 # --- stubs, not yet implemented ---
 python scripts/run_steering.py            --config ... --testbed glycine|broad   # W4
 python scripts/auto_interp_metaneurons.py --config ...                           # W3 candidates
-# planned: scripts/test_nonlinearity.py (§6.5.1), scripts/scaling_sweep.py (stretch)
+# planned: scripts/scaling_sweep.py (stretch)
 ```
 
 ---

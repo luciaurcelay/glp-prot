@@ -10,6 +10,7 @@ train/val/test discipline downstream — these functions only produce the banks.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List
 
 import numpy as np
@@ -118,6 +119,27 @@ def raw_mlp_to_memmap(sequences: List[str], out_path, layer: int = 4,
         with open(out_path, "r+b") as f:
             f.truncate(pos * d_ff * np.dtype(dtype).itemsize)
     return np.memmap(out_path, dtype=dtype, mode="r", shape=(pos, d_ff))
+
+
+def raw_mlp_cached_bank(processed: Path, split_shards: List[int], layer: int, model_name: str,
+                        device: str, cache: Path, d_ff: int = 1280):
+    """Compute (once) and cache the ESM FFN-intermediate bank for a split, on disk.
+
+    Shared by run_probing.py (residue-level candidates) and probe_continuous.py
+    (protein-pooled candidates) — both read the same per-residue cache.
+    """
+    cache = Path(cache)
+    if cache.exists():
+        n = cache.stat().st_size // (d_ff * np.dtype("float16").itemsize)
+        return np.memmap(cache, dtype="float16", mode="r", shape=(n, d_ff))
+    import pandas as pd
+    rows = []
+    for i in split_shards:
+        df = pd.read_csv(processed / f"shard_{i}" / "protein_data.tsv", sep="\t")
+        seq_col = next(c for c in df.columns if c.lower() == "sequence")
+        rows.extend(str(s) for s in df[seq_col].tolist())
+    print(f"[baselines] building raw_mlp cache for {len(rows):,} proteins -> {cache.name}", flush=True)
+    return raw_mlp_to_memmap(rows, cache, layer=layer, model_name=model_name, device=device)
 
 
 # --------------------------------------------------------------------------- #

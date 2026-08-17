@@ -14,6 +14,7 @@ are UniProt display-name columns (see docs/INTERPLM_MAP.md).
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import random
 import re
@@ -40,6 +41,150 @@ def read_accessions(tsv: Path) -> set:
         r = csv.DictReader(f, delimiter="\t")
         key = next(c for c in r.fieldnames if c.lower() in ("entry", "accession"))
         return {row[key] for row in r if row.get(key)}
+
+
+# --------------------------------------------------------------------------- #
+#  Train/eval leakage verification (GLProt probing spec Part 2.2)
+#
+# `--exclude-from` (extract_activations.py) prevents leakage by construction at
+# fetch time, but that's exactly the mechanism that silently failed once already
+# (98.4% overlap, W1.5 — see CLAUDE.md "Never train on eval proteins"): the
+# *prevention* was in place, the flag just wasn't passed. These functions verify
+# the OUTCOME independently, by exact sequence content, so a forgotten flag or a
+# header-matching bug (UniRef ID vs UniProt accession — different ID spaces) can't
+# silently pass. Sequence identity (not accession) is the check: it's the one
+# protein-level key that means the same thing across a Swiss-Prot REST slice and a
+# UniRef50 pull, and it also catches same-sequence/different-accession duplicates
+# that an accession-only check would miss.
+# --------------------------------------------------------------------------- #
+def sequence_hash(seq: str) -> str:
+    """Content key for a protein sequence — case/whitespace-normalized SHA1."""
+    return hashlib.sha1(seq.strip().upper().encode()).hexdigest()
+
+
+def write_train_manifest(seqs: List[str], path: Path) -> Path:
+    """Record the exact sequence set a training store was built from, as content
+    hashes (not raw sequences — a 500k-sequence manifest would otherwise be huge).
+    Called once by extract_activations.py right after the candidate sequence list
+    is assembled (before any `max_rows` truncation), so the manifest reflects every
+    sequence that COULD have been embedded, not just the ones that were — a
+    superset is fine for a leakage check, it only ever makes the check stricter.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    hashes = sorted({sequence_hash(s) for s in seqs})
+    path.write_text(json.dumps({"n_sequences": len(seqs), "n_unique": len(hashes),
+                                "hashes": hashes}))
+    return path
+
+
+def _eval_sequence_hashes(processed_dir: Path) -> dict:
+    """{accession: hash} over EVERY shard under `processed_dir` (valid + test both —
+    leakage must be checked against every evaluation protein, not just one split)."""
+    processed_dir = Path(processed_dir)
+    out = {}
+    for shard_dir in sorted(processed_dir.glob("shard_*")):
+        tsv = shard_dir / "protein_data.tsv"
+        if not tsv.exists():
+            continue
+        df = pd.read_csv(tsv, sep="\t")
+        seq_col = next(c for c in df.columns if c.lower() == "sequence")
+        acc_col = next((c for c in df.columns if c.lower() in ("accession", "entry")), None)
+        for j, seq in enumerate(df[seq_col].astype(str)):
+            acc = df[acc_col].iloc[j] if acc_col is not None else f"{shard_dir.name}_row{j}"
+            out[acc] = sequence_hash(seq)
+    return out
+
+
+def verify_no_leakage(train_manifest_path: Path, processed_dir: Path) -> dict:
+    """Exact-sequence overlap between a training manifest and every eval protein.
+
+    Returns a report dict (always) rather than raising, so callers can log it and
+    decide; `assert_no_leakage` below is the enforcing wrapper.
+    """
+    manifest = json.loads(Path(train_manifest_path).read_text())
+    train_hashes = set(manifest["hashes"])
+    eval_hashes = _eval_sequence_hashes(processed_dir)
+    overlap = {acc: h for acc, h in eval_hashes.items() if h in train_hashes}
+    return {
+        "n_train_unique": len(train_hashes),
+        "n_eval_proteins": len(eval_hashes),
+        "n_overlap": len(overlap),
+        "overlap_accessions": sorted(overlap)[:50],   # capped — this should be empty
+        "train_manifest": str(train_manifest_path),
+        "eval_dir": str(processed_dir),
+    }
+
+
+def assert_no_leakage(train_manifest_path: Path, processed_dir: Path) -> dict:
+    """Raise if any eval protein's sequence appears in the GLP training manifest.
+
+    Mandatory before probing (PLAN §7 `⚠ FAIRNESS`): a leaked eval protein hands
+    GLP activations it has already fit, an advantage the SAE (trained on a disjoint
+    UniRef50 sample) does not get.
+    """
+    report = verify_no_leakage(train_manifest_path, processed_dir)
+    assert report["n_overlap"] == 0, (
+        f"train/eval leakage: {report['n_overlap']} eval protein(s) also appear in the "
+        f"GLP training manifest {train_manifest_path} (e.g. {report['overlap_accessions'][:5]}) "
+        f"— rebuild the training store with --exclude-from pointed at every shard in "
+        f"{processed_dir}, or pass --skip-leakage-check if this is deliberate."
+    )
+    print(f"[leakage] verified 0 overlap: {report['n_train_unique']:,} unique train "
+          f"sequences vs {report['n_eval_proteins']:,} eval proteins")
+    return report
+
+
+def leakage_gate(cfg, out: Path, processed: Path, train_manifest: Optional[str],
+                 skip: bool = False) -> None:
+    """Shared CLI leakage gate (run_probing.py / probe_continuous.py): resolve the
+    training manifest the same way extract_activations.py resolves its store, then
+    `assert_no_leakage` before any expensive probing work starts. `skip=True` is an
+    explicit opt-out for legacy runs that predate `train_manifest.json`."""
+    if skip:
+        return
+    from glp_plm.utils import resolve_config_data_dir, resolve_storage_dir
+
+    if train_manifest:
+        manifest = Path(train_manifest)
+    elif cfg.data.store_dir:
+        manifest = resolve_config_data_dir(cfg.data.store_dir) / "train_manifest.json"
+    else:
+        manifest = resolve_storage_dir(out, "train_store", "GLP_DATA_ROOT", symlink=False) \
+            / "train_manifest.json"
+    if manifest.exists():
+        assert_no_leakage(manifest, processed)
+    else:
+        print(f"[leakage] WARNING: no train_manifest.json at {manifest} — skipping the "
+             f"leakage assertion (re-run extract_activations.py to get one, or pass "
+             f"--train-manifest / --skip-leakage-check explicitly).")
+
+
+def protein_spans(processed_dir: Path, split: str, n_shards: Optional[int] = None) -> pd.DataFrame:
+    """Per-protein row spans into the concatenated per-AA arrays `load_split` returns.
+
+    `load_split` concatenates shards in `metadata.json`'s `shard_source` order, and
+    `embed_shards` fills each shard's activation rows in `protein_data.tsv` row order
+    (CLS/EOS dropped) — the same alignment contract `load_split` already asserts
+    (`a.shape[0] == y.shape[0]`). Reading `protein_data.tsv` in that same order and
+    accumulating sequence lengths therefore gives `(start, end)` row ranges that index
+    directly into `load_split(...)`'s `acts`/`labels_df` for this split — used to pool
+    per-residue activations to per-protein features for continuous-property probing
+    (properties have no per-residue value, unlike the discrete Swiss-Prot concepts).
+    """
+    shard_ids = split_shards(processed_dir, split, n_shards)
+    rows, offset = [], 0
+    for i in shard_ids:
+        df = pd.read_csv(Path(processed_dir) / f"shard_{i}" / "protein_data.tsv", sep="\t")
+        seq_col = next(c for c in df.columns if c.lower() == "sequence")
+        acc_col = next((c for c in df.columns if c.lower() in ("accession", "entry")), None)
+        for j, seq in enumerate(df[seq_col].astype(str)):
+            n = len(seq)
+            acc = df[acc_col].iloc[j] if acc_col is not None else f"shard{i}_row{j}"
+            rows.append({"accession": acc, "shard": i, "start": offset, "end": offset + n,
+                        "sequence": seq})
+            offset += n
+    return pd.DataFrame(rows)
 
 
 def fetch_uniprot_fasta_slice(dest: Path, n_seqs: int,
@@ -314,6 +459,23 @@ def embed_shards(processed_dir: Path, shard_ids: List[int], model_name: str,
         acts = acts.detach().cpu().numpy().astype("float16")
         np.save(shard / f"activations_layer{layer}.npy", acts)
         print(f"[swissprot] shard {i}: {acts.shape[0]} aa activations at layer {layer}")
+
+
+def residue_protein_ids(processed_dir: Path, split: str, n_shards: Optional[int] = None) -> np.ndarray:
+    """Per-residue protein index (0..n_protein-1), aligned to `load_split`'s row order.
+
+    Feeds `probing_1d.balanced_indices`' same-protein negative-sampling control: a
+    1-D probe's negatives should come from the SAME proteins that carry a positive
+    instance of the concept, not from anywhere in the split — otherwise a unit can
+    win by recognizing protein identity/family rather than localizing the motif
+    within a protein (GLProt probing spec discussion, "the proxy problem").
+    """
+    spans = protein_spans(processed_dir, split, n_shards)
+    n = int(spans["end"].iloc[-1]) if len(spans) else 0
+    ids = np.empty(n, dtype=np.int64)
+    for i, r in enumerate(spans.itertuples()):
+        ids[int(r.start):int(r.end)] = i
+    return ids
 
 
 def split_shards(processed_dir: Path, split: str, n_shards: Optional[int] = None) -> List[int]:

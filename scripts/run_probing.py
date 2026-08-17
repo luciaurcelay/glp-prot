@@ -28,22 +28,6 @@ from glp_plm.model import GLPDenoiser
 from glp_plm.utils import get_device, resolve_config_data_dir, resolve_storage_dir, set_seed
 
 
-def _raw_mlp_cached(processed: Path, split_shards, layer, model_name, device, cache: Path,
-                    d_ff: int = 1280):
-    """Compute (once) and cache the ESM FFN-intermediate bank for a split, on disk."""
-    if cache.exists():
-        n = cache.stat().st_size // (d_ff * np.dtype("float16").itemsize)
-        return np.memmap(cache, dtype="float16", mode="r", shape=(n, d_ff))
-    import pandas as pd
-    rows = []
-    for i in split_shards:
-        df = pd.read_csv(processed / f"shard_{i}" / "protein_data.tsv", sep="\t")
-        seq_col = next(c for c in df.columns if c.lower() == "sequence")
-        rows.extend(str(s) for s in df[seq_col].tolist())
-    print(f"[probing] building raw_mlp cache for {len(rows):,} proteins -> {cache.name}", flush=True)
-    return bl.raw_mlp_to_memmap(rows, cache, layer=layer, model_name=model_name, device=device)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -63,6 +47,12 @@ def main():
                     help="use only the first N shards of each split (bounds the raw_mlp cache)")
     ap.add_argument("--restart", action="store_true", help="ignore any saved partial results")
     ap.add_argument("--n-jobs", type=int, default=-1)
+    ap.add_argument("--train-manifest", help="train_manifest.json for the leakage check "
+                                             "(default: config data.store_dir, else "
+                                             "<output_dir>/train_store)/train_manifest.json")
+    ap.add_argument("--skip-leakage-check", action="store_true",
+                    help="skip the train/eval leakage assertion (PLAN §7 ⚠ FAIRNESS) — "
+                         "only for legacy runs predating train_manifest.json")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -80,6 +70,9 @@ def main():
         processed = resolve_storage_dir(out, "swissprot", "GLP_DATA_ROOT", symlink=False) / "processed"
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
 
+    # ---- leakage gate (PLAN §7 ⚠ FAIRNESS) — fail fast, before any expensive work ----
+    sl.leakage_gate(cfg, out, processed, args.train_manifest, args.skip_leakage_check)
+
     # ---- data ----
     ns = args.n_shards_per_split
     binz = args.metric == "auc"          # F1 needs domain-instance indices
@@ -92,6 +85,14 @@ def main():
     gc.collect()
     print(f"[probing] valid {tuple(A_tr.shape)}  test {tuple(A_te.shape)}  concepts {len(names)}",
           flush=True)
+
+    # Same-protein negative-sampling control (probing_1d.balanced_indices) — a unit
+    # shouldn't be able to win a concept by recognizing protein identity/family
+    # instead of localizing the motif within a protein that has it.
+    protein_id_tr = sl.residue_protein_ids(processed, "valid", ns)
+    protein_id_te = sl.residue_protein_ids(processed, "test", ns)
+    assert len(protein_id_tr) == A_tr.shape[0] and len(protein_id_te) == A_te.shape[0], \
+        "protein_id/activation row mismatch (docs/INTERPLM_MAP.md alignment contract)"
 
     from glp_plm.diffusion.scaler import Scaler
     scaler = Scaler.load(args.scaler or ckpt_dir / "rep_statistics.pt")
@@ -110,8 +111,8 @@ def main():
         tag = f"s{ns}" if ns else "all"
         for split, holder in (("valid", "tr"), ("test", "te")):
             shards = sl.split_shards(processed, split, ns)
-            bank = _raw_mlp_cached(processed, shards, cfg.data.layer, cfg.data.model_name,
-                                   device, processed / "cache" / f"raw_mlp_{split}_{tag}.npy")
+            bank = bl.raw_mlp_cached_bank(processed, shards, cfg.data.layer, cfg.data.model_name,
+                                          device, processed / "cache" / f"raw_mlp_{split}_{tag}.npy")
             if holder == "tr":
                 mlp_tr = bank
             else:
@@ -177,8 +178,10 @@ def main():
             continue
         y_tr_full = Y_tr[concept].to_numpy().astype(int)
         y_te_full = Y_te[concept].to_numpy().astype(int)
-        i_tr = pr.balanced_indices(y_tr_full, args.max_pos, args.neg_per_pos, seed=cfg.seed)
-        i_te = pr.balanced_indices(y_te_full, args.max_pos, args.neg_per_pos, seed=cfg.seed + 1)
+        i_tr = pr.balanced_indices(y_tr_full, args.max_pos, args.neg_per_pos, seed=cfg.seed,
+                                   protein_id=protein_id_tr)
+        i_te = pr.balanced_indices(y_te_full, args.max_pos, args.neg_per_pos, seed=cfg.seed + 1,
+                                   protein_id=protein_id_te)
         y_tr, y_te = y_tr_full[i_tr], y_te_full[i_te]
 
         if args.metric == "f1":

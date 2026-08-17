@@ -15,6 +15,9 @@
 # Submit from the repo root:
 #   sbatch scripts/cluster/submit_run_probing.sh                                # metric=auc
 #   sbatch scripts/cluster/submit_run_probing.sh configs/esm8m_h100.yaml f1     # metric=f1
+#   sbatch scripts/cluster/submit_run_probing.sh <config> <metric> <n_shards> <eval_dir> <ckpt> <scaler>
+#     — eval_dir/ckpt/scaler overrides let you probe a checkpoint whose config's own
+#       output_dir doesn't hold it (e.g. an output_dir renamed after training).
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-.}"
@@ -26,6 +29,9 @@ METRIC="${2:-auc}"
 # with the pipeline's default N_SHARDS_PER_SPLIT=1, so a post-hoc F1 pass scores the
 # same data as that run's published AUC (e.g. re-probing the completed uniref50_100m).
 N_SHARDS_PER_SPLIT="${3:-}"
+EVAL_DIR="${4:-}"
+CKPT="${5:-}"
+SCALER="${6:-}"
 OUT_DIR="$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG'))['output_dir'])")"
 RUN_NAME="$(basename "$OUT_DIR")"
 
@@ -37,4 +43,10 @@ record_launch "$RUN_NAME" "$@"
 # shared store), else the per-run <output_dir>/swissprot/processed default.
 SHARD_ARGS=()
 [ -n "$N_SHARDS_PER_SPLIT" ] && SHARD_ARGS=(--n-shards-per-split "$N_SHARDS_PER_SPLIT")
-python scripts/run_probing.py --config "$CONFIG" --metric "$METRIC" "${SHARD_ARGS[@]}"
+EVAL_ARGS=()
+[ -n "$EVAL_DIR" ] && EVAL_ARGS=(--eval-dir "$EVAL_DIR")
+CKPT_ARGS=()
+[ -n "$CKPT" ] && CKPT_ARGS=(--ckpt "$CKPT")
+[ -n "$SCALER" ] && CKPT_ARGS+=(--scaler "$SCALER")
+python scripts/run_probing.py --config "$CONFIG" --metric "$METRIC" "${SHARD_ARGS[@]}" \
+  "${EVAL_ARGS[@]}" "${CKPT_ARGS[@]}"

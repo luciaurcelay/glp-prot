@@ -56,6 +56,12 @@ def main():
         seqs = sl.read_fasta(fasta)
     print(f"[extract_activations] {len(seqs)} sequences; target ~{cfg.data.n_train_activations:,} activations")
 
+    # Content-hash manifest of the candidate sequence pool (superset of what gets
+    # embedded if n_train_activations truncates first) — lets downstream probing
+    # runs verify zero train/eval leakage by exact sequence, not just trust
+    # --exclude-from (see swissprot_labels.assert_no_leakage / scripts/verify_no_leakage.py).
+    sl.write_train_manifest(seqs, store_dir / "train_manifest.json")
+
     extractor = ActivationExtractor(cfg.data.model_name, layer=cfg.data.layer, device=cfg.device)
     store = ActivationStore(store_dir, d=cfg.model.activation_dim, dtype=cfg.data.activation_dtype)
 
