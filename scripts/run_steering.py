@@ -908,8 +908,15 @@ def main():
     ap.add_argument("--skip-diagnostic", action="store_true")
     ap.add_argument("--skip-generate", action="store_true")
     ap.add_argument("--restart", action="store_true", help="ignore any existing partial CSVs")
-    ap.add_argument("--out-dir", help="default <output_dir>/steering_sae_zinc (A) or "
-                                      "<output_dir>/steering_diffmean_hydro (B)")
+    ap.add_argument("--exp-name", help="REQUIRED (unless --out-dir is given): a unique tag "
+                                       "for this steering run. The out-dir leaf becomes "
+                                       "steering_sae_zinc_<exp-name> (A) / steering_diffmean_hydro_"
+                                       "<exp-name> (B). RunLogger redirects metrics/figures to "
+                                       "$GLP_RUNS_ROOT/<leaf>/ keyed ONLY on that leaf name, so a "
+                                       "non-unique tag silently clobbers another run's "
+                                       "metrics/figures — pick a fresh one per run.")
+    ap.add_argument("--out-dir", help="explicit out-dir path, overrides --exp-name. Its basename "
+                                      "is still the RunLogger redirect key, so keep it unique too.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -928,10 +935,19 @@ def main():
     else:
         processed = resolve_storage_dir(out, "swissprot", "GLP_DATA_ROOT", symlink=False) / "processed"
 
+    leaf = "steering_sae_zinc" if is_a else "steering_diffmean_hydro"
     if args.out_dir:
         out_dir = Path(args.out_dir)
+    elif args.exp_name:
+        out_dir = out / f"{leaf}_{args.exp_name}"
     else:
-        out_dir = out / ("steering_sae_zinc" if is_a else "steering_diffmean_hydro")
+        # No default: RunLogger redirects metrics/figures to $GLP_RUNS_ROOT/<leaf>/ keyed
+        # only on the out-dir basename, so a fixed default leaf (steering_diffmean_hydro)
+        # made every Exp B run collide on one shared metrics/figures dir. Force a unique
+        # name instead of silently clobbering.
+        ap.error(f"steering runs must be uniquely named: pass --exp-name <tag> (leaf becomes "
+                 f"{leaf}_<tag>) or --out-dir <path>. Without it, metrics/figures would redirect "
+                 f"to a shared $GLP_RUNS_ROOT/{leaf}/ dir and clobber other runs.")
     out_dir.mkdir(parents=True, exist_ok=True)
     run = RunLogger(out_dir)
     run.log_config(cfg)
