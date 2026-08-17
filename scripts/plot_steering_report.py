@@ -80,6 +80,9 @@ def main():
     ap.add_argument("--neutral-alpha", type=float, default=0.0)
     ap.add_argument("--property", default="hydrophobicity (GRAVY)",
                     help="human-readable property name for axis labels")
+    ap.add_argument("--no-titles", action="store_true",
+                    help="omit in-figure titles entirely, for journals that want the figure "
+                         "bare and all description in the caption")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -91,6 +94,16 @@ def main():
     style.apply_style()
     import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
+
+    def title(ax, text, **kw):
+        """Titles state WHAT IS PLOTTED, never what it means.
+
+        Interpretation belongs in the paper's caption, which can be edited without
+        re-rendering, and a claim baked into a PNG can end up contradicting its own panels
+        when the data changes — which happened here once already. Axis labels, reference
+        markers and unit notes stay, since those are needed to read the figure at all."""
+        if not args.no_titles:
+            ax.set_title(text, loc="left", **kw)
 
     # alpha is plotted on evenly-spaced categorical ticks. The grid (0, 0.25, .., 5) is
     # geometric-ish with a zero in it, so a linear axis crushes the low end and a log axis
@@ -118,8 +131,7 @@ def main():
         ax.set_xticklabels(xlabels)
         ax.set_xlabel("steering strength α")
         ax.set_ylabel(f"change in {args.property}\n(steering-attributable, mean ± SEM)")
-        ax.set_title("Steering the same direction both ways separates the trajectories\n"
-                     "only when the generative prior corrects the activations", loc="left")
+        title(ax, f"Change in {args.property} vs. steering strength, both directions")
         ax.legend(fontsize=9, loc="upper left")
         ax.annotate("solid = steered toward hydrophobic\ndashed = steered away",
                     xy=(0.015, 0.03), xycoords="axes fraction", ha="left", fontsize=8.5,
@@ -146,9 +158,7 @@ def main():
     ax2.set_ylabel(f"change in {args.property}\nwith NO steering applied (mean ± SEM)")
     # keep each title line short enough to sit inside the axes at this width — a long second
     # line runs past the panel and reads as a stray break
-    ax2.set_title("What the correction does with no steering applied\n"
-                  "resampling reverts toward typical; the correction does not",
-                  loc="left")
+    title(ax2, f"Change in {args.property} with no steering applied")
     ax2.legend(fontsize=9)
     p2 = style.save_fig(fig2, run.figures_dir / "fig_baseline_drift.png")
     print(f"[report] wrote {p2}")
@@ -195,9 +205,10 @@ def main():
         axA.errorbar(xs2, ys2, yerr=es2, color=colour[corrected], marker="o", ms=5.5,
                      linewidth=2, capsize=2.5, elinewidth=1, label=lab)
     axA.set_ylabel(f"change in\n{args.property}")
-    axA.set_title("The effect grows with steering strength; structural confidence does not\n"
-                  "(sequences started hydrophilic and were steered toward hydrophobic)",
-                  loc="left")
+    # the second line identifies WHICH subset is plotted, which is needed to read the panel;
+    # it is description, not interpretation
+    title(axA, f"Change in {args.property} and structural confidence vs. steering strength\n"
+               "sequences started hydrophilic, steered toward hydrophobic")
     axA.legend(fontsize=9, loc="upper left")
 
     if have_fold:

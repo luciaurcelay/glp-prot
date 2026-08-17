@@ -321,7 +321,7 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
     ax.axhline(means["baseline"], color=style.BASELINE, linestyle="--", label="baseline (unsteered)")
     ax.set_xlabel("steering strength alpha")
     ax.set_ylabel("GLP diffusion loss (mean ± 95% CI)")
-    ax.set_title(f"Off-manifold diagnostic ({experiment}): steering vs. GLP diffusion loss")
+    ax.set_title("GLP diffusion loss vs. steering strength")
     ax.legend()
     fig_path = style.save_fig(fig, run.figures_dir / "off_manifold_diagnostic.png")
     print(f"[diagnostic-{experiment}] wrote {csv_path} + {fig_path} (monotonic={monotonic})")

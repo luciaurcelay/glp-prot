@@ -382,8 +382,11 @@ def main():
     ax3.set_ylabel(f"% of generated sequences that pass\n(not degenerate, and "
                    f"{'pTM' if key == 'ptm' else key} "
                    f"{'≥' if higher_is_better else '≤'} {mid:g})")
-    ax3.set_title("How often steering yields a confidently-folded sequence\n"
-                  "every generation counted, so degenerate output counts as a failure",
+    # Descriptive only: what is plotted, not what it means. Interpretation goes in the paper
+    # caption, which can be edited without re-rendering.
+    ax3.set_title(f"Generations passing the composition filter and "
+                  f"{'pTM' if key == 'ptm' else key} "
+                  f"{'≥' if higher_is_better else '≤'} {mid:g}, vs. steering strength",
                   loc="left")
     ax3.legend(fontsize=9, loc="upper right")
     ax3.annotate("bars are binomial SE; both directions pooled",
@@ -408,21 +411,11 @@ def main():
             ax.legend(fontsize=8, loc="lower right")
         ax.set_title({"pppl": "pseudo-perplexity\n(lower = 'more natural')",
                       "plddt": "ESMFold2 pLDDT", "ptm": "ESMFold2 pTM"}[k], loc="left")
-    # Built from the tested verdicts, never hardcoded: the same figure is produced for runs
-    # where an axis behaves differently, and a fixed headline would then contradict its own
-    # panels (it did — pTM separated junk from clean output on one run and not on another).
-    pretty = {"pppl": "pseudo-perplexity", "plddt": "pLDDT", "ptm": "pTM"}
-    bad = [pretty[k] for k, v in gate.items() if v["verdict"] == "gamed"]
-    meh = [pretty[k] for k, v in gate.items() if v["verdict"] == "indistinguishable"]
-    ok = [pretty[k] for k, v in gate.items() if v["verdict"] == "discriminates"]
-    bits = []
-    if bad:
-        bits.append(f"scored BETTER than our own output by: {', '.join(bad)}")
-    if meh:
-        bits.append(f"indistinguishable from it by: {', '.join(meh)}")
-    if ok:
-        bits.append(f"correctly rejected by: {', '.join(ok)}")
-    fig2.suptitle("Sequences that are not proteins, " + "; ".join(bits),
+    # Descriptive, not a verdict. The tested verdicts are printed above and stored in
+    # summary.json under naturalness_axis_gate_check; asserting a conclusion inside the image
+    # risks it contradicting the panels when the data changes (it did once), and the
+    # interpretation belongs in the paper caption.
+    fig2.suptitle("Naturalness scores for sequences the composition filter kept vs. rejected",
                   x=0.01, ha="left", fontsize=11.5, fontweight="bold")
     path2 = style.save_fig(fig2, run.figures_dir / "naturalness_axis_gate_check.png")
     print(f"[naturalness] wrote {path2}")
