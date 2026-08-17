@@ -385,7 +385,7 @@ the raw per-alpha numbers above.
   `pareto_exp_b`/`pareto_exp_a` itself still draws the old dense-scatter style
   — worth porting the arrow/SEM version back into the script if it's kept.
 
-## 12. Suggested next steps
+## 12. Suggested next steps (superseded by §13)
 
 **Exp B (diff-of-means/GRAVY) — where the signal is:**
 - **Isolate whether alpha=5's collapse is `glp_correct` itself or the 30-round
@@ -415,3 +415,218 @@ signal even before this run:**
 - §7's still-open items (raise `n_sequences` at the alphas that showed hits
   under plain `clamp`, drop alpha=6, check C2H2 spacing not just residue
   identity) remain open and untouched by this run.
+
+---
+
+## 13. Exp B rebuilt: bidirectional, folded, and re-measured (2026-08-17/18)
+
+The single largest revision of Exp B so far. §10's headline — "GLP-correction
+improves naturalness *and* concept strength together" — **does not survive**.
+The concept-strength half survives and is now much better evidenced; the
+naturalness half was an artifact of the metric. Details below, with the
+numbers each claim rests on.
+
+### 13.1 Infrastructure that was broken
+
+Seven bugs, all fixed and committed:
+
+1. **Steering could not run at all** from the `crg562661` checkout — InterPLM's
+   `sae/intervention.py` targets an older `nnsight` API (`.input[0][0]`,
+   `.save().value`). Fixed as a vendored patch (`patches/`, applied by
+   `scripts/apply_interplm_patches.sh`); **re-run it after any
+   `git submodule update`** or generation dies with an `expand()` shape error.
+2. **Figures never reached `figures/`** — `save_fig` wrote to the run-dir root.
+3. **Every Exp B run shared one metrics/figures directory.** `RunLogger`
+   redirects on `basename(out_dir)`, which was a fixed leaf, so each run
+   silently clobbered the previous one's `summary.json` and plots. Fixed by
+   requiring a unique `--exp-name`.
+4. `--t-start-pilot` only ran at the mid alpha, so it could not separate the
+   correction's own drift from the steering gain — it would have selected the
+   *worst* available `t_start`.
+5. Part 0 never tested the correction operator on its own.
+6. `%`-of-excess-recovered divided by ~zero at small alpha (printed −1294%).
+7. The fold stage's rate timer included the model load (mis-sized runs 2×).
+
+### 13.2 The correction has its own concept drift — subtract it
+
+At alpha=0 the two arms differ **only** by whether `glp_correct` ran
+(diffmean steering at alpha=0 is an exact identity), yet:
+
+| alpha=0 drift (ΔGRAVY) | up (low-GRAVY starts) | down (high-GRAVY starts) |
+|---|---|---|
+| naive (Gibbs only) | +0.347 | **−0.282** |
+| GLP-corrected | +1.145 | **+0.536** |
+
+Mechanism: SDEdit drives Leu 7.1→18.0% and Val 5.1→13.6% (~2× natural
+abundance); L+V alone are 57% of the drift. It is **not** regression to the
+mean — the naive arm flips sign from high-GRAVY starts while the corrected arm
+stays positive, i.e. the correction carries a **fixed hydrophobic bias**. The
+up-only design could not have distinguished these.
+
+That drift was 65–97% of the corrected arm's raw ΔGRAVY at every alpha ≤ 2, so
+**never quote the raw corrected-vs-naive gap**; quote `steering_attributable`
+(each arm differenced against its own alpha=0 run, per init sequence).
+Replicated independently at 5 rounds/T=0.5 (+0.454 up, +0.278 down).
+
+### 13.3 Bidirectional steering (the headline)
+
+Steering the same vector both ways — `--directions up,down`, held-out
+high-GRAVY starts carved out of the high quartile before the vector is built —
+is far stronger evidence than one rising curve, because a direction-independent
+artifact pushes both trajectories the same way and cancels.
+
+Divergence (up − down of the attributable effect, unpaired Mann–Whitney; the
+two directions use different sequences so a paired test would be wrong):
+
+| alpha | naive | GLP-corrected |
+|---|---|---|
+| 0.5 | +0.010 (p=0.98) | **+0.551 (p=1.1e-05)** |
+| 1 | +0.112 (p=0.23) | **+0.969 (p=6.6e-10)** |
+| 2 | +0.077 (p=0.44) | **+1.581 (p=2.4e-13)** |
+| 5 | +1.400 (p=1.4e-10) | **+3.382 (p=2.4e-13)** |
+
+Corrected is significant from alpha=0.5; naive only from alpha=3. Gated and
+ungated (no degeneracy filter) agree to ~1%, so the result does not depend on
+the quality gate. Symmetry is close to perfect at alpha=2 (up +0.785, down
+−0.796).
+
+### 13.4 `t_start` = 0.7 for Exp B, and the alpha=5 "breakdown" was its artifact
+
+A 7-point pilot at n=15 (`--t-start-grid 0.2..0.8`) found 0.5–0.6 to be a
+pathological band: highest drift, +11pp composition damage, and — the tell —
+the *best* pseudo-perplexity. 0.7 has the strongest and most reliable
+attributable gain (+0.43, p=1e-4) at a composition cost indistinguishable from
+zero. On the full sweep, 0.5 → 0.7 dropped degenerate output **26% → 7.7%**,
+took alpha=5's usable corrected rows from **2 → 14**, and made the
+dose-response monotone through alpha=5. §10's "unresolved failure mode of the
+correction at alpha=5" was a `t_start` artifact, not a property of steering.
+
+Separately, Part 0 now applies one SDEdit pass to clamped activations with **no
+generation**: it recovers **89–95%** of the clamp's excess diffusion loss even
+at alpha=20. So SDEdit handles heavily-clamped activations fine; the collapse
+was the masked-Gibbs loop compounding.
+
+### 13.5 The naturalness claim fails, and why
+
+ESMFold2 (`scripts/fold_steering_outputs.py`, separate Python 3.12 venv,
+resumable) gives pLDDT/pTM. Three findings, in order of importance:
+
+**(a) Both model-based naturalness metrics are gamed.** The sequences the
+degeneracy gate rejects (64% Leu+Val) score:
+
+| | pLDDT | pTM | pppl |
+|---|---|---|---|
+| rejected as non-protein | **81.0** | 0.452 | **5.46** |
+| our clean output | 54.7 | 0.277 | 14.53 |
+| natural ubiquitin | 80 | 0.74 | — |
+
+Poly-L/V junk beats **real ubiquitin** on pLDDT and scores 3× "better" pppl
+than our clean output (p ≤ 1e-6). On the larger bidirectional run pTM is merely
+*indistinguishable* from junk (p=0.86), not better. **The methodological trap:**
+on kept rows alone pppl correlates correctly with pLDDT (rho=−0.48, p=4e-17),
+which reads as mutual validation — but that is computed after the gate removed
+the rows that expose the shared bias. **Always check metrics on the rejected
+rows too.**
+
+**(b) On-manifold ≠ foldable.** GLP diffusion loss of the *finished* sequences
+is 0.72–0.86 against 0.869 for real activations: everything we generate is
+**more typical under GLP than real proteins are**, at half the foldability.
+The manifold is one of activations, not structures; repeated sampling lands in
+the distribution's bland middle; and the decode samples masked positions
+independently, so local plausibility survives while joint (structural)
+constraints do not. Note also that "on-manifold" measured by GLP's own
+diffusion loss is GLP grading its own homework — the fold metrics are the
+independent check and they disagree.
+
+**(c) The decode loop, not GLP, costs foldability.** Folding the 80 natural
+held-out starting proteins: pTM 0.373 (up set) / 0.629 (down set). The alpha=0
+**naive** arm — no steering, no GLP — comes out at 0.275 / 0.319. Both arms
+land in the same place (0.264 vs 0.276 pooled, n.s.), so this is the
+masked-Gibbs protocol, not the correction.
+
+**Baseline discipline:** compare against the held-out set the run actually
+generates from. The pooled 0.501 average is wrong for a single-direction
+comparison and makes light editing look damaging when it is not.
+
+### 13.6 The quality gate is calibrated; do not tighten it on complexity
+
+`scripts/analyze_sequence_complexity.py` implements SEG-style windowed Shannon
+entropy (Wootton & Federhen; window 12, 2.2-bit trigger).
+
+- **The gate is well calibrated.** Applied to the 80 natural starting proteins
+  it rejects 3/80 (3.8%) — comparable to the 2.9% it rejects of our own
+  output, so it is not tuned to target our failure mode. One constant was
+  wrong: `min_homopolymer_run=8` rejected an ordinary protein with a run of 9,
+  so it is now **12** (natural runs: median 3, p95 5.1).
+- **Our generations are not low-complexity relative to real proteins**
+  (min window entropy 2.059 vs natural median 2.126).
+- **Do not adopt SEG's 2.2-bit trigger as a gate** — it would reject **75%** of
+  the natural low-GRAVY starting proteins. It is a masking trigger for homology
+  search, not a degeneracy test.
+- **Never gate on complexity at all:** complexity is *affected by the
+  treatment* (corrected arm's min entropy falls 2.09 → 1.73 from alpha=0 to 5,
+  since steering toward hydrophobicity draws on a smaller sub-alphabet), so a
+  complexity cut removes the successfully-steered sequences and biases the
+  effect toward zero (alpha=2 divergence 1.59 → 0.93 at SEG's threshold).
+
+Same lesson as pLDDT: **a quality measure the treatment changes must be an
+outcome, never a filter.** Hence `pass_rate_*` in summary.json — "fraction of
+generations that are non-degenerate AND above threshold", denominator = every
+sequence generated, so degenerate output counts as failure rather than being
+quietly dropped. Using pLDDT≥70 as a *filter* would keep 87% of the degenerate
+sequences and 12% of the clean ones, taking a set from 8% to 38% junk.
+
+### 13.7 Two defensible operating points
+
+| | divergence @alpha=5 | pTM up / down (pure decode loop) | degenerate |
+|---|---|---|---|
+| 30 rounds, T=1.0 (`bidir_n40`) | **+3.38** | 0.275 / 0.319 | 2.7% |
+| 5 rounds, T=0.5 (`t05_m10_r5`) | +1.56 | **0.332 / 0.435** | 3.4% |
+| natural starting proteins | — | 0.373 / 0.629 | 0% |
+
+Half the effect for meaningfully better structure and 6× less compute
+(p=0.007 down, p=0.10 up). Neither reaches natural foldability: the naturalness
+claim is **improved, not rescued**.
+
+**A failed idea worth recording.** Huang et al.'s Algorithm 1 selects mutation
+sites by relatedness (cosine similarity to the steering vector, their Eq. 4),
+mutating the T *most opposed* residues; we mask uniformly at random.
+Implementing theirs (`--mask-selection relatedness`) doubled the fraction of
+protein preserved (12% → 25%) as predicted, **but cost ~6× of the steering
+effect** (+0.969 → +0.171) with no significant foldability gain. Likely because
+it targets exactly the residues ESM most resists changing, and our steering —
+one layer, masked positions only — is too weak to move them, where they steer
+every layer across all tokens. Not adopted; random masking is better for this
+setup.
+
+### 13.8 Mistakes made and corrected during this session
+
+Recorded because each was caught by *checking* rather than reasoning, and the
+same failure mode recurs:
+
+1. Claimed the confound was "structural, not tunable" from 3 noisy points at
+   n=8. It is tunable.
+2. Nearly concluded pppl was validated by its correlation with pLDDT — computed
+   on kept rows only (see §13.5a).
+3. Overstated pTM as discriminating; the run's own test showed it is not.
+4. Compared pilot results against the pooled 0.501 baseline when the pilots
+   generate from the hydrophilic set alone (0.373).
+5. **Recommended T=0.5 × 30 rounds as the operating point.** The pilot analyses
+   never applied the degeneracy gate, and at that cell T=0.5 mode-collapses:
+   8/15 non-proteins, composition distance 38 → 106, min entropy 0.98. Those
+   collapsed sequences score *high* pTM, so without the gate it looked like the
+   best cell in the grid.
+
+The through-line: **degeneracy must be counted, never dropped**, in every
+analysis including the quick ones.
+
+### 13.9 Still open
+
+- Exp A has never been re-run with any of the above.
+- The correction's own foldability cost is suggested by three marginal signals
+  in the same direction (p=0.076, 0.029, 0.42) but is not established.
+- We steer one layer (hook parity with the SAE forces this) and apply the edit
+  only at mutated positions; Huang et al. do both across all layers/tokens.
+  That is the untested deviation, and the likely reason relatedness selection
+  failed here.
+- Neither operating point reaches natural foldability.

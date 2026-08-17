@@ -1,158 +1,203 @@
 # On-manifold steering — methodology (current)
 
-What `scripts/run_steering.py` does today, in plain terms. No results, no
-history of what changed and why — for that, see `docs/steering_history.md`.
-Tracks PLAN.md §6.6/W4; run via `scripts/cluster/submit_steering.sh <A|B> ...`.
+What the steering pipeline does today, in plain terms. No results and no
+history of what changed and why — for those see `docs/steering_history.md`
+(§13 is the current state). Tracks PLAN.md §6.6/W4.
+
+**Before anything else:** run `scripts/apply_interplm_patches.sh`. InterPLM's
+pinned `sae/intervention.py` targets an older `nnsight` API and generation dies
+with an `expand()` shape error without the patch. Re-run it after any
+`git submodule update` (SETUP.md step 0).
 
 ## The idea being tested
 
 "Steering" a protein language model means pushing its internal activations
-toward some target concept (e.g. "more zinc-finger-like", "more hydrophobic")
-and seeing what sequence comes out. Pushed too hard, the activations end up
-somewhere the model never saw during training — off the manifold of real
-protein activations — and the output degrades (garbled sequences, or
-sequences that don't actually carry the intended property).
+toward some target concept (e.g. "more hydrophobic") and seeing what sequence
+comes out. Pushed too hard, the activations end up somewhere the model never
+saw in training — off the manifold of real protein activations.
 
-GLP is a diffusion model trained to recognize what "on-manifold" activations
-look like. The thesis: after steering pushes an activation off-manifold, using
-GLP to pull it back on-manifold (a cleanup step) should let you reach a
-stronger concept effect at a given level of naturalness than steering alone —
-or equivalently, more natural output at a given concept strength. Every part
-of the pipeline below exists to test that one claim, on two different kinds of
-steering.
+GLP is a diffusion model of those activations. The thesis: after steering
+pushes an activation off-manifold, using GLP to pull it back (a cleanup step)
+should reach a stronger concept effect at a given naturalness than steering
+alone.
+
+**Two claims, tested separately, and they have come apart.** The *efficacy*
+claim (GLP-correction makes steering work) is supported. The *naturalness*
+claim (corrected output is more protein-like) is not, and the reason has
+nothing to do with GLP — see §"What the generation loop costs" below.
 
 ## The two experiments
 
-**Experiment A** — SAE-feature steering on the zinc-finger concept
-(`--experiment A`). Uses InterPLM's released sparse autoencoder (SAE) on
-ESM-2-8M layer-4 activations. A zinc-finger-associated SAE feature is pushed
-up, either by:
-- `clamp`: hard-set the feature to a fixed target value, or
-- `scale_shift`: scale and shift whatever value the feature already has
-  (`z* = a·z + b`).
+**Experiment A** — SAE-feature steering on zinc-finger (`--experiment A`).
+InterPLM's released SAE on ESM-2-8M layer 4; a zinc-finger feature is pushed up
+by `clamp` (hard-set) or `scale_shift` (`z* = a·z + b`). Scored by a strict
+C2H2 regex plus ESMFold pLDDT. **Not re-run since the Exp B rebuild** — none of
+the corrections below have been applied to it.
 
-Success is judged by a strict regex for the C2H2 zinc-finger motif
-(`C.{2,4}C.{12}H.{3,5}H`) in the generated sequence, plus ESMFold pLDDT as a
-secondary structural-naturalness check.
+**Experiment B** — diff-of-means steering on hydrophobicity (`--experiment B`).
+A direction `v` is built from the difference between high- and low-GRAVY real
+sequences' activations; steering is `h' = renorm(h + alpha·v)`. Scored by
+ΔGRAVY.
 
-**Experiment B** — diff-of-means steering on hydrophobicity
-(`--experiment B`). A single direction vector `v` is built from the difference
-between high-GRAVY and low-GRAVY real sequences' activations (GRAVY = Grand
-Average of Hydropathy — higher means more hydrophobic). Steering adds a
-multiple of that vector to the activation and renormalizes back to the
-original vector length: `h' = renorm(h + alpha·v)`.
+Exp B is **bidirectional** by default (`--directions auto` → both when the
+contrast file supports it). "up" starts from held-out *low*-GRAVY proteins and
+applies `+alpha·v`; "down" starts from held-out *high*-GRAVY proteins and
+applies `−alpha·v`. Both held-out sets are carved out of their quartile before
+the vector is computed, so neither direction's starting points contaminate it.
 
-Success is judged by ΔGRAVY: how much more hydrophobic the finished sequence
-is than the real, held-out low-GRAVY sequence it started from.
-
-These two are deliberately not run identically (different init, different
-masking schedule, different selection rule) — each follows its own source
-paper's protocol rather than a shared generic recipe. See the module
-docstring in `run_steering.py` for the exact citations.
+Bidirectional matters because it is the only design that separates real
+steering from a direction-independent artifact: a real vector pushes the two
+trajectories *apart*, an artifact pushes both the same way and cancels in the
+difference.
 
 ## The shared pipeline
 
-**Part 0 — off-manifold diagnostic (no sequence generation).** Take real
-held-out activations, apply the steering intervention at increasing `alpha`,
-and measure GLP's own diffusion loss on the result. Loss should rise with
-`alpha` — confirms steering is actually pushing off-manifold before trusting
-anything generation-based.
+**Part 0 — off-manifold diagnostic (no generation).** Clamp real held-out
+activations at increasing `alpha` and measure GLP's diffusion loss; it should
+rise. It additionally applies **one** SDEdit pass to those clamped activations
+and re-measures, which isolates the correction operator from the generation
+loop.
 
-**Part 1 — generation loop** (`masked_gibbs_generate`). Start from an
-initial sequence (random amino acids for Exp A, a real held-out sequence for
-Exp B), then repeat for `n_rounds`: mask a random fraction of positions
-(`mask_fraction`) → run the model forward → apply the steering intervention to
-those positions' activations → **optionally** run GLP's cleanup step
-(`glp_correct`, see below) on the steered activations → run the model forward
-again with that override → sample new amino acids for the masked positions.
-Every alpha is run twice: once with the cleanup step skipped ("naive"
-steering) and once with it applied ("GLP-corrected") — that pairing is the
-whole comparison.
+**Part 1 — generation loop** (`masked_gibbs_generate`). From an initial
+sequence, repeat for `n_rounds`: pick positions to mutate → forward → apply the
+steering intervention to those positions' activations → **optionally**
+`glp_correct` → forward again with that override → resample those positions.
+Every alpha runs twice, with and without the correction; that pairing is the
+comparison.
 
-**`mask_fraction` defaults differ sharply between the two experiments, and
-that's not an incidental knob difference.** Exp A defaults to
-`mask_fraction=1.0` — every round re-masks and re-samples the *entire*
-sequence from scratch, for 100 rounds (`plm-sae`'s own full-resample-per-round
-protocol — which round ends up as the output is a separate question, see
-below). Exp B defaults to `mask_fraction=0.10` — only ~10% of positions
-are touched per round, so each round is a small edit on top of the previous
-round's output, for 30 rounds (Huang et al.'s partial-refinement protocol,
-starting from a real sequence rather than random noise). So "the generation
-loop" is shared machinery, but Exp A's rounds are independent full
-re-generations under a steered feature, while Exp B's rounds are incremental,
-compounding edits — that difference is exactly why Exp B's round-loop can
-bootstrap a mild per-round bias into the full sequence-collapse described in
-`docs/steering_history.md` §10, in a way Exp A's full-resample rounds don't.
+*Site selection* (`--mask-selection`): `random` (default) masks a uniform
+`mask_fraction`; `relatedness` implements Huang et al.'s Algorithm 1 — score
+each token by cosine similarity to `v` and mutate the `--n-mutations` most
+opposed. Relatedness was tested and **not adopted**: it preserves twice as much
+of the protein but costs ~6× of the steering effect here (history §13.7).
 
-**Which round is "the sequence"?** After `n_rounds`, the loop doesn't just
-return the last one. Exp A scores every round by the target SAE feature's own
-activation on the sequence decoded so far, and returns the best-scoring round
-(`select_fn`, arXiv:2502.09135's z_k-argmax criterion) — *except* its
-unsteered anchor arm (`alpha` = the no-op value), which keeps the last round
-instead, since best-of-100 selection on a run that was never steered would
-just cherry-pick a lucky-looking round and inflate the baseline. Exp B never
-selects — every alpha, both naive and GLP-corrected, always keeps the last of
-its 30 rounds.
+**The cleanup step (`glp_correct`) — SDEdit.** Mix the steered activation with
+noise up to `t_start`, then run GLP's reverse process back to 0. `t_start`
+controls how much of the edit survives. **Default is now experiment-dependent:
+0.5 for A (its own validated value), 0.7 for B.** For Exp B, 0.5–0.6 is a
+pathological band — most drift, worst composition, and misleadingly good
+pseudo-perplexity.
 
-**The cleanup step (`glp_correct`) — SDEdit.** GLP is a diffusion model: it
-learns to turn random noise into a realistic activation over many small
-steps, going from a "noise level" of 1 down to 0. `glp_correct` takes the
-steered (off-manifold) activation, mixes it with random noise up to a chosen
-noise level `t_start`, then runs GLP's reverse process from `t_start` back
-down to 0:
+**Part 2 — per-sequence scoring.** Concept score, pseudo-perplexity, GLP
+diffusion loss on the finished sequence, degeneracy checks, and
+`composition_distance` (L1 to UniProtKB background composition). pLDDT/pTM come
+from a **separate stage** (below), not from this loop.
 
-```
-z_noisy = (1 - t_start) * z_edit + t_start * eps      # eps = random noise
-z_clean = reverse_diffusion(z_noisy, from t_start to 0)
-```
+**Part 3 — analysis.** Every per-alpha statistic is computed **within a
+direction** — pooling would average a rising trajectory against a falling one
+and cancel the effect.
 
-`t_start` controls how much of the steering edit survives the cleanup:
-`t_start=0` barely changes anything (edit stays exactly as forced, likely
-still off-manifold); `t_start=1` erases the edit entirely (output is just a
-typical unsteered activation); `t_start=0.5` (current default for both
-experiments) is the middle ground. `--t-start-pilot` runs a small
-`{0.3, 0.5, 0.7}` sweep to help pick this value for a given experiment.
+## Measuring the effect: what to quote
 
-**Part 2 — per-sequence scoring.** For each finished sequence: the concept
-score (motif regex hit for Exp A, ΔGRAVY for Exp B), pseudo-perplexity
-(naturalness — lower is more natural, i.e. more like real protein sequences),
-GLP's own diffusion loss on the finished sequence's activations, and
-degeneracy checks (max homopolymer run length, unique-amino-acid count,
-overall single-residue composition) to catch generations that collapsed into
-repetitive low-complexity junk rather than real steering — pseudo-perplexity
-scores repetitive sequences as artificially *more* natural, so these have to
-be filtered before Part 3, not just eyeballed away (`is_degenerate_sequence`
-in `run_steering.py`).
+**Quote `steering_attributable`, never the raw corrected-vs-naive gap.** At
+alpha=0 the arms differ only by whether the correction ran, and the correction
+moves ΔGRAVY by itself (+1.15 at 30 rounds); that drift was 65–97% of the
+corrected arm's raw effect at alpha ≤ 2. `steering_attributable` differences
+each arm against its own alpha=0 run per init sequence, removing both the drift
+and per-init variation.
 
-**Part 3 — analysis.**
-- **Pareto plot**: naturalness (x) vs. concept score (y), naive vs.
-  GLP-corrected, mean trajectory per alpha. The thesis predicts corrected
-  points sit up-and-left of naive points — better on both axes, not a
-  tradeoff.
-- **Three-regime breakdown**: bin samples into safe/transition/broken thirds
-  by naive diffusion loss, and check whether GLP-correction helps more in the
-  regimes that are more off-manifold to begin with.
-- **Rescue check**: for each GLP-corrected point, does it beat the best naive
-  concept score achieved at matched-or-better naturalness? This is the
-  sharpest single number for "did on-manifold correction actually help."
+**`divergence` is the headline estimand** for bidirectional runs: up minus
+down, reported raw and attributable, with an *unpaired* Mann–Whitney (the two
+directions use different sequences).
 
-## Key knobs, in plain terms
+## Naturalness: which axis, and why
+
+**Do not use pseudo-perplexity or pLDDT as the naturalness axis.** On this
+generation setup, the sequences the degeneracy gate rejects score *better* on
+both than our clean output — poly-Leu/Val junk beats real ubiquitin on pLDDT.
+pTM is the least bad and is what `analyze_steering_naturalness.py` uses by
+default, but on the larger run even pTM is merely indistinguishable from junk.
+
+**Check metrics on the rejected rows, not just the kept ones.** On kept rows
+alone pppl and pLDDT correlate correctly with each other, which looks like
+mutual validation and is shared bias — the gate has already removed the rows
+that expose it.
+
+**Use quality thresholds as outcomes, never filters.** `pass_rate_*` reports
+the fraction of *all* generations that are non-degenerate **and** above
+threshold, so degenerate output counts as failure. Filtering on pLDDT≥70
+instead would keep 87% of the degenerate sequences and 12% of the clean ones.
+
+## The degeneracy gate
+
+`is_degenerate_sequence`: ≥30% one residue, ≤8 distinct amino acids, or a
+≥12-long homopolymer run. Calibrated against real proteins — it rejects 3/80
+(3.8%) of the natural held-out starts, comparable to the 2.9% of our own
+output, so it is not tuned to target our failure mode.
+
+**Do not tighten it on sequence complexity.** Complexity is affected by the
+treatment (steering toward hydrophobicity draws on a smaller sub-alphabet), so
+a complexity cut is post-treatment selection that removes the successfully
+steered sequences. SEG's standard 2.2-bit trigger would also reject 75% of the
+natural starting proteins.
+
+## What the generation loop costs
+
+Folding the 80 natural starting proteins gives pTM 0.373 (low-GRAVY set) /
+0.629 (high-GRAVY set). The alpha=0 **naive** arm — no steering, no GLP — comes
+out at 0.275 / 0.319. **The masked-Gibbs loop roughly halves foldability on its
+own**, before any steering or correction, and both arms land in the same place.
+
+Two settings trade this off; both are defensible and support different claims:
+
+| | divergence @alpha=5 | pTM up / down | degenerate | cost |
+|---|---|---|---|---|
+| 30 rounds, T=1.0 | +3.38 | 0.275 / 0.319 | 2.7% | 1× |
+| 5 rounds, T=0.5 | +1.56 | 0.332 / 0.435 | 3.4% | 1/6× |
+
+**Do not raise rounds at T=0.5** — it mode-collapses (8/15 non-proteins at 30
+rounds), and the collapsed sequences score *high* pTM, so the failure looks
+like an improvement in any analysis that drops degenerate rows instead of
+counting them.
+
+Always compare against the held-out set the run actually generates from
+(0.373 or 0.629), never the pooled average.
+
+## Key knobs
 
 | flag | what it controls |
 |---|---|
-| `--alphas` | steering strength(s) to sweep |
-| `--sae-intervention` | Exp A only: `clamp` (hard-set) vs `scale_shift` (scale+shift) |
-| `--shift-b` | Exp A `scale_shift` only: the additive shift term |
-| `--t-start` | how much noise the cleanup step adds before re-denoising (see above) |
-| `--mask-fraction` | fraction of positions re-sampled per round — default **1.0 for Exp A** (whole sequence, every round), **0.10 for Exp B** (small incremental edit) |
-| `--n-rounds` | how many mask/steer/resample rounds per sequence — default **100 for Exp A**, **30 for Exp B** |
-| `--n-sequences` | sequences per (alpha, naive/corrected) cell |
-| `--fold` | run ESMFold for pLDDT (Exp A default: on; Exp B: off, no folding needed) |
+| `--exp-name` | **required**, unique — metrics/figures redirect is keyed on it |
+| `--alphas` | steering strengths to sweep |
+| `--directions` | `auto` (default), `up`, `down`, or `up,down` |
+| `--t-start` | SDEdit noise level. Default 0.5 for A, **0.7 for B** |
+| `--mask-fraction` / `--n-rounds` | edit budget. Default 1.0/100 for A, 0.10/30 for B |
+| `--temperature` / `--sample-mode` | resampling sharpness (default 1.0 / `sample`) |
+| `--mask-selection` / `--n-mutations` | `random` (default) or `relatedness` |
+| `--fold` | ESMFold pLDDT in-loop. **Exp A only** — for Exp B use the separate fold stage |
+| `--t-start-pilot` / `--generation-pilot` | sweeps that exit before the main run |
+
+## Running it end to end
+
+```bash
+sbatch --account=ehpc394 scripts/cluster/submit_steering.sh B <UNIQUE-NAME> <config> "<alphas>" "" \
+  --ckpt <...>/glp_final.pt --scaler <...>/rep_statistics.pt
+sbatch --account=ehpc394 scripts/cluster/submit_fold.sh <run-dir>      # ESMFold2 pLDDT/pTM
+$GLP_VENV/bin/python scripts/plot_steering_report.py       --run-dir <run-dir>
+$GLP_VENV/bin/python scripts/analyze_steering_naturalness.py --run-dir <run-dir>
+```
+
+The fold stage runs in a **separate Python 3.12 venv** (ESMFold2 needs `esm`,
+which the project venv does not have and cannot get — MN5 is offline), so its
+launcher deliberately does not source `env_mn5.sh`. ~2.6 s/sequence, resumable.
 
 ## Outputs
 
-`runs/uniref50_500m_4096_d24_steering/steering_<name>/` — one directory per
-experiment/variant, containing the per-sequence CSV (`expA_sae_zincfinger.csv`
-/ `expB_diffmean_gravy.csv`), `metrics/summary.json` (aggregate stats, logged
-via `RunLogger`), and `pareto.png`. `launches.jsonl` in the parent run dir
-records the exact job/args behind each output.
+`runs/<run>/steering_diffmean_hydro_<name>/` — per-sequence CSV,
+`fold_confidence.csv` sidecar (keyed on `sample_id`, with `seq_sha1` so it
+cannot be merged against regenerated sequences), `metrics/summary.json`,
+`run_summary.md`, and `figures/`.
+
+Figures describe **what is plotted, not what it means** — interpretation
+belongs in the paper caption, and a claim baked into a PNG went stale against
+its own panel once already.
+
+| figure | shows |
+|---|---|
+| `fig_divergence` | the two trajectories separating; the headline |
+| `fig_dose_response` | effect and structural confidence vs alpha, shared axis |
+| `fig_baseline_drift` | what the correction does with no steering |
+| `naturalness_axis_gate_check` | which metrics the rejected sequences fool |
+| `pass_rate_*` | confidently-folded yield as an outcome |
+| `off_manifold_diagnostic` | GLP loss vs alpha, with one correction pass |
+| `generation_tradeoff` | operating points (from `plot_generation_tradeoff.py`) |
