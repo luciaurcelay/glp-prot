@@ -104,14 +104,30 @@ def whole_seq_mean_acts(extractor: ActivationExtractor, seqs: List[str]) -> np.n
     return np.stack([extractor.extract_single(s).mean(axis=0) for s in seqs])
 
 
-def build_gravy_contrast(cfg, out_path: Path, n_raw_seqs: int = 8000, min_len: int = 100,
-                         max_len: int = 200, n_per_set: int = 100, n_heldout: int = 15,
+def build_gravy_contrast(cfg, out_path: Path, n_raw_seqs: int = 20000, min_len: int = 100,
+                         max_len: int = 200, n_per_set: int = 100, n_heldout: int = 40,
                          seed: int = 0, restart: bool = False, device=None,
-                         n_heldout_high: int = 15) -> Path:
+                         n_heldout_high: int = 40) -> Path:
     """Core builder, callable directly (run_steering.py's Exp B path calls this to
     lazy-build `gravy_contrast.json` if missing — same auto-build-then-cache convention
     as `select_zinc_finger_features`/`compute_diffmean_vector` there) as well as from
-    this script's own CLI below."""
+    this script's own CLI below.
+
+    On the defaults: `sample_gravy_pool` -> `read_fasta_slice` is a reservoir sample
+    (Algorithm R), so it streams the ENTIRE ~12GB gzipped UniRef50 once no matter how small
+    `n_raw_seqs` is. Two consequences drive the numbers here:
+
+      * A too-small pool triggers the retry loop below, and each retry is another full scan.
+        So the first pass is deliberately over-provisioned (n_raw_seqs=20000): a bigger
+        reservoir costs only memory and some GRAVY scoring, whereas a retry costs a second
+        pass over 12GB.
+      * The scan cost is fixed, so held-out-set size is essentially free at build time and
+        only costs generation later (~2s/sequence). n_heldout=40 per direction rather than
+        the spec's 10-20: the earlier n=15 runs left the paired tests underpowered exactly
+        where they mattered (low alpha never reached significance, and the degenerate filter
+        left as few as 2 usable rows in a high-alpha cell, making those estimates
+        survivor-biased). 40 per direction keeps ~all cells usable after filtering while the
+        quartile still comfortably covers n_per_set + n_heldout."""
     if out_path.exists() and not restart:
         print(f"[build_gravy_contrast] {out_path} already exists, skipping (--restart to rebuild)")
         return out_path
@@ -184,7 +200,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/configs_lucia/esm8m_500m_4096_d24.yaml")
     ap.add_argument("--out-dir", help="default <output_dir>/steering_diffmean_hydro")
-    ap.add_argument("--n-raw-seqs", type=int, default=8000,
+    ap.add_argument("--n-raw-seqs", type=int, default=20000,
                     help="raw UniRef50 sequences to reservoir-sample before length "
                          "filtering (most get dropped by --min-len/--max-len; doubled "
                          "automatically, up to 4 retries, if the surviving pool can't fill "
@@ -195,11 +211,14 @@ def main():
                     help="sequences per contrast set (Huang et al.'s own validated "
                          "default, spec open item 5), drawn from the length-filtered "
                          "top/bottom quartile")
-    ap.add_argument("--n-heldout", type=int, default=15,
-                    help="low-GRAVY sequences carved out of the low quartile as Exp B "
-                         "generation starting points (spec's 10-20 range); excluded from "
-                         "the vector")
-    ap.add_argument("--n-heldout-high", type=int, default=15,
+    ap.add_argument("--n-heldout", type=int, default=40,
+                    help="low-GRAVY sequences carved out of the low quartile as the 'up' "
+                         "direction's generation starting points; excluded from the vector. "
+                         "Above the spec's 10-20 range on purpose — see build_gravy_contrast's "
+                         "docstring: at n=15 the paired tests were underpowered where it "
+                         "mattered and high-alpha cells were survivor-biased after the "
+                         "degenerate filter")
+    ap.add_argument("--n-heldout-high", type=int, default=40,
                     help="high-GRAVY sequences carved out of the high quartile as starting "
                          "points for the DOWN steering direction (bidirectional steering); "
                          "excluded from the vector. 0 disables the down direction.")

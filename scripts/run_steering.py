@@ -1164,7 +1164,10 @@ def main():
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--pppl-batch-size", type=int, default=32)
 
-    ap.add_argument("--t-start", type=float, default=0.5, help="GLP SDEdit start noise level")
+    ap.add_argument("--t-start", type=float, default=None,
+                    help="GLP SDEdit start noise level. Default: 0.5 for A (the spec's value, "
+                         "chosen for the zinc-finger setting) and 0.7 for B (measured — see "
+                         "the note where this default is applied)")
     ap.add_argument("--t-start-pilot", action="store_true",
                     help="run only the t_start in {0.3,0.5,0.7} pilot (spec Part 1) and exit. "
                          "Each t_start runs at both the no-steering anchor and the mid alpha "
@@ -1212,7 +1215,7 @@ def main():
                                        "metrics/figures — pick a fresh one per run.")
     ap.add_argument("--out-dir", help="explicit out-dir path, overrides --exp-name. Its basename "
                                       "is still the RunLogger redirect key, so keep it unique too.")
-    ap.add_argument("--directions", default="up,down",
+    ap.add_argument("--directions", default="auto",
                     help="[B only] steering directions to run. 'up' starts from the held-out "
                          "LOW-GRAVY sequences and applies +alpha*v (raise hydrophobicity); "
                          "'down' starts from the held-out HIGH-GRAVY set and applies -alpha*v "
@@ -1220,8 +1223,12 @@ def main():
                          "trajectories should diverge monotonically, which is far stronger "
                          "evidence than one rising curve, and their difference cancels any "
                          "direction-independent drift. 'down' needs `heldout_high` in "
-                         "gravy_contrast.json (rebuild with --restart if absent). Doubles "
-                         "generation cost. Exp A is up-only.")
+                         "gravy_contrast.json. Default 'auto' runs both when that key is "
+                         "present and falls back to up-only (with a warning) when it is not, "
+                         "so a contrast file built before bidirectional steering still runs "
+                         "its original single direction rather than erroring; naming a "
+                         "direction explicitly is honoured strictly. Doubles generation cost. "
+                         "Exp A is up-only.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -1308,14 +1315,23 @@ def main():
               f"{len(heldout)} held-out starting sequences")
         default_alphas = "0,0.05,0.25,0.5,1,2,5,20"
         neutral_alpha = 0.0  # diffmean_clamp's alpha=0 -> x_new == x exactly, no special-casing
-        directions = [d.strip() for d in args.directions.split(",") if d.strip()]
-        bad = [d for d in directions if d not in ("up", "down")]
-        if bad:
-            ap.error(f"--directions must be 'up' and/or 'down', got {bad}")
-        if "down" in directions and not heldout_high:
-            ap.error(f"--directions includes 'down' but {gravy_path} has no `heldout_high` "
-                     "(it predates bidirectional steering). Rebuild it with "
-                     "`--gravy-contrast <path> --restart`, or pass --directions up.")
+        if args.directions.strip() == "auto":
+            directions = ["up", "down"] if heldout_high else ["up"]
+            if not heldout_high:
+                print("[steering] WARNING: this gravy_contrast.json has no `heldout_high`, so "
+                      "only the 'up' direction will run (it predates bidirectional steering). "
+                      "Bidirectional is the stronger design — two trajectories that must "
+                      "diverge, whose difference cancels direction-independent drift — so "
+                      "rebuild the contrast with --restart to enable it.")
+        else:
+            directions = [d.strip() for d in args.directions.split(",") if d.strip()]
+            bad = [d for d in directions if d not in ("up", "down")]
+            if bad:
+                ap.error(f"--directions must be 'up' and/or 'down' (or 'auto'), got {bad}")
+            if "down" in directions and not heldout_high:
+                ap.error(f"--directions includes 'down' but {gravy_path} has no `heldout_high` "
+                         "(it predates bidirectional steering). Rebuild it with "
+                         "`--gravy-contrast <path> --restart`, or pass --directions up.")
         heldout_sets = {"up": heldout, "down": heldout_high}
         if args.n_sequences is not None and args.n_sequences != len(heldout):
             print(f"[steering] --n-sequences ignored for experiment B — using all held-out "
@@ -1332,6 +1348,20 @@ def main():
         args.n_rounds = 100 if is_a else 30
     if args.fold is None:
         args.fold = is_a
+    if args.t_start is None:
+        # Exp B: 0.7, not the 0.5 inherited from the zinc-finger experiment. A 7-point
+        # pilot at n=15 per cell (--t-start-pilot --t-start-grid 0.2..0.8) found 0.5-0.6 to
+        # be a pathological band: highest correction drift (1.55/1.69 ΔGRAVY with NO
+        # steering), composition cost of +11pp that is clearly nonzero, and — the tell —
+        # the *best* pseudo-perplexity, because their Leu/Val enrichment is easy for the MLM
+        # to predict. 0.7 gives the strongest AND most reliable steering-attributable gain in
+        # the grid (+0.43, p=0.0001) with a composition cost indistinguishable from zero.
+        # Confirmed on the full sweep: switching 0.5 -> 0.7 dropped degenerate generations
+        # from 62/240 (26%) to 23/300 (7.7%), took alpha=5's usable corrected rows from 2 to
+        # 14, and made the dose-response monotone through alpha=5 — i.e. the "breakdown at
+        # alpha=5" was an artefact of t_start, not a property of steering strength.
+        # Exp A keeps 0.5: none of the above was measured for the SAE-clamp/zinc-finger path.
+        args.t_start = 0.5 if is_a else 0.7
 
     alphas = [float(a) for a in (args.alphas or default_alphas).split(",") if a.strip()]
     if is_a and neutral_alpha not in alphas:
