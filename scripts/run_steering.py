@@ -1215,6 +1215,12 @@ def main():
                          "fold it directly.")
     ap.add_argument("--rounds-grid", default="5,10,20,30",
                     help="[--generation-pilot] round counts to sweep")
+    ap.add_argument("--mask-fraction-grid", default="",
+                    help="[--generation-pilot] mask fractions to sweep (empty = just "
+                         "--mask-fraction). Needed to explore the light-editing regime: the "
+                         "gentlest setting tested so far still rewrites 37%% of the protein "
+                         "(5 rounds x 10%%), and foldability is already collapsed there, so "
+                         "whether ANY edit budget preserves the fold is unanswered below that")
     ap.add_argument("--temperature-grid", default="1.0,0.7,0.5",
                     help="[--generation-pilot] sampling temperatures to sweep. Repeatedly "
                          "sampling at T=1.0 from an 8M model is the suspected drift source: "
@@ -1554,11 +1560,14 @@ def main():
         pilot_alphas = sorted({neutral_alpha, mid_alpha})
         rounds_grid = [int(x) for x in args.rounds_grid.split(",") if x.strip()]
         temp_grid = [float(x) for x in args.temperature_grid.split(",") if x.strip()]
+        mf_grid = ([float(x) for x in args.mask_fraction_grid.split(",") if x.strip()]
+                   or [args.mask_fraction])
         n_pilot = min(args.n_pilot, len(heldout_sets["up"]))
         print(f"[gen-pilot] rounds={rounds_grid} temps={temp_grid} alphas={pilot_alphas} "
               f"arms=naive,corrected n={n_pilot} (direction=up)", flush=True)
         rows_p, sid = [], 0
         for n_rounds in rounds_grid:
+          for mask_frac in mf_grid:
             for temp in temp_grid:
                 for alpha in pilot_alphas:
                     for corrected in (False, True):
@@ -1574,7 +1583,7 @@ def main():
                                     model, scaler, a, t_start=args.t_start,
                                     num_steps=args.sde_steps, device=device, generator=g_dev))
                                 if corrected else (lambda a: a),
-                                mask_fraction=args.mask_fraction, n_rounds=n_rounds,
+                                mask_fraction=mask_frac, n_rounds=n_rounds,
                                 stabilize_tol=args.stabilize_tol, sample_mode=args.sample_mode,
                                 temperature=temp, generator=g, device=device,
                                 selection=args.mask_selection, n_mutations=args.n_mutations,
@@ -1582,7 +1591,7 @@ def main():
                             rows_p.append({
                                 "sample_id": sid, "init_sequence_id": init_id,
                                 "n_rounds": n_rounds, "temperature": temp, "alpha": alpha,
-                                "selection": args.mask_selection,
+                                "mask_fraction": mask_frac, "selection": args.mask_selection,
                                 "corrected": corrected, "direction": "up", "length": length,
                                 "gravy_init": gravy_init, "gravy_final": gravy_score(seq),
                                 "delta_gravy": gravy_score(seq) - gravy_init,
@@ -1593,8 +1602,9 @@ def main():
                                 "composition_distance": composition_distance(seq),
                                 "sequence": seq})
                             sid += 1
-                        print(f"[gen-pilot] rounds={n_rounds} T={temp} alpha={alpha} "
-                              f"corrected={corrected} done ({sid} total)", flush=True)
+                        print(f"[gen-pilot] rounds={n_rounds} mask={mask_frac} T={temp} "
+                              f"alpha={alpha} corrected={corrected} done ({sid} total)",
+                              flush=True)
         out_csv = out_dir / "generation_pilot.csv"
         with open(out_csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(rows_p[0].keys()))
