@@ -320,6 +320,8 @@ def main():
     style.apply_style()
     import matplotlib.pyplot as plt
 
+    arms = ((False, style.ACCENT, "naive"), (True, style.method_color("glp"), "GLP-corrected"))
+
     # ---- pass rate: the "filter at pLDDT>=70" practice as an unbiased outcome ----
     thr_map = {"ptm": [0.3, 0.4, 0.5], "plddt": [60.0, 70.0, 80.0], "pppl": [10.0, 8.0]}
     thresholds = thr_map[key]
