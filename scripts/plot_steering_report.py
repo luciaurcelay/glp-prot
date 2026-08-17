@@ -128,7 +128,7 @@ def main():
         print(f"[report] wrote {p}")
 
     # ---------------- Figure 2: the no-steering baseline, by direction ----------------
-    fig2, ax2 = plt.subplots(figsize=(6.6, 4.8))
+    fig2, ax2 = plt.subplots(figsize=(7.2, 4.8))
     width = 0.34
     xs = np.arange(len(dirs))
     for i, (corrected, lab) in enumerate(ARMS):
@@ -144,8 +144,10 @@ def main():
     ax2.set_xticklabels(["started hydrophilic\n(low-GRAVY held-out set)" if d == "up"
                          else "started hydrophobic\n(high-GRAVY held-out set)" for d in dirs])
     ax2.set_ylabel(f"change in {args.property}\nwith NO steering applied (mean ± SEM)")
-    ax2.set_title("What the correction does on its own\n"
-                  "resampling reverts toward typical; the correction pushes one way regardless",
+    # keep each title line short enough to sit inside the axes at this width — a long second
+    # line runs past the panel and reads as a stray break
+    ax2.set_title("What the correction does with no steering applied\n"
+                  "resampling reverts toward typical; the correction does not",
                   loc="left")
     ax2.legend(fontsize=9)
     p2 = style.save_fig(fig2, run.figures_dir / "fig_baseline_drift.png")
