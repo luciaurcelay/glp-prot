@@ -264,10 +264,20 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
             rows += [{"experiment": experiment, "alpha": alpha, "corrected": True,
                       "sample_idx": i, "diffusion_loss": float(v)} for i, v in enumerate(loss_c)]
             means_corr[alpha] = float(loss_c.mean())
-            # fraction of the clamp's excess loss that one correction pass removes
+            line += f" -> corrected {means_corr[alpha]:.5f}"
+            # Fraction of the clamp's excess loss one correction pass removes. Only meaningful
+            # once the clamp actually moved the loss: at small alpha the excess is ~0 (or
+            # negative — clamping can sit marginally *below* baseline), and dividing by it
+            # produces garbage like "-1294% recovered". Report the residual-vs-baseline there
+            # instead, which stays interpretable. Values >100% are real and mean the correction
+            # pushed the activation to a *higher*-density region than the unsteered original.
             excess = means[alpha] - means["baseline"]
-            rec = (means[alpha] - means_corr[alpha]) / excess if abs(excess) > 1e-9 else float("nan")
-            line += f" -> corrected {means_corr[alpha]:.5f} (recovers {rec:+.1%} of the excess)"
+            if excess > 0.02 * means["baseline"]:
+                line += (f" (recovers {(means[alpha] - means_corr[alpha]) / excess:+.1%} "
+                         "of the excess)")
+            else:
+                line += (f" (clamp barely moved the loss: excess {excess:+.5f}; corrected sits "
+                         f"{means_corr[alpha] - means['baseline']:+.5f} vs baseline)")
         print(line, flush=True)
 
     csv_path = out_dir / "off_manifold_diagnostic.csv"
@@ -286,9 +296,11 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
     if means_corr:
         run.log_summary(**{
             f"diagnostic_{experiment}_means_corrected": means_corr,
+            # only where the clamp moved the loss enough for the ratio to mean anything
             f"diagnostic_{experiment}_excess_recovered": {
                 str(a): ((means[a] - means_corr[a]) / (means[a] - means["baseline"]))
-                for a in means_corr if abs(means[a] - means["baseline"]) > 1e-9},
+                for a in means_corr
+                if means[a] - means["baseline"] > 0.02 * means["baseline"]},
         })
 
     style.apply_style()
