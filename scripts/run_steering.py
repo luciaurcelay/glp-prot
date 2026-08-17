@@ -43,7 +43,7 @@ import csv
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import _bootstrap  # noqa: F401
 import numpy as np
@@ -230,7 +230,8 @@ def glp_correct(model, scaler: Scaler, acts_raw: torch.Tensor, t_start: float = 
 # --------------------------------------------------------------------------- #
 def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor, float], torch.Tensor],
                                 alphas, baseline_acts, out_dir: Path, run: RunLogger, device: str,
-                                n_repeats: int, seed: int, experiment: str):
+                                n_repeats: int, seed: int, experiment: str,
+                                correct_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None):
     """`clamp_fn(acts_raw, alpha) -> acts_raw` is steering-method-agnostic (SAE-clamp or
     diff-of-means) — Part 0 only needs the raw-activation-in/raw-activation-out contract.
     `experiment` ("A"/"B") is recorded as a CSV column per the spec's output schema, even
@@ -239,22 +240,40 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
     loss_baseline = diffusion_loss(model, scaler, baseline_acts, n_repeats=n_repeats,
                                    device=device, generator=g)
 
-    rows = [{"experiment": experiment, "alpha": "baseline", "sample_idx": i, "diffusion_loss": float(v)}
-            for i, v in enumerate(loss_baseline)]
+    rows = [{"experiment": experiment, "alpha": "baseline", "corrected": False,
+             "sample_idx": i, "diffusion_loss": float(v)} for i, v in enumerate(loss_baseline)]
     means = {"baseline": float(loss_baseline.mean())}
+    means_corr: Dict[Any, float] = {}
     for alpha in alphas:
         steered = clamp_fn(baseline_acts.to(device), alpha)
         loss_a = diffusion_loss(model, scaler, steered, n_repeats=n_repeats,
                                 device=device, generator=g)
-        rows += [{"experiment": experiment, "alpha": alpha, "sample_idx": i, "diffusion_loss": float(v)}
-                 for i, v in enumerate(loss_a)]
+        rows += [{"experiment": experiment, "alpha": alpha, "corrected": False,
+                  "sample_idx": i, "diffusion_loss": float(v)} for i, v in enumerate(loss_a)]
         means[alpha] = float(loss_a.mean())
-        print(f"[diagnostic-{experiment}] alpha={alpha:<6} mean diffusion loss = {means[alpha]:.5f}"
-              f"  (baseline {means['baseline']:.5f})", flush=True)
+        line = (f"[diagnostic-{experiment}] alpha={alpha:<6} mean diffusion loss = "
+                f"{means[alpha]:.5f}  (baseline {means['baseline']:.5f})")
+        if correct_fn is not None:
+            # One SDEdit pass on the clamped activations, NO generation loop. Isolates the
+            # correction operator from the masked-Gibbs iteration: if the loss comes back to
+            # ~baseline here but sequences still collapse at this alpha during generation,
+            # the collapse is the Gibbs loop compounding, not SDEdit failing on a single
+            # clamped activation (and vice versa).
+            loss_c = diffusion_loss(model, scaler, correct_fn(steered), n_repeats=n_repeats,
+                                    device=device, generator=g)
+            rows += [{"experiment": experiment, "alpha": alpha, "corrected": True,
+                      "sample_idx": i, "diffusion_loss": float(v)} for i, v in enumerate(loss_c)]
+            means_corr[alpha] = float(loss_c.mean())
+            # fraction of the clamp's excess loss that one correction pass removes
+            excess = means[alpha] - means["baseline"]
+            rec = (means[alpha] - means_corr[alpha]) / excess if abs(excess) > 1e-9 else float("nan")
+            line += f" -> corrected {means_corr[alpha]:.5f} (recovers {rec:+.1%} of the excess)"
+        print(line, flush=True)
 
     csv_path = out_dir / "off_manifold_diagnostic.csv"
     with open(csv_path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["experiment", "alpha", "sample_idx", "diffusion_loss"])
+        w = csv.DictWriter(f, fieldnames=["experiment", "alpha", "corrected", "sample_idx",
+                                          "diffusion_loss"])
         w.writeheader()
         w.writerows(rows)
 
@@ -264,6 +283,13 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
               "reconsider the off-manifold framing before proceeding (spec Part 0 step 5).")
     run.log_summary(**{f"diagnostic_{experiment}_means": means,
                        f"diagnostic_{experiment}_monotonic": monotonic})
+    if means_corr:
+        run.log_summary(**{
+            f"diagnostic_{experiment}_means_corrected": means_corr,
+            f"diagnostic_{experiment}_excess_recovered": {
+                str(a): ((means[a] - means_corr[a]) / (means[a] - means["baseline"]))
+                for a in means_corr if abs(means[a] - means["baseline"]) > 1e-9},
+        })
 
     style.apply_style()
     import matplotlib.pyplot as plt
@@ -273,6 +299,13 @@ def run_off_manifold_diagnostic(model, scaler, clamp_fn: Callable[[torch.Tensor,
         max(sum(1 for r in rows if r["alpha"] == a), 1))) for a in alphas]
     ax.errorbar(xs, [means[a] for a in alphas], yerr=[1.96 * s for s in sems],
                marker="o", color=style.ACCENT, label="steered")
+    if means_corr:
+        sems_c = [float(np.std([r["diffusion_loss"] for r in rows
+                                if r["alpha"] == a and r["corrected"]]) / np.sqrt(
+            max(sum(1 for r in rows if r["alpha"] == a and r["corrected"]), 1))) for a in alphas]
+        ax.errorbar(xs, [means_corr[a] for a in alphas], yerr=[1.96 * s for s in sems_c],
+                   marker="o", color=style.method_color("glp"),
+                   label="steered + one correction pass (no generation)")
     ax.axhline(means["baseline"], color=style.BASELINE, linestyle="--", label="baseline (unsteered)")
     ax.set_xlabel("steering strength alpha")
     ax.set_ylabel("GLP diffusion loss (mean ± 95% CI)")
@@ -1263,8 +1296,15 @@ def main():
             diag_clamp_fn = lambda a, al: sae_clamp(sae, a, feat_idxs, al)
         else:
             diag_clamp_fn = lambda a, al: diffmean_clamp(diffmean_vec, a, al)
+        # `correct_fn` here is deliberately generation-free: one SDEdit pass straight onto the
+        # clamped activations, so Part 0 also answers "does the correction operator itself
+        # recover a heavily-clamped activation, or does the collapse need the Gibbs loop?"
+        g_diag = torch.Generator(device=device).manual_seed(args.seed)
         run_off_manifold_diagnostic(model, scaler, diag_clamp_fn, diag_alphas, baseline_acts,
-                                    out_dir, run, device, args.n_repeats, args.seed, args.experiment)
+                                    out_dir, run, device, args.n_repeats, args.seed, args.experiment,
+                                    correct_fn=lambda a: glp_correct(
+                                        model, scaler, a, t_start=args.t_start,
+                                        num_steps=args.sde_steps, device=device, generator=g_diag))
 
     if not args.skip_generate:
         extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
