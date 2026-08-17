@@ -110,8 +110,61 @@ mandatory: the default REST queries overlap ~98%, which silently hands GLP activ
 it will be probed on (measured effect was small, -0.002 AUC, but the SAE gets no such
 advantage so the comparison is asymmetric).
 
-**Still open:** Gate G2 (SAE-reconstruction FD + %Loss-Recovered — both local-feasible,
-not run), F1 on all 104 concepts, W4 steering, cluster scale-up.
+**Still open (probing):** Gate G2 (SAE-reconstruction FD + %Loss-Recovered — both
+local-feasible, not run), F1 on all 104 concepts.
+
+### W4 steering — Exp B (diff-of-means × hydrophobicity) is measured
+Canonical run: `runs/steering_crg/steering_diffmean_hydro_bidir_n40` (bidirectional, 40
+held-out starts per direction, t_start 0.7, 1120 generations, all folded). Launch with
+`scripts/cluster/submit_steering.sh B <UNIQUE-NAME> …` — the name is **required** (see
+below), then `submit_fold.sh`, then `plot_steering_report.py` +
+`analyze_steering_naturalness.py`.
+
+Four findings that change how results must be reported:
+
+1. **The correction moves the concept on its own.** At alpha=0 — no steering, the arms
+   differ only by whether `glp_correct` ran — GLP-corrected gains **+1.15 ΔGRAVY** vs
+   naive's +0.35, via Leu/Val enrichment to ~2× natural abundance. Never quote the raw
+   corrected-vs-naive gap; quote `steering_attributable` (differenced per init against
+   that arm's own alpha=0 run).
+2. **That drift is a fixed hydrophobic bias, not mean-reversion.** Steering down from
+   HIGH-GRAVY starts, naive flips sign (−0.28) while corrected stays positive (+0.54).
+   The up-only design could not distinguish these.
+3. **Both model-based naturalness metrics are gamed.** The sequences
+   `is_degenerate_sequence` rejects (64% Leu+Val) score pLDDT 67 vs clean 54
+   (p=3e-06) and pseudo-perplexity 7.3 vs 14.8 (p=7e-18) — i.e. *better* than our own
+   output. pTM is merely indistinguishable (p=0.86). **The hand-tuned degenerate filter,
+   not any metric, is what keeps junk out of the results** — its thresholds are the
+   biggest unjustified assumption in the experiment. Check metrics on the REJECTED rows,
+   never only the kept ones (a pppl-vs-pLDDT correlation computed on kept rows alone
+   looks like mutual validation and is shared bias).
+4. **Do not filter on pLDDT.** A pLDDT≥70 cut keeps 87% of the degenerate sequences and
+   12% of the clean ones, taking a set from 8% to 38% junk. Use "fraction passing" as an
+   *outcome* (`pass_rate_*` in summary.json), never as a selection step — the arms also
+   survive at different rates, so filtering then comparing is survivor-biased.
+
+Caveat for both arms: every clean generation is structurally mediocre (pTM ~0.28 vs 0.74
+for a natural protein), and at alpha=0 the correction cuts confidently-folded yield ~3×.
+
+**Steering runs need a unique `--exp-name`.** `RunLogger` redirects metrics/figures to
+`$GLP_RUNS_ROOT/<basename(out_dir)>/`, keyed on the leaf alone, so the old fixed leaf made
+every Exp B run silently clobber the previous one's metrics and figures.
+
+**Figures state what is plotted, not what it means** — interpretation goes in the paper
+caption. A claim baked into a PNG went stale against its own panel once already.
+
+**`t_start` is 0.7 for Exp B** (0.5 for A, which is unmeasured here). 0.5-0.6 is a
+pathological band: most drift, +11pp composition damage, and — the tell — the *best*
+pseudo-perplexity. Switching to 0.7 cut degenerate output 26% → 7.7% and removed the
+apparent "breakdown at alpha=5", which was a t_start artefact, not a property of steering.
+
+**InterPLM needs a local patch to run steering at all** — `patches/`, applied by
+`scripts/apply_interplm_patches.sh`; re-run it after any `git submodule update` (SETUP.md
+step 0). Without it generation dies in `nnsight` with an `expand()` shape error.
+
+**Still open (steering):** Exp A has never been re-run with any of the above; the
+degenerate filter's thresholds need a sensitivity check; ESMFold2 folding is a separate
+stage in its own Python 3.12 venv (`submit_fold.sh`) because the project venv has no `esm`.
 
 ## Local-scale gotchas (learned the hard way — don't regress these)
 From the retired Mac PoC phase (dev Mac had **16 GB RAM**, RAM/disk — not compute — was
