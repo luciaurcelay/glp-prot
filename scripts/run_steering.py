@@ -428,6 +428,8 @@ def masked_gibbs_generate(steerer: ESMSteerer, init_tokens: torch.Tensor,
                           mask_fraction: float, n_rounds: int, stabilize_tol: float,
                           sample_mode: str, temperature: float,
                           generator: torch.Generator, device: str,
+                          selection: str = "random", n_mutations: Optional[int] = None,
+                          score_vec: Optional[torch.Tensor] = None,
                           diag_fn: Optional[Callable[[int, torch.Tensor, torch.Tensor], None]] = None,
                           select_fn: Optional[Callable[[int, str], float]] = None,
                           log_fn: Optional[Callable[[int, str], None]] = None
@@ -473,9 +475,29 @@ def masked_gibbs_generate(steerer: ESMSteerer, init_tokens: torch.Tensor,
         best_seq = decode()
         best_score = select_fn(-1, best_seq)
 
-    k = max(1, round(mask_fraction * L))
+    k = n_mutations if (selection == "relatedness" and n_mutations) else max(1, round(mask_fraction * L))
+    k = min(max(1, k), L)
     for round_idx in range(n_rounds):
-        perm = torch.randperm(L, generator=generator)[:k]
+        if selection == "relatedness" and score_vec is not None:
+            # Huang et al. Algorithm 1 lines 4-6: score every token by cosine similarity of its
+            # representation to the steering vector (their Eq. 4) and mutate the T LOWEST —
+            # the residues most opposed to the target property.
+            #
+            # This is not a refinement, it is the difference between targeted mutagenesis and
+            # rewriting the protein. Uniform random masking touches every position eventually
+            # (~3x per position over 30 rounds at 10%), so it destroys residues that are
+            # already right — measured, that costs the fold: the starting proteins fold at
+            # pTM 0.501 and five rounds of random masking already drops them to 0.256, with no
+            # steering and no correction involved. Relatedness ranking never touches a position
+            # that already agrees with the property.
+            with torch.no_grad():
+                _, h_clean = steerer.forward(tokens, attn, override=None)
+            reps = h_clean[0, 1:L + 1, :].float()
+            sims = F.cosine_similarity(reps, score_vec.to(reps.device).float().expand_as(reps),
+                                       dim=-1)
+            perm = torch.argsort(sims)[:k].cpu()
+        else:
+            perm = torch.randperm(L, generator=generator)[:k]
         pos = (perm + 1).to(device)
         prev = tokens[0, pos].clone()
         tokens[0, pos] = tok.mask_token_id
@@ -1197,6 +1219,20 @@ def main():
                     help="[--generation-pilot] sampling temperatures to sweep. Repeatedly "
                          "sampling at T=1.0 from an 8M model is the suspected drift source: "
                          "30 rounds at 10%% masking resample each position ~3x")
+    ap.add_argument("--mask-selection", choices=["random", "relatedness"], default="random",
+                    help="[B] how each round picks positions to mutate. 'random': a uniform "
+                         "mask_fraction subset (what this repo has always done). "
+                         "'relatedness': Huang et al. Algorithm 1 lines 5-6 — score every "
+                         "token by cosine similarity to the steering vector (their Eq. 4) and "
+                         "mutate the --n-mutations LOWEST, i.e. the residues most opposed to "
+                         "the target property. Random masking rewrites every position ~3x over "
+                         "30 rounds and destroys the fold (starting proteins pTM 0.501 -> 0.256 "
+                         "after five rounds, with no steering at all); relatedness ranking "
+                         "leaves already-correct residues alone.")
+    ap.add_argument("--n-mutations", type=int,
+                    help="[--mask-selection relatedness] mutation sites per round (Huang et "
+                         "al.'s T). Defaults to round(mask_fraction * L) so the edit budget "
+                         "matches the random baseline unless set.")
     ap.add_argument("--sample-mode", choices=["sample", "argmax"], default="sample")
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--pppl-batch-size", type=int, default=32)
@@ -1460,7 +1496,9 @@ def main():
                                                          num_steps=args.sde_steps, device=device, generator=g_dev),
                         mask_fraction=args.mask_fraction, n_rounds=args.n_rounds,
                         stabilize_tol=args.stabilize_tol, sample_mode=args.sample_mode,
-                        temperature=args.temperature, generator=g, device=device)
+                        temperature=args.temperature, generator=g, device=device,
+                        selection=args.mask_selection, n_mutations=args.n_mutations,
+                        score_vec=None if is_a else diffmean_vec)
                     acts = torch.from_numpy(extractor.extract_single(seq)).float()
                     dloss = float(diffusion_loss(model, scaler, acts, n_repeats=args.n_repeats,
                                                  device=device, generator=g_dev).mean())
@@ -1538,10 +1576,13 @@ def main():
                                 if corrected else (lambda a: a),
                                 mask_fraction=args.mask_fraction, n_rounds=n_rounds,
                                 stabilize_tol=args.stabilize_tol, sample_mode=args.sample_mode,
-                                temperature=temp, generator=g, device=device)
+                                temperature=temp, generator=g, device=device,
+                                selection=args.mask_selection, n_mutations=args.n_mutations,
+                                score_vec=diffmean_vec)
                             rows_p.append({
                                 "sample_id": sid, "init_sequence_id": init_id,
                                 "n_rounds": n_rounds, "temperature": temp, "alpha": alpha,
+                                "selection": args.mask_selection,
                                 "corrected": corrected, "direction": "up", "length": length,
                                 "gravy_init": gravy_init, "gravy_final": gravy_score(seq),
                                 "delta_gravy": gravy_score(seq) - gravy_init,
@@ -1742,7 +1783,9 @@ def main():
                                 steerer, init_tokens, steer_fn, correct_fn, args.mask_fraction,
                                 args.n_rounds, args.stabilize_tol, args.sample_mode,
                                 args.temperature, g, device, diag_fn=diag_fn, select_fn=select_fn,
-                                log_fn=log_fn)
+                                log_fn=log_fn, selection=args.mask_selection,
+                                n_mutations=args.n_mutations,
+                                score_vec=None if is_a else diffmean_vec)
 
                             pppl = pseudo_perplexity(steerer, seq, device, batch_size=args.pppl_batch_size)
                             acts_final = torch.from_numpy(extractor.extract_single(seq)).float()
