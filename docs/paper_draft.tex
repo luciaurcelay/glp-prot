@@ -185,19 +185,15 @@ Appendix~\ref{app:scaling}.}
 \label{sec:probing-results}
 
 \textbf{GLP meta-neurons are the best single-unit probe, on both discrete concepts and
-continuous properties.} Table~\ref{tab:probing} and Figs.~\ref{fig:probingauc}--\ref{fig:probingscatter} compare the
-four representations on the 24-block/500M model: over 104 pre-registered Swiss-Prot
-concepts, GLP reaches mean test AUC $0.897$, ahead of ESM's own FFN neurons ($0.876$),
-the SAE ($0.842$), and the raw residual stream ($0.827$); every margin is significant by
-paired bootstrap (GLP$-$SAE $+0.055$, $94/104$ wins; GLP$-$FFN $+0.021$, $83/104$;
-GLP$-$raw $+0.070$, $98/104$). GLP leads on 4 of the 5 concept categories --- domain/motif
-($n{=}86$), chemical/PTM ($n{=}9$), structural ($n{=}4$), topology/localization
-($n{=}3$) --- and only trails on the 2-concept binding/catalytic bucket, too small to
-weigh. The same pattern holds for 10 continuous sequence properties (Spearman $\rho$,
-protein-level): GLP $0.663$ vs.\ SAE $0.605$, FFN $0.563$, raw $0.469$ (GLP$-$SAE
-significant, $8/10$ wins). GRAVY, the same target as the diff-of-means steering
-experiment (Section~\ref{sec:steering-results}), is one of GLP's clearest continuous
-wins ($\rho{=}0.815$ vs.\ SAE's $0.628$).
+continuous properties.} Across 104 pre-registered Swiss-Prot concepts, a single GLP
+meta-neuron isolates the concept more sharply than the best unit of any baseline: ESM's own
+feedforward neurons, InterPLM's SAE features, or the raw residual stream
+(Table~\ref{tab:probing}, Fig.~\ref{fig:probingauc}). Every margin is significant by paired
+bootstrap, and GLP leads on four of the five concept categories, trailing only on the
+two-concept binding/catalytic bucket that is too small to weigh. The same ordering holds for
+ten continuous sequence properties probed at the protein level, including hydrophobicity, the
+target of the steering experiment (Section~\ref{sec:steering-results}), where GLP is one of
+its clearest wins over the SAE.
 
 \begin{table}[t]
 \centering
@@ -226,42 +222,31 @@ both axes.}
 
 
 
-\textbf{What this does and does not show.} A unit that best separates a concept's
-positive from negative residues shows GLP's representation is more convenient to probe
---- not that it contains information the SAE's dictionary lacks. A diffusion model with
-no sparsity constraint could just have found a better rotation of a subspace the SAE
-already spans. To test this, for every concept where a GLP meta-neuron beats every SAE
-feature, we regress that meta-neuron's activation on the SAE's entire 10{,}240-feature
-dictionary and report the held-out $R^2$ (Section~\ref{sec:method}). This now covers the
-full concept set (94/104 concepts have a GLP meta-neuron beating every SAE feature;
-per-concept $R^2$ in Table~\ref{tab:app-falsification}): mean $R^2 = 0.752$, median
-$0.756$, IQR $[0.690, 0.841]$, $36\%$ above $0.8$. For most winning meta-neurons the
-SAE's dictionary already linearly explains most of their variance: GLP is a more
-convenient probe of structure the SAE already has, not evidence of new structure, for
-most concepts.
+\textbf{What this does and does not show.} A unit that best separates a concept says GLP's
+representation is more convenient to probe, not that it holds information the SAE's dictionary
+lacks: a diffusion model with no sparsity constraint could simply have found a better rotation
+of a subspace the SAE already spans. To test this, for every concept where a GLP meta-neuron
+beats every SAE feature we regress that meta-neuron on the SAE's entire dictionary and report
+the held-out $R^2$ (Appendix~\ref{app:tables}). For most winning meta-neurons the dictionary
+already linearly explains most of the variance, so on those concepts GLP is a more convenient
+probe of structure the SAE already has, not evidence of new structure.
 
-But $R^2$ is a property of the whole meta-neuron, not of the slice that correlates with
-the concept. A low aggregate $R^2$ does not mean the concept is outside the SAE's span
-(the error could sit in unrelated variance); a high $R^2$ does not mean it is inside (the
-concept-relevant slice could still be unrecoverable). So we test the concept directly:
-for all 94 concepts, we fit a \emph{joint} logistic probe over the SAE's own top-$k$
-features ($k \in \{2, 5, 10, 20\}$, same protocol as above) and check whether combining
-features closes the gap to GLP's test AUC. On $79/94$ it does, at a median $k^*{=}5$
-(Table~\ref{tab:app-topk}): the SAE has the concept, spread
-across several features rather than concentrated in one. On the remaining $15/94$, no
-combination up to $k{=}20$ reaches GLP --- direct evidence of concept-level information
-the dictionary does not jointly span.
+But $R^2$ measures the whole meta-neuron, not the slice that carries the concept, so it can
+mislead in both directions: a low value can hide concept-relevant variance the SAE does span,
+and a high value can hide a concept-relevant slice it does not. We therefore test the concept
+directly, fitting a \emph{joint} probe over the SAE's own top few features and asking whether
+combining them closes the gap to GLP. For most of these concepts it does, so the SAE has the
+concept but spread across several features rather than concentrated in one. For a minority,
+no combination of up to twenty features reaches GLP, which is direct evidence of concept-level
+information the dictionary does not jointly span (Appendix~\ref{app:tables}).
 
-$R^2$ does not predict which 15: the Pearson/Spearman
-correlation between $R^2$ and $k^*$ (never-reaches censored past $k{=}20$) is
-$-0.035$/$-0.174$ across all 94, and the two groups' $R^2$ distributions are
-indistinguishable (not-in-dictionary mean $R^2{=}0.764$ vs.\ distributed-in-dictionary
-mean $R^2{=}0.750$). Disulfide bond has $R^2{=}0.963$ --- exactly the concept an
-aggregate-$R^2$ threshold would call ``already explained'' --- yet no top-20 SAE
-combination reaches GLP on it. Domain\_Sm has the lowest $R^2$ of all 94 ($0.332$) yet is
-fully recovered by $k{=}10$. Thresholding the aggregate $R^2$ would have flagged the
-wrong candidates and missed the strongest one; Section~\ref{sec:limitations} uses the
-direct 15-concept list, not the $R^2$ ranking, as steering targets.
+The aggregate $R^2$ does not predict which concepts these are: its correlation with the
+direct test is near zero, and the two groups' $R^2$ distributions are indistinguishable. The
+starkest cases invert the heuristic entirely. Disulfide bond has among the highest $R^2$, the
+concept an $R^2$ threshold would call already explained, yet no combination of SAE features
+reaches GLP on it; the lowest-$R^2$ concept, by contrast, is fully recovered by a handful of
+features. Thresholding $R^2$ would have flagged the wrong concepts, so the not-in-dictionary
+set is taken from the direct test rather than from $R^2$.
 \iffalse
 \begin{figure}[t]
 \centering
@@ -269,7 +254,7 @@ direct 15-concept list, not the $R^2$ ranking, as steering targets.
 \caption{Joint SAE top-$k$ recovery of the 94 GLP-winning concepts. (a) Smallest $k$ at
 which the SAE's own top-$k$ features, probed jointly, reach GLP's test AUC, by Swiss-Prot
 category ($15/94$ never reach it by $k{=}20$). (b) The same concepts' held-out $R^2$
-(Table~\ref{tab:app-falsification}) against $k^*$ --- near-zero correlation, with
+(Table~\ref{tab:app-falsification}) against $k^*$, near-zero correlation, with
 Disulfide bond ($R^2{=}0.963$, never reaches) and Domain\_Sm ($R^2{=}0.332$, reaches at
 $k{=}10$) as the two concepts that most starkly contradict what the $R^2$ heuristic alone
 would predict.}
@@ -277,25 +262,19 @@ would predict.}
 \end{figure}
 \fi
 
-\textbf{Does the SAE's discarded residual hide the concept instead?} For the 11 concepts
-with $R^2{<}0.6$ (Domain\_Sm $0.332$ through Domain\_EF-hand~4 $0.596$), we
-encode-then-decode every residue's activation through the SAE and probe what the
-reconstruction discards, $\text{residual} = x - \text{sae.decode}(\text{sae.encode}(x))$,
-with the same protocol as the raw-layer baseline. If a concept were recoverable from the
-residual, that would be direct evidence the SAE throws away exactly what encodes it. It
-is not: residual test AUC falls \emph{below} the SAE's own single best feature on $10/11$
-concepts and never approaches GLP's. Only
-Domain\_Ubiquitin-like, the one concept here also on the 15-concept not-in-dictionary
-list, and the residual does not help there either ($0.771$ vs.\ GLP's $0.994$, vs.\ the
-SAE's own top-20 AUC of $0.903$). The concept signal is not hiding in what the SAE
-discards --- it is in what the SAE keeps, distributed across features.
+\textbf{Does the SAE's discarded residual hide the concept instead?} For the concepts the
+dictionary explains least, we probe what the SAE's reconstruction throws away, its residual.
+If a concept were recoverable there, that would be direct evidence the SAE discards exactly
+what encodes it. It is not: on almost all of these concepts the residual probes \emph{worse}
+than the SAE's own best single feature and never approaches GLP. The concept signal is not
+hiding in what the SAE discards; it is in what the SAE keeps, distributed across features.
 \iffalse
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.98\textwidth]{figures/discovery_kfeature.png}
 \caption{SAE top-$k$ test AUC curve ($k \in \{1,2,5,10,20\}$) for each of the 11
 $R^2{<}0.6$ concepts, GLP's meta-neuron test AUC as a dashed reference. Ten of eleven
-climb past GLP by $k{=}20$ (curve shape varies --- some plateau near $k{=}5$, others
+climb past GLP by $k{=}20$ (curve shape varies, some plateau near $k{=}5$, others
 keep climbing); Domain\_Ubiquitin-like (top-left of the second row) is the exception,
 dipping at $k{=}2$ and never reaching GLP even at $k{=}20$, and is the only one of these
 11 where the residual probe (main text) was worth running as a follow-up.}
@@ -306,21 +285,17 @@ dipping at $k{=}2$ and never reaching GLP even at $k{=}20$, and is the only one 
 \subsection{Does GLP's advantage come with an organisation cost?}
 \label{sec:discovery-organisation}
 
-The result above is about sufficiency: 15 concepts carry information the SAE dictionary
+The result above is about sufficiency: some concepts carry information the SAE dictionary
 does not jointly span. It says nothing about whether GLP's latent space is better
-\emph{organised} --- whether related concepts sit near each other, and whether a unit
-that wins one concept stays quiet on the rest. The SAE is trained with an explicit
-sparsity penalty pushing toward exactly that; GLP has no such term. We test both, against
-the SAE and against ESM's own FFN neurons (raw\_mlp) as a second baseline.
+\emph{organised}, meaning whether related concepts sit near each other and whether a unit
+that wins one concept stays quiet on the rest. The SAE is trained with a sparsity penalty
+pushing toward exactly that; GLP has no such term. We test both, against the SAE and against
+ESM's feedforward neurons as a second baseline.
 
-\textbf{Family hierarchy.} For 8 Swiss-Prot families with 2+ annotated subtypes each
-(EF-hand 1--4, Ig-like C1/C2/V-type, RRM 1--2, zinc-finger C2H2/C4/RING, HTH myb-type
-1--2, GST N-/C-terminal, t-/v-SNARE, transit-peptide mitochondrion/chloroplast --- 24
-concepts, groupings in \texttt{configs/discovery\_families.yaml}, pending a
-domain-expert check), we pool each winning unit's activation to one vector per held-out
-test protein (500-protein subsample) and test whether within-family pairs correlate more
-than between-family pairs (self-pairs excluded; permutation test on family labels for the
-null). SAE and raw\_mlp recover the hierarchy; GLP does not:
+\textbf{Family hierarchy.} For eight Swiss-Prot families with several annotated subtypes
+each, we test whether the winning units of within-family concepts correlate more than those of
+between-family concepts, across held-out proteins. The SAE and the feedforward baseline recover
+this hierarchy; GLP does not:
 
 \begin{center}
 \begin{tabular}{lrrrr}
@@ -329,14 +304,13 @@ representation & within-family & between-family & difference & permutation $p$ \
 \midrule
 GLP      & $0.007$ & $0.021$ & $-0.014$ & $0.587$ (not significant) \\
 SAE      & $0.172$ & $0.035$ & $+0.137$ & $0.001$ \\
-raw\_mlp & $0.322$ & $0.171$ & $+0.151$ & $0.001$ \\
+ESM FFN  & $0.322$ & $0.171$ & $+0.151$ & $0.001$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Concept-concept co-occurrence among these 24 concepts is $\approx\!0.2\%$ everywhere, so
-the SAE/raw\_mlp signal is not from shared annotations --- the units themselves cluster
-by family.
+Concept co-occurrence among these families is negligible, so the SAE and feedforward signal
+is not an artifact of shared annotations; the units themselves cluster by family.
 \iffalse
 \begin{figure}[t]
 \centering
@@ -348,22 +322,18 @@ block-diagonal structure; GLP does not.}
 \end{figure}
 \fi
 
-\textbf{Selectivity.} For every winning unit (one per concept-representation pair, $416$
-total) we compute its selectivity ratio (test AUC on its own concept over its
-second-best AUC across the other 103 concepts) and how many other concepts it exceeds
-AUC $0.8$ on --- the full unit$\times$concept AUC matrix, built fresh since
-\texttt{probe\_concept} never keeps it. SAE is the
-outlier in the intended direction: median $2$ other concepts above $0.8$, $56\%$ of units
-polysemantic. GLP is among the worst: median $10$, $95\%$ polysemantic, tied with
-raw\_mlp ($10$, $94\%$) and above raw\_layer ($6$, $90\%$). Selectivity ratios cluster
-near $1.0$ everywhere (median $0.90$--$0.97$): even the typical winning unit has some
-other concept it scores almost as well on.
+\textbf{Selectivity.} For every winning unit we ask how many other concepts it also fires on
+(exceeds AUC $0.8$). The SAE is the outlier in the intended direction, with the typical winning
+unit firing on only a couple of other concepts and roughly half of its units effectively
+monosemantic. GLP is among the worst, with the typical unit firing on around ten other
+concepts and almost all units polysemantic, tied with the feedforward baseline. Even the
+typical winning unit has some other concept it scores almost as well on.
 
 \iffalse
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.98\textwidth]{figures/discovery_selectivity.png}
-\caption{(a) ECDF of selectivity ratio --- all four representations overlap heavily
+\caption{(a) ECDF of selectivity ratio, all four representations overlap heavily
 near ratio $1.0$, not a clean separation on its own. (b) Distribution of \# other
 concepts a unit exceeds AUC $0.8$ on, where the separation is unambiguous: SAE is
 tightly concentrated near $0$--$2$; GLP and raw\_mlp spread up to $30$--$40$.}
@@ -371,12 +341,9 @@ tightly concentrated near $0$--$2$; GLP and raw\_mlp spread up to $30$--$40$.}
 \end{figure}
 \fi
 
-A weaker, illustrative check agrees: unsupervised clustering (k-means $k{=}5$, HDBSCAN)
-of all 104 winning units against Swiss-Prot category gives low, method-dependent
-agreement for both GLP and SAE (ARI $0.12$--$0.16$ for k-means, $\approx\!0$ for HDBSCAN;
-category is dominated by domain/motif at 80/104, which caps how informative this check
-can be), and neither representation separates cleanly under t-SNE (perplexity 30). Too
-weak to move the conclusion either way, but reported for completeness.
+A weaker check agrees: unsupervised clustering of the winning units against Swiss-Prot
+category gives low, method-dependent agreement for both GLP and the SAE, and neither separates
+cleanly. It is too weak to move the conclusion either way, but we report it for completeness.
 
 GLP has no sparsity objective pushing units toward one-concept-per-unit organisation, so
 the information the SAE's dictionary cannot jointly represent ends up packed into units
