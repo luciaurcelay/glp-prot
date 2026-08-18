@@ -40,6 +40,8 @@ from typing import Dict, List, Optional, Tuple
 import _bootstrap  # noqa: F401
 import numpy as np
 
+from glp_plm.eval.steering_properties import (find_contrast_json, find_run_csv,
+                                              row_delta, run_property)
 from glp_plm.experiments import RunLogger, style
 
 SEG_WINDOW = 12          # Wootton & Federhen's default
@@ -76,11 +78,11 @@ def is_degenerate(row: dict) -> bool:
 
 
 def attributable(rows: List[dict], neutral_alpha: float) -> None:
-    base = {(r["direction"], r["corrected"], r["init"]): r["dgravy"]
+    base = {(r["direction"], r["corrected"], r["init"]): r["dprop"]
             for r in rows if r["alpha"] == neutral_alpha}
     for r in rows:
         b = base.get((r["direction"], r["corrected"], r["init"]))
-        r["attr"] = None if b is None else r["dgravy"] - b
+        r["attr"] = None if b is None else r["dprop"] - b
 
 
 def divergence(rows: List[dict], alpha: float, corrected: bool) -> Optional[Tuple[float, float, int]]:
@@ -110,13 +112,15 @@ def main():
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
-    raw = list(csv.DictReader(open(run_dir / "expB_diffmean_gravy.csv")))
+    csv_path = find_run_csv(run_dir)
+    raw = list(csv.DictReader(open(csv_path)))
+    prop = run_property(raw, csv_path)
     rows = []
     for r in raw:
         c = complexity(r["sequence"], args.window)
         rows.append({"alpha": float(r["alpha"]), "corrected": r["corrected"] == "True",
                      "direction": r.get("direction") or "up", "init": r["init_sequence_id"],
-                     "dgravy": float(r["delta_gravy"]), "gated_out": is_degenerate(r), **c})
+                     "dprop": row_delta(r), "gated_out": is_degenerate(r), **c})
     attributable(rows, args.neutral_alpha)
     run = RunLogger(run_dir)
     kept = [r for r in rows if not r["gated_out"]]
@@ -128,16 +132,16 @@ def main():
     # ---- 0. the reference that decides whether any threshold is meaningful ----
     # SEG's 2.2-bit trigger was calibrated on natural proteins at large. Our held-out starting
     # sequences ARE natural proteins (real UniRef50 entries), and they are the right yardstick:
-    # they were drawn from GRAVY extremes, so if very hydrophobic natural proteins are
-    # themselves locally low-complexity — transmembrane stretches are — then a threshold that
-    # flags them is measuring the property we steer toward, not degeneracy.
+    # they were drawn from the steered property's extremes, so if e.g. very hydrophobic
+    # natural proteins are themselves locally low-complexity — transmembrane stretches are —
+    # then a threshold that flags them measures the property we steer toward, not degeneracy.
     import json
     natural: Dict[str, List[dict]] = {}
-    gc = run_dir / "gravy_contrast.json"
-    if gc.exists():
+    gc = find_contrast_json(run_dir, prop.key)
+    if gc is not None and gc.exists():
         d = json.loads(gc.read_text())
-        for setname, entries in (("held-out, low-GRAVY (up starts)", d.get("heldout") or []),
-                                 ("held-out, high-GRAVY (down starts)", d.get("heldout_high") or [])):
+        for setname, entries in ((f"held-out, {prop.low_name} (up starts)", d.get("heldout") or []),
+                                 (f"held-out, {prop.high_name} (down starts)", d.get("heldout_high") or [])):
             natural[setname] = [complexity(e["sequence"], args.window) for e in entries]
     print("\n0. NATURAL PROTEINS, SAME MEASURE (the reference for any threshold)")
     for setname, cs in natural.items():
@@ -236,7 +240,7 @@ def main():
     attributable(rows, args.neutral_alpha)
     axL.axvline(SEG_K1, color=style.BASELINE, linestyle=":", linewidth=1.4)
     axL.set_xlabel("minimum window entropy required (bits)")
-    axL.set_ylabel(f"divergence at α={args.headline_alpha:g}\\n(up − down, GRAVY)")
+    axL.set_ylabel(f"divergence at α={args.headline_alpha:g}\\n(up − down, {prop.unit})")
     axL.set_title("Effect vs. how strict the complexity gate is", loc="left")
     axL.legend(fontsize=9)
     axR.axvline(SEG_K1, color=style.BASELINE, linestyle=":", linewidth=1.4)

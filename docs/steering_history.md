@@ -237,7 +237,8 @@ current-state description, or the module docstring for the exact spec:
   steering on hydrophobicity (GRAVY), following Huang et al. (arXiv:2509.07983)
   §4.1.1. Real held-out low-GRAVY sequences as init (not random-AA), 10%-mask
   partial refinement, paired naive-vs-corrected design by `init_sequence_id`.
-  Needs `scripts/build_gravy_contrast.py` (auto-built on first run).
+  Needs `scripts/build_property_contrast.py` (auto-built on first run; was
+  `build_gravy_contrast.py` before the charge/instability properties were added).
 
 Both experiments' outputs now live under
 `runs/uniref50_500m_4096_d24_steering/steering_<name>/` (this run replaced the
@@ -392,7 +393,8 @@ the raw per-alpha numbers above.
   masked-Gibbs loop compounding it.** Run `glp_correct` once on an
   alpha=5-clamped held-out activation (same shape as the Part 0 diagnostic,
   no generation loop) and check composition directly, vs. turning on
-  `--log-round-diagnostics` (writes `round_gravy.csv`) for a small alpha=5
+  `--log-round-diagnostics` (writes `round_property.csv`, `round_gravy.csv` in
+  runs predating the multi-property generalization) for a small alpha=5
   pilot to see which round it tips over in.
 - **Fill in the alpha grid between 2 and 5** (e.g. 3, 4) — naive stays clean at
   5 but corrected doesn't, so the breakdown is likely a sharp threshold, not
@@ -630,3 +632,103 @@ analysis including the quick ones.
   That is the untested deviation, and the likely reason relatedness selection
   failed here.
 - Neither operating point reaches natural foldability.
+
+---
+
+## §14 Extending to charge and instability (2026-08-18)
+
+Banerjee et al. steer three biochemical properties — hydrophobicity, charge and
+instability. Only hydrophobicity had been run here. This section records the
+design of the extension; **no charge or instability run has been executed yet**,
+so nothing below is a result.
+
+### 14.1 What changed in the code
+
+`glp_plm/eval/steering_properties.py` is now the single registry of steerable
+properties. `scripts/build_gravy_contrast.py` became
+`scripts/build_property_contrast.py --property {gravy,charge,instability}`, and
+`run_steering.py` grew `--property`. Each property gets its own out-dir leaf
+(`steering_diffmean_{hydro,charge,instability}_<NAME>`), contrast file
+(`<property>_contrast.json`) and CSV (`expB_diffmean_<property>.csv`); the GRAVY
+names are unchanged, so the archived runs stay readable.
+
+### 14.2 The four methodological decisions
+
+**1. Charge is steered per residue, not net.** Net charge is a *sum* over
+residues, so ranking proteins by it ranks them substantially by length, and a
+diff-of-means vector built on that contrast would encode "long" as much as
+"cationic". GRAVY is already a per-residue mean and the instability index is
+already length-normalized (10/L times a dipeptide sum), so charge was the only
+one that needed fixing. Net charge is still recorded per sequence; since
+masked-Gibbs never changes length the two are proportional within an init, which
+is the unit every effect estimate is paired on.
+
+**2. The length confound is measured on every build.** Even with a normalized
+score, a residual length difference between the two contrast sets can survive.
+`build_property_contrast.py` reports the gap in pool-SD units and warns above
+0.25; `--match-length` forces the two sets onto a shared length distribution by
+a stratified draw. Left off by default so the GRAVY vector is not silently
+changed — **decide it from the reported gap, per property**.
+
+**3. Every generation is scored on every property.** The CSV carries
+`delta_gravy`, `delta_charge`, `delta_instability` and `delta_net_charge`
+regardless of which was steered. This is what makes
+`scripts/analyze_property_specificity.py` possible: a 3×3 matrix of steered vs
+measured, in natural-SD units. An off-target column that was never written
+cannot be recovered without regenerating, which is why it is unconditional.
+
+The matrix' second panel subtracts the *natural* coupling. The three properties
+are correlated in real proteins (charged residues are hydrophilic), and the
+contrast build now stores that correlation matrix from the UniRef50 pool. A
+faithful direction should reproduce the coupling; only the residual is evidence
+of an unspecific vector. Reading a raw off-diagonal cell as "leakage" would
+mistake protein chemistry for a defect in the method.
+
+**4. Alpha is not comparable across properties in raw mode.** `h + alpha*v`
+rotates `h` by an angle set by `alpha*||v||/||h||`, and the three vectors have
+different norms, so a shared alpha grid means three different perturbation sizes.
+`--alpha-mode relative` reinterprets alpha as the fraction of `mean||h||` added
+along `v/||v||`, using the `mean_act_norm` the contrast build now records. Raw
+stays the default (it is what every existing run used); **a cross-property
+comparison must use `relative` for all three**, including a re-run of
+hydrophobicity.
+
+### 14.3 Why instability is the most informative of the three
+
+GRAVY and charge are both linear in amino-acid composition. The SDEdit
+correction's own drift is *also* compositional (Leu/Val enrichment, §13.2), so on
+those two targets a compositional artifact and a real steering effect are the
+same kind of object, separable only by the alpha=0 differencing and the
+bidirectional design.
+
+The instability index is a sum over **dipeptides** (Guruprasad's DIWV table), so
+it is not a function of composition alone. A compositional artifact cannot
+produce it directly. `analyze_steering_confound.py` now decomposes whichever
+property the run steered into its own components — residues for GRAVY/charge,
+dipeptides for instability — so "did the gain come from a broad shift or from
+stacking a few high-weight dipeptides?" is answerable. DIWV values span −15.9 to
++58.3, so a handful of dipeptides *can* move the index a long way: that check is
+not optional for this target.
+
+### 14.4 Expected failure modes, stated in advance
+
+- **Charge should collapse into homopolymers sooner than GRAVY did.** Steering
+  hard toward cationic drives poly-K/poly-R, toward anionic poly-E/poly-D — which
+  is exactly what `is_degenerate_sequence` rejects. Expect a higher degenerate
+  rate; report it as an outcome (`pass_rate_*`), never filter on it (§13.5b).
+- **The correction's alpha=0 drift will differ per property.** Leu/Val enrichment
+  depletes charged residues, so the drift should push |charge| *down*. It has to
+  be measured per property; `steering_attributable` already handles it, but the
+  sign and size are not transferable from the GRAVY run.
+- Nothing about the decoding-loop foldability cost (§13.6) is property-specific,
+  so both new properties inherit it. The naturalness claim is not expected to
+  come out differently.
+
+### 14.5 Still open
+
+- No charge or instability run has been executed. Every number in the paper is
+  hydrophobicity.
+- The length-gap decision (`--match-length`) is unresolved until the builds have
+  been run and their gaps read.
+- Whether to re-run hydrophobicity under `--alpha-mode relative` for a
+  comparable three-property table.

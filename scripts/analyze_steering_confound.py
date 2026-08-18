@@ -1,15 +1,18 @@
 #!/usr/bin/env python
-"""Exp B alpha=0 confound: per-residue decomposition + raw-vs-attributable dose-response.
+"""Exp B alpha=0 confound: component decomposition + raw-vs-attributable dose-response.
 
 Why this exists: at alpha=0 the two Exp B arms differ ONLY by whether `glp_correct` ran
-(diffmean steering at alpha=0 is an exact identity), yet the GLP-corrected arm already
-gains +1.35 ΔGRAVY against the naive arm's +0.40. This script shows where that comes from
-and what survives once it's subtracted:
+(diffmean steering at alpha=0 is an exact identity), yet on hydrophobicity the GLP-corrected
+arm already gains +1.35 ΔGRAVY against the naive arm's +0.40. This script shows where that
+comes from and what survives once it's subtracted, for whichever property the run steered:
 
-  Panel A  GRAVY is the mean Kyte-Doolittle value over residues, so the drift decomposes
-           EXACTLY as ΔGRAVY = Σ_aa Δf(aa)·KD(aa). Bars are each residue's contribution.
-  Panel B  raw ΔGRAVY (what summary.json's paired_wilcoxon reports) vs steering-attributable
-           ΔGRAVY (each arm differenced against its own alpha=0 run, per init sequence).
+  Panel A  the drift, decomposed into the components the property is a sum over. For GRAVY
+           and charge that is EXACT and per-residue (Δscore = Σ_aa Δf(aa)·w(aa)); for the
+           instability index the components are DIPEPTIDES, which is the whole reason that
+           target is worth running — a purely compositional artifact cannot produce it.
+  Panel B  the raw effect (what summary.json's paired_wilcoxon reports) vs the
+           steering-attributable one (each arm differenced against its own alpha=0 run,
+           per init sequence).
 
 Reads `steering_attributable` from the run's metrics/summary.json when present (the repo
 convention: figures read metrics, they don't recompute — glp_plm/experiments/metrics.py),
@@ -29,12 +32,9 @@ from statistics import mean
 
 import _bootstrap  # noqa: F401
 
+from glp_plm.eval.steering_properties import (find_contrast_json, find_run_csv, row_delta,
+                                              run_property)
 from glp_plm.experiments import style
-
-# Kyte-Doolittle hydropathy — the scale BioPython's ProteinAnalysis.gravy() averages.
-KD = {"A": 1.8, "R": -4.5, "N": -3.5, "D": -3.5, "C": 2.5, "Q": -3.5, "E": -3.5,
-      "G": -0.4, "H": -3.2, "I": 4.5, "L": 3.8, "K": -3.9, "M": 1.9, "F": 2.8,
-      "P": -1.6, "S": -0.8, "T": -0.7, "W": -0.9, "Y": -1.3, "V": 4.2}
 
 
 def is_degenerate(row: dict) -> bool:
@@ -45,16 +45,6 @@ def is_degenerate(row: dict) -> bool:
         return True
     return (int(float(row["unique_aa_count"])) <= 8
             or int(float(row["max_homopolymer_run"])) >= 8)
-
-
-def composition(seqs) -> dict:
-    """Mean per-residue frequency across `seqs`, each sequence weighted equally."""
-    out = {a: 0.0 for a in KD}
-    for s in seqs:
-        n, c = len(s), Counter(s)
-        for a in KD:
-            out[a] += c.get(a, 0) / n
-    return {a: v / len(seqs) for a, v in out.items()}
 
 
 def attributable_from_rows(rows, neutral_alpha=0.0) -> dict:
@@ -80,8 +70,14 @@ def attributable_from_rows(rows, neutral_alpha=0.0) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", required=True,
-                    help="steering out-dir (holds expB_diffmean_gravy.csv + gravy_contrast.json)")
+                    help="steering out-dir (holds expB_diffmean_<property>.csv and the "
+                         "matching <property>_contrast.json)")
     ap.add_argument("--out", help="output PNG (default <run-dir>/figures/alpha0_confound.png)")
+    ap.add_argument("--top-components", type=int, default=20,
+                    help="how many decomposition components panel A shows. All 20 residues "
+                         "for GRAVY/charge; for instability the components are dipeptides "
+                         "(up to 400), so only the largest contributors are drawn — the "
+                         "printed total is still over all of them.")
     ap.add_argument("--max-alpha", type=float, default=2.0,
                     help="omit alphas above this from panel B — past the breakdown point the "
                          "degenerate filter leaves too few clean corrected rows to plot "
@@ -89,30 +85,38 @@ def main():
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
-    rows = [r for r in csv.DictReader(open(run_dir / "expB_diffmean_gravy.csv"))]
+    csv_path = find_run_csv(run_dir)
+    rows = [r for r in csv.DictReader(open(csv_path))]
+    prop = run_property(rows, csv_path)
     for r in rows:
         r["_alpha"] = float(r["alpha"])
         r["_corr"] = r["corrected"] == "True"
-        r["_delta"] = float(r["delta_gravy"])
+        r["_delta"] = row_delta(r)
     clean = [r for r in rows if not is_degenerate(r)]
-    print(f"rows={len(rows)}  clean={len(clean)}  degenerate={len(rows) - len(clean)}")
+    print(f"property={prop.key}  rows={len(rows)}  clean={len(clean)}  "
+          f"degenerate={len(rows) - len(clean)}")
 
+    contrast = find_contrast_json(run_dir, prop.key)
+    if contrast is None:
+        raise SystemExit(f"no <property>_contrast.json in {run_dir}")
     heldout = {str(h["id"]): h["sequence"]
-               for h in json.loads((run_dir / "gravy_contrast.json").read_text())["heldout"]}
+               for h in json.loads(contrast.read_text())["heldout"]}
 
-    # ---- Panel A data: alpha=0 corrected drift, decomposed per residue ----
+    # ---- Panel A data: alpha=0 corrected drift, decomposed into the property's own
+    # components (residues for GRAVY/charge, dipeptides for instability) ----
     a0c = [r for r in clean if r["_alpha"] == 0.0 and r["_corr"]]
-    c_init = composition([heldout[r["init_sequence_id"]] for r in a0c])
-    c_fin = composition([r["sequence"] for r in a0c])
-    contrib = {a: (c_fin[a] - c_init[a]) * KD[a] for a in KD}
-    order = sorted(KD, key=lambda a: contrib[a])          # ascending -> largest at top in barh
-    total = sum(contrib.values())
-    print(f"\nalpha=0 corrected drift decomposes to {total:+.3f} GRAVY "
-          f"(CSV mean {mean(r['_delta'] for r in a0c):+.3f})")
-    print(f"{'aa':>3} {'KD':>6} {'init%':>7} {'final%':>7} {'Δpp':>7} {'contrib':>8}")
-    for a in reversed(order):
-        print(f"{a:>3} {KD[a]:>+6.1f} {c_init[a]*100:>7.2f} {c_fin[a]*100:>7.2f} "
-              f"{(c_fin[a]-c_init[a])*100:>+7.2f} {contrib[a]:>+8.3f}")
+    dec = prop.decompose([heldout[r["init_sequence_id"]] for r in a0c],
+                         [r["sequence"] for r in a0c])
+    total = sum(v for _, v in dec)
+    shown = dec[:args.top_components]
+    order = [k for k, _ in sorted(shown, key=lambda t: t[1])]   # ascending -> largest at top
+    contrib = dict(dec)
+    print(f"\nalpha=0 corrected drift decomposes to {total:+.4f} {prop.unit} "
+          f"(CSV mean {mean(r['_delta'] for r in a0c):+.4f}"
+          + ("" if prop.compositional else "; dipeptide components, sum over all 400") + ")")
+    print(f"{'component':>10} {'contrib':>10}   ({len(dec)} total, showing {len(shown)})")
+    for k, v in shown:
+        print(f"{k:>10} {v:>+10.4f}")
 
     # ---- Panel B data: raw vs steering-attributable, per alpha ----
     summary_path = run_dir / "metrics" / "summary.json"
@@ -157,18 +161,20 @@ def main():
              height=0.68)
     axA.axvline(0, color=style.BASELINE, linewidth=1.0)
     axA.set_yticks(list(ys))
-    axA.set_yticklabels([f"{a}  ({(c_fin[a]-c_init[a])*100:+.1f}pp)" for a in order],
-                        fontsize=9)
-    axA.set_xlabel("contribution to ΔGRAVY  (Δfrequency × Kyte-Doolittle)")
+    axA.set_yticklabels(order, fontsize=9)
+    axA.set_xlabel(f"contribution to {prop.delta_label}"
+                   + ("  (Δfrequency × scale weight)" if prop.compositional
+                      else "  (Δdipeptide contribution)"))
     axA.set_title("A  Where the no-steering drift comes from", loc="left")
     # direct-label only the two dominant bars, not every point
-    for a in ("L", "V"):
-        i = order.index(a)
-        axA.annotate(f"{contrib[a]:+.2f}", (contrib[a], i), xytext=(5, 0),
-                     textcoords="offset points", va="center", fontsize=9,
-                     color=style.INK, fontweight="bold")
-    axA.annotate(f"total {total:+.2f} GRAVY\nwith zero steering applied\n"
-                 "(losing a hydrophilic residue\nraises GRAVY too — e.g. K, R, D)",
+    for k, _ in dec[:2]:
+        if k in order:
+            i = order.index(k)
+            axA.annotate(f"{contrib[k]:+.2f}", (contrib[k], i), xytext=(5, 0),
+                         textcoords="offset points", va="center", fontsize=9,
+                         color=style.INK, fontweight="bold")
+    axA.annotate(f"total {total:+.3g} {prop.unit}\nwith zero steering applied\n"
+                 f"(over all {len(dec)} components)",
                  xy=(0.97, 0.06), xycoords="axes fraction", ha="right", fontsize=9,
                  color=style.SECONDARY)
 
@@ -198,7 +204,7 @@ def main():
     # not "final - init": that's only the raw series. The attributable series is a
     # difference-of-differences (vs. the same arm's own alpha=0 run), so the legend
     # carries the distinction and the axis stays generic.
-    axB.set_ylabel("ΔGRAVY")
+    axB.set_ylabel(prop.delta_label)
     axB.set_title("B  Raw effect vs. what steering actually contributes", loc="left")
     axB.legend(loc="upper left", fontsize=9)
 

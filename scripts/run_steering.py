@@ -18,8 +18,9 @@ mechanically identical:
     (arXiv:2509.07983) §4.1.1 — real held-out low-GRAVY sequence init, 10%-mask
     partial refinement, 20-50 rounds, always keep the last round. Concept score:
     continuous ΔGRAVY (final - init). No folding. Needs
-    `scripts/build_gravy_contrast.py` to have been run first (auto-built here if
-    missing — see `--gravy-contrast`).
+    `scripts/build_property_contrast.py` to have been run first (auto-built here if
+    missing — see `--contrast`). `--property` picks which of hydrophobicity/charge/
+    instability is steered.
 
 Both share: Part 0 (off-manifold diagnostic — does steering raise GLP diffusion loss,
 worse at higher alpha?), Part 1 (`glp_correct`, the SDEdit activation-space cleanup),
@@ -60,6 +61,8 @@ from glp_plm.eval import baselines as bl
 from glp_plm.eval import probing_1d as pr
 from glp_plm.eval import probing_f1 as pf
 from glp_plm.eval.probing_1d import balanced_indices
+from glp_plm.eval.steering_properties import (PROPERTIES, SCORE_ALL_KEYS, get_property,
+                                              score_all)
 from glp_plm.experiments import RunLogger
 from glp_plm.experiments import style
 from glp_plm.model import GLPDenoiser
@@ -654,6 +657,30 @@ def make_steer_fn(method: str, alpha: float, sae=None, feat_idxs=None, v: Option
     return lambda a: diffmean_clamp(v, a, alpha)
 
 
+def property_columns(init_seq: Optional[str], final_seq: str) -> Dict[str, float]:
+    """`<p>_init`, `<p>_final`, `delta_<p>` for EVERY steerable property, not just the one
+    being steered (glp_plm/eval/steering_properties.py, design point 2).
+
+    This is what makes the specificity matrix possible after the fact: an off-target
+    column that was never written cannot be recovered without regenerating. The steered
+    property's columns are duplicated as `prop_*`/`delta_prop` by the caller, so
+    `delta_gravy` keeps meaning Δgravy in every run, including charge and instability ones.
+    """
+    fin = score_all(final_seq)
+    ini = score_all(init_seq) if init_seq else {}
+    cols: Dict[str, float] = {}
+    for k in SCORE_ALL_KEYS:
+        cols[f"{k}_init"] = ini.get(k)
+        cols[f"{k}_final"] = fin.get(k)
+        cols[f"delta_{k}"] = (fin[k] - ini[k]) if (k in fin and k in ini) else None
+    return cols
+
+
+#: Column names `property_columns` produces, in CSV order.
+PROPERTY_COLUMNS: List[str] = [
+    name for k in SCORE_ALL_KEYS for name in (f"{k}_init", f"{k}_final", f"delta_{k}")]
+
+
 def target_signal(method: str, acts_raw: torch.Tensor, device: str, sae=None, feat_idxs=None,
                   v: Optional[torch.Tensor] = None) -> Tuple[float, float]:
     if method == "sae":
@@ -1175,9 +1202,29 @@ def main():
                          "which always uses b=0 — the algebraic identity, not this value).")
 
     # Exp B specific
-    ap.add_argument("--gravy-contrast", help="[B only] path to gravy_contrast.json (default "
-                                             "<out-dir>/gravy_contrast.json — built automatically "
-                                             "via build_gravy_contrast.py if missing)")
+    ap.add_argument("--property", default="gravy", choices=sorted(PROPERTIES),
+                    help="[B only] which whole-sequence property to steer. 'gravy' "
+                         "(hydrophobicity), 'charge' (net charge per residue at pH 7) and "
+                         "'instability' (Guruprasad index) are the three Banerjee et al. "
+                         "steer. Selects the contrast file, the reported effect, and the "
+                         "default out-dir leaf; every generation is scored on ALL of them "
+                         "regardless, so off-target effects are always recoverable.")
+    ap.add_argument("--contrast", "--gravy-contrast", dest="contrast",
+                    help="[B only] path to <property>_contrast.json (default "
+                         "<out-dir>/<property>_contrast.json — built automatically via "
+                         "build_property_contrast.py if missing)")
+    ap.add_argument("--alpha-mode", choices=["raw", "relative"], default="raw",
+                    help="[B only] how --alphas is interpreted. 'raw' (default, and what "
+                         "every existing run used): h + alpha*v, so alpha is in units of "
+                         "1/||v|| and is NOT comparable between properties whose vectors "
+                         "have different norms. 'relative': h + alpha*mean||h||*v/||v||, so "
+                         "alpha is the fraction of the activation norm added along the "
+                         "direction — the same rotation for every property, which is what a "
+                         "cross-property comparison needs.")
+    ap.add_argument("--match-length", action="store_true",
+                    help="[B only] pass through to the contrast builder when it has to "
+                         "build: force the two contrast sets onto a shared length "
+                         "distribution. Only affects a build, not an existing contrast file.")
 
     ap.add_argument("--alphas", default=None,
                     help="steering strengths. Exp A default '0.5,1,2,4,8' (multiples of the "
@@ -1265,7 +1312,7 @@ def main():
     ap.add_argument("--log-round-diagnostics", action="store_true",
                     help="log per-round diffusion loss before/after SDEdit (corrected=True "
                          "rows only) to <out-dir>/round_diagnostics.csv, plus a per-round "
-                         "trajectory log (round_feature_activation.csv for A, round_gravy.csv "
+                         "trajectory log (round_feature_activation.csv for A, round_property.csv "
                          "for B — the latter is how you check Exp B's round-count pilot: does "
                          "ΔGRAVY plateau by round 20-50?)")
     ap.add_argument("--diag-n-repeats", type=int, default=1,
@@ -1302,7 +1349,7 @@ def main():
                          "trajectories should diverge monotonically, which is far stronger "
                          "evidence than one rising curve, and their difference cancels any "
                          "direction-independent drift. 'down' needs `heldout_high` in "
-                         "gravy_contrast.json. Default 'auto' runs both when that key is "
+                         "the contrast file. Default 'auto' runs both when that key is "
                          "present and falls back to up-only (with a warning) when it is not, "
                          "so a contrast file built before bidirectional steering still runs "
                          "its original single direction rather than erroring; naming a "
@@ -1326,7 +1373,10 @@ def main():
     else:
         processed = resolve_storage_dir(out, "swissprot", "GLP_DATA_ROOT", symlink=False) / "processed"
 
-    leaf = "steering_sae_zinc" if is_a else "steering_diffmean_hydro"
+    prop = None if is_a else get_property(args.property)
+    # "hydro" rather than "gravy" so the GRAVY leaf is unchanged from before the other two
+    # properties existed (runs/steering_crg/steering_diffmean_hydro_* stay findable).
+    leaf = "steering_sae_zinc" if is_a else f"steering_diffmean_{prop.leaf}"
     if args.out_dir:
         out_dir = Path(args.out_dir)
     elif args.exp_name:
@@ -1382,22 +1432,56 @@ def main():
             neutral_alpha = 0.0  # sae_clamp's null-baseline special-case (see make_steer_fn)
         len_lo, len_hi = (int(x) for x in args.length_range.split(","))
     else:
-        from build_gravy_contrast import build_gravy_contrast, gravy_score
-        gravy_path = Path(args.gravy_contrast) if args.gravy_contrast else out_dir / "gravy_contrast.json"
-        build_gravy_contrast(cfg, gravy_path, seed=args.seed, restart=args.restart, device=device)
-        gd = json.loads(gravy_path.read_text())
+        from build_property_contrast import build_property_contrast
+        contrast_path = (Path(args.contrast) if args.contrast
+                         else out_dir / f"{args.property}_contrast.json")
+        build_property_contrast(cfg, contrast_path, prop_key=args.property, seed=args.seed,
+                                restart=args.restart, device=device,
+                                match_length=args.match_length)
+        gd = json.loads(contrast_path.read_text())
+        # Pre-generalization files are GRAVY-only and use `gravy_*` keys; read either.
+        file_prop = gd.get("property", "gravy")
+        if file_prop != args.property:
+            ap.error(f"{contrast_path} was built for property {file_prop!r} but "
+                     f"--property is {args.property!r}. Point --contrast at the right file "
+                     "or pass --restart to rebuild it in place.")
+        high_mean = gd.get("prop_high_mean", gd.get("gravy_high_mean"))
+        low_mean = gd.get("prop_low_in_mean", gd.get("gravy_low_in_mean"))
         diffmean_vec = torch.tensor(gd["vector"], dtype=torch.float32)
         heldout = gd["heldout"]
         heldout_high = gd.get("heldout_high") or []
-        print(f"[steering] gravy contrast: high={gd['gravy_high_mean']:.3f} vs "
-              f"low={gd['gravy_low_in_mean']:.3f} (||v||={gd['vector_norm']:.4f}), "
+        print(f"[steering] {args.property} contrast: high={high_mean:.4f} vs "
+              f"low={low_mean:.4f} (||v||={gd['vector_norm']:.4f}), "
               f"{len(heldout)} held-out starting sequences")
+        if gd.get("length_gap_pool_sd") is not None and not gd.get("match_length"):
+            print(f"[steering] contrast-set length gap {gd['length_gap_pool_sd']:+.2f} pool SD "
+                  "(rebuild with --match-length --restart if this is large)")
+
+        # --alpha-mode is implemented by rescaling the vector ONCE, so every call site
+        # (pilots included) inherits it and `alpha` keeps its plain meaning in the CSV.
+        # Only diffmean_clamp is affected: the projection columns are cosine similarities,
+        # which are scale-invariant.
+        alpha_scale = 1.0
+        if args.alpha_mode == "relative":
+            mean_act_norm = gd.get("mean_act_norm")
+            if not mean_act_norm or not np.isfinite(mean_act_norm):
+                ap.error(f"--alpha-mode relative needs `mean_act_norm` in {contrast_path}, "
+                         "which predates it — rebuild the contrast with --restart.")
+            alpha_scale = float(mean_act_norm) / float(gd["vector_norm"])
+            diffmean_vec = diffmean_vec * alpha_scale
+            print(f"[steering] alpha-mode=relative: alpha is now the fraction of mean||h||="
+                  f"{mean_act_norm:.4f} added along v/||v|| (raw-mode alpha x {alpha_scale:.3f})")
+        run.log_summary(steered_property=args.property, alpha_mode=args.alpha_mode,
+                        alpha_scale=alpha_scale, vector_norm=float(gd["vector_norm"]),
+                        contrast_length_gap_pool_sd=gd.get("length_gap_pool_sd"),
+                        contrast_match_length=bool(gd.get("match_length")),
+                        contrast_natural_correlations=gd.get("natural_correlations"))
         default_alphas = "0,0.05,0.25,0.5,1,2,5,20"
         neutral_alpha = 0.0  # diffmean_clamp's alpha=0 -> x_new == x exactly, no special-casing
         if args.directions.strip() == "auto":
             directions = ["up", "down"] if heldout_high else ["up"]
             if not heldout_high:
-                print("[steering] WARNING: this gravy_contrast.json has no `heldout_high`, so "
+                print("[steering] WARNING: this contrast file has no `heldout_high`, so "
                       "only the 'up' direction will run (it predates bidirectional steering). "
                       "Bidirectional is the stronger design — two trajectories that must "
                       "diverge, whose difference cancels direction-independent drift — so "
@@ -1408,9 +1492,9 @@ def main():
             if bad:
                 ap.error(f"--directions must be 'up' and/or 'down' (or 'auto'), got {bad}")
             if "down" in directions and not heldout_high:
-                ap.error(f"--directions includes 'down' but {gravy_path} has no `heldout_high` "
+                ap.error(f"--directions includes 'down' but {contrast_path} has no `heldout_high` "
                          "(it predates bidirectional steering). Rebuild it with "
-                         "`--gravy-contrast <path> --restart`, or pass --directions up.")
+                         "`--contrast <path> --restart`, or pass --directions up.")
         heldout_sets = {"up": heldout, "down": heldout_high}
         if args.n_sequences is not None and args.n_sequences != len(heldout):
             print(f"[steering] --n-sequences ignored for experiment B — using all held-out "
@@ -1464,13 +1548,21 @@ def main():
 
     def build_init(i: int, generator: torch.Generator, direction: str = "up"):
         """`direction` selects which held-out set the start comes from: 'up' -> the
-        low-GRAVY set (steered +v), 'down' -> the high-GRAVY set (steered -v). Exp A ignores
-        it (random-AA inits)."""
+        low-score set (steered +v), 'down' -> the high-score set (steered -v). Exp A ignores
+        it (random-AA inits).
+
+        Returns (tokens, length, held-out id, starting property score, starting sequence).
+        `score` is the generic contrast key, `gravy` the pre-generalization one that
+        archived contrast files still use. The starting sequence comes back so every
+        property can be differenced init->final, not just the steered one."""
         if is_a:
             length = int(np.random.default_rng(args.seed * 7919 + i).integers(len_lo, len_hi + 1))
-            return random_aa_init_tokens(steerer.tokenizer, length, generator), length, None, None
+            return (random_aa_init_tokens(steerer.tokenizer, length, generator), length,
+                    None, None, None)
         ho = heldout_sets[direction][i]
-        return seq_to_init_tokens(steerer.tokenizer, ho["sequence"]), len(ho["sequence"]), ho["id"], ho["gravy"]
+        init_score = ho["score"] if "score" in ho else ho["gravy"]
+        return (seq_to_init_tokens(steerer.tokenizer, ho["sequence"]), len(ho["sequence"]),
+                ho["id"], init_score, ho["sequence"])
 
     if args.t_start_pilot:
         extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
@@ -1493,7 +1585,7 @@ def main():
                     seed_i = args.seed * 1000 + i
                     g = torch.Generator().manual_seed(seed_i)
                     g_dev = torch.Generator(device=device).manual_seed(seed_i)
-                    init_tokens, length, init_id, gravy_init = build_init(i, g)
+                    init_tokens, length, init_id, init_score, _ = build_init(i, g)
                     seq = masked_gibbs_generate(
                         steerer, init_tokens,
                         steer_fn=make_steer_fn(method, alpha, sae=sae, feat_idxs=feat_idxs, v=diffmean_vec,
@@ -1508,7 +1600,7 @@ def main():
                     acts = torch.from_numpy(extractor.extract_single(seq)).float()
                     dloss = float(diffusion_loss(model, scaler, acts, n_repeats=args.n_repeats,
                                                  device=device, generator=g_dev).mean())
-                    concept = c2h2_concept_score(seq) if is_a else gravy_score(seq) - gravy_init
+                    concept = c2h2_concept_score(seq) if is_a else prop.score(seq) - init_score
                     pilot_rows.append({"t_start": t_start, "alpha": alpha, "sample_idx": i,
                                       "length": length, "concept_score": concept,
                                       "pseudo_perplexity": pseudo_perplexity(steerer, seq, device),
@@ -1575,7 +1667,8 @@ def main():
                             seed_i = args.seed * 1000 + i
                             g = torch.Generator().manual_seed(seed_i)
                             g_dev = torch.Generator(device=device).manual_seed(seed_i)
-                            init_tokens, length, init_id, gravy_init = build_init(i, g, "up")
+                            init_tokens, length, init_id, init_score, init_seq = build_init(
+                                i, g, "up")
                             seq = masked_gibbs_generate(
                                 steerer, init_tokens,
                                 steer_fn=make_steer_fn(method, alpha, v=diffmean_vec),
@@ -1593,8 +1686,10 @@ def main():
                                 "n_rounds": n_rounds, "temperature": temp, "alpha": alpha,
                                 "mask_fraction": mask_frac, "selection": args.mask_selection,
                                 "corrected": corrected, "direction": "up", "length": length,
-                                "gravy_init": gravy_init, "gravy_final": gravy_score(seq),
-                                "delta_gravy": gravy_score(seq) - gravy_init,
+                                "property": args.property,
+                                "prop_init": init_score, "prop_final": prop.score(seq),
+                                "delta_prop": prop.score(seq) - init_score,
+                                **property_columns(init_seq, seq),
                                 "naturalness_score": pseudo_perplexity(
                                     steerer, seq, device, batch_size=args.pppl_batch_size),
                                 "max_homopolymer_run": max_homopolymer_run(seq),
@@ -1641,7 +1736,9 @@ def main():
     if not args.skip_generate:
         extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
 
-        csv_name = "expA_sae_zincfinger.csv" if is_a else "expB_diffmean_gravy.csv"
+        # "gravy" rather than the property key for the hydrophobicity run, so the archived
+        # expB_diffmean_gravy.csv name is unchanged; charge/instability get their own.
+        csv_name = "expA_sae_zincfinger.csv" if is_a else f"expB_diffmean_{args.property}.csv"
         csv_path = out_dir / csv_name
         existing = []
         if csv_path.exists() and not args.restart:
@@ -1661,17 +1758,22 @@ def main():
                          "target_feature_activation_mean", "target_feature_activation_max",
                          "target_feature_peak_residue", "plddt", "ptm", "sequence"]
         else:
-            fieldnames = ["sample_id", "init_sequence_id", "alpha", "corrected", "length",
-                         "gravy_init", "gravy_final", "delta_gravy", "naturalness_score",
-                         "diffusion_loss", "max_homopolymer_run", "unique_aa_count",
-                         "composition_distance",
-                         "target_projection_mean", "target_projection_max",
-                         "plddt", "ptm", "direction", "sequence"]
+            fieldnames = (["sample_id", "init_sequence_id", "alpha", "corrected", "length",
+                          "property", "prop_init", "prop_final", "delta_prop"]
+                          + PROPERTY_COLUMNS +
+                          ["naturalness_score",
+                           "diffusion_loss", "max_homopolymer_run", "unique_aa_count",
+                           "composition_distance",
+                           "target_projection_mean", "target_projection_max",
+                           "plddt", "ptm", "direction", "sequence"])
 
         mode = "a" if existing else "w"
         rows_for_analysis = []
         for r in existing:
-            concept_score = (1.0 if r["motif_hit"] == "True" else 0.0) if is_a else float(r["delta_gravy"])
+            # legacy CSVs (pre-generalization) carry only delta_gravy, which was the
+            # steered property's delta by construction there.
+            concept_score = ((1.0 if r["motif_hit"] == "True" else 0.0) if is_a
+                             else float(r.get("delta_prop") or r["delta_gravy"]))
             rows_for_analysis.append({
                 **r, "alpha": float(r["alpha"]), "corrected": r["corrected"] == "True",
                 "direction": r.get("direction") or "up",
@@ -1691,11 +1793,12 @@ def main():
             if diag_mode == "w":
                 diag_writer.writeheader()
 
-        roundlog_name = "round_feature_activation.csv" if is_a else "round_gravy.csv"
+        roundlog_name = "round_feature_activation.csv" if is_a else "round_property.csv"
         roundlog_path = out_dir / roundlog_name
         roundlog_fieldnames = (["sample_id", "alpha", "corrected", "round",
                                 "feature_activation_mean", "feature_activation_max"] if is_a
-                               else ["sample_id", "alpha", "corrected", "round", "gravy_current"])
+                               else ["sample_id", "alpha", "corrected", "round",
+                                     "property", "prop_current"])
         roundlog_file = roundlog_writer = None
         if args.log_round_diagnostics:
             rl_mode = "a" if roundlog_path.exists() and not args.restart else "w"
@@ -1722,8 +1825,8 @@ def main():
                             g = torch.Generator().manual_seed(seed_i)
                             g_dev = torch.Generator(device=device).manual_seed(seed_i)
 
-                            init_tokens, length, init_sequence_id, gravy_init = build_init(
-                                i, g, direction)
+                            (init_tokens, length, init_sequence_id, init_score,
+                             init_seq) = build_init(i, g, direction)
                             # spec's selection caveat: Exp A's no-steering anchor (alpha==
                             # neutral_alpha) keeps the LAST round (select_fn=None), not the
                             # z_k-argmax criterion, to avoid cherry-picking an unsteered run's
@@ -1786,7 +1889,8 @@ def main():
                                           _corrected=corrected):
                                     roundlog_writer.writerow({
                                         "sample_id": _sample_id, "alpha": _alpha, "corrected": _corrected,
-                                        "round": round_idx, "gravy_current": gravy_score(cur_seq)})
+                                        "round": round_idx, "property": args.property,
+                                        "prop_current": prop.score(cur_seq)})
                                     roundlog_file.flush()
 
                             seq = masked_gibbs_generate(
@@ -1828,26 +1932,29 @@ def main():
                                            f"motif_hit={motif_hit} count={concept_count}/{concept_count_loose} "
                                            f"pppl={pppl:.2f} dloss={dloss:.4f} plddt={plddt} ptm={ptm}")
                             else:
-                                gravy_final = gravy_score(seq)
-                                delta_gravy = gravy_final - gravy_init
+                                prop_final = prop.score(seq)
+                                delta_prop = prop_final - init_score
                                 plddt, ptm = fold_confidence(seq, device) if args.fold else (None, None)
                                 proj_mean, proj_max = target_signal(method, acts_final, device, v=diffmean_vec)
                                 row = {"sample_id": sample_id, "init_sequence_id": init_sequence_id,
                                       "alpha": alpha, "corrected": corrected, "length": length,
-                                      "gravy_init": gravy_init, "gravy_final": gravy_final,
-                                      "delta_gravy": delta_gravy, "naturalness_score": pppl,
+                                      "property": args.property, "prop_init": init_score,
+                                      "prop_final": prop_final, "delta_prop": delta_prop,
+                                      **property_columns(init_seq, seq),
+                                      "naturalness_score": pppl,
                                       "diffusion_loss": dloss, "max_homopolymer_run": max_homopolymer_run(seq),
                                       "unique_aa_count": len(set(seq)),
                                       "composition_distance": composition_distance(seq),
                                       "target_projection_mean": proj_mean, "target_projection_max": proj_max,
                                       "plddt": plddt, "ptm": ptm, "direction": direction,
                                       "sequence": seq}
-                                concept_score = delta_gravy
+                                concept_score = delta_prop
                                 fold_str = (f" plddt={plddt:.1f} ptm={ptm:.3f}"
                                             if plddt is not None and ptm is not None else "")
                                 log_line = (f"[exp-b] dir={direction} alpha={alpha} corrected={corrected} "
-                                           f"init_id={init_sequence_id} gravy {gravy_init:.3f}->"
-                                           f"{gravy_final:.3f} (d={delta_gravy:+.3f}) pppl={pppl:.2f} "
+                                           f"init_id={init_sequence_id} {args.property} "
+                                           f"{init_score:{prop.fmt}}->{prop_final:{prop.fmt}} "
+                                           f"(d={delta_prop:{prop.fmt}}) pppl={pppl:.2f} "
                                            f"dloss={dloss:.4f}{fold_str}")
 
                             w.writerow(row)
@@ -1904,7 +2011,7 @@ def main():
 
                 for a, st in w_by_dir[d].items():
                     print(f"{tag} paired Wilcoxon alpha={a}: n={st['n_pairs']} "
-                          f"mean_delta_gravy={st['mean_delta']:+.4f} p={st['wilcoxon_p']:.4f}")
+                          f"mean_delta={st['mean_delta']:+.4f} p={st['wilcoxon_p']:.4f}")
                 # The alpha=0 arms are the drift read-out, and with both directions present
                 # they also identify its mechanism: a fixed hydrophobic bias stays positive
                 # from HIGH-GRAVY starts, whereas mean-reversion toward typical composition
@@ -1914,7 +2021,7 @@ def main():
                     v = [r["concept_score"] for r in base_rows if r["corrected"] == corrected]
                     if v:
                         print(f"{tag} baseline drift (alpha={neutral_alpha}, NO steering) "
-                              f"{name}: mean_delta_gravy={np.mean(v):+.4f} (n={len(v)})")
+                              f"{name}: mean_delta={np.mean(v):+.4f} (n={len(v)})")
                 for a, st in attrib_by_dir[d].items():
                     parts = []
                     for name in ("naive", "corrected", "gap"):

@@ -44,7 +44,11 @@ import sys
 import time
 from pathlib import Path
 
-CSV_CANDIDATES = ("expB_diffmean_gravy.csv", "expA_sae_zincfinger.csv")
+# Any steered property: expB_diffmean_{gravy,charge,instability}.csv. Globbed
+# rather than imported from glp_plm.eval.steering_properties because this stage
+# runs in the separate ESMFold2 venv, which has no glp_plm.
+CSV_GLOB = "expB_diffmean_*.csv"
+CSV_CANDIDATES = ("expA_sae_zincfinger.csv",)
 SIDECAR = "fold_confidence.csv"
 FIELDS = ["sample_id", "direction", "alpha", "corrected", "length", "plddt", "plddt_ca",
           "ptm", "iptm", "pae_mean", "num_sampling_steps", "num_loops", "model_id",
@@ -61,10 +65,17 @@ def find_input(run_dir: Path, explicit: str | None) -> Path:
         if not p.exists():
             sys.exit(f"--input {p} does not exist")
         return p
+    hits = sorted(run_dir.glob(CSV_GLOB))
+    if len(hits) > 1:
+        sys.exit(f"{run_dir} holds {len(hits)} Exp B CSVs ({[h.name for h in hits]}) — "
+                 "a run steers one property; pass --input explicitly")
+    if hits:
+        return hits[0]
     for name in CSV_CANDIDATES:
         if (run_dir / name).exists():
             return run_dir / name
-    sys.exit(f"no {' or '.join(CSV_CANDIDATES)} found in {run_dir} — pass --input explicitly")
+    sys.exit(f"no {CSV_GLOB} or {' or '.join(CSV_CANDIDATES)} found in {run_dir} — "
+             "pass --input explicitly")
 
 
 def main():

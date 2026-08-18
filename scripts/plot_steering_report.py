@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Publication figures for the hydrophobicity-steering experiment.
+"""Publication figures for a diff-of-means steering run (any steered property).
 
 Replaces the Pareto-framed figures. A Pareto front compares solutions you cannot index; here
 the solutions ARE indexed, by the steering strength alpha, so the set of achievable
@@ -29,6 +29,8 @@ from typing import Dict, List, Optional, Tuple
 import _bootstrap  # noqa: F401
 import numpy as np
 
+from glp_plm.eval.steering_properties import (SteeringProperty, find_run_csv,
+                                              row_delta, run_property)
 from glp_plm.experiments import RunLogger, style
 
 ARMS = ((False, "naive"), (True, "GLP-corrected"))
@@ -43,28 +45,29 @@ def is_degenerate(row: dict) -> bool:
             # protein with a run of 9 (see run_steering.is_degenerate_sequence)
 
 
-def load_rows(run_dir: Path, neutral_alpha: float, apply_gate: bool = True) -> List[dict]:
-    path = run_dir / "expB_diffmean_gravy.csv"
-    if not path.exists():
-        raise SystemExit(f"{path} not found")
+def load_rows(run_dir: Path, neutral_alpha: float, apply_gate: bool = True
+              ) -> Tuple[List[dict], SteeringProperty]:
+    path = find_run_csv(run_dir)
     raw = [r for r in csv.DictReader(open(path))]
+    prop = run_property(raw, path)
     rows = []
     for r in raw:
         if apply_gate and is_degenerate(r):
             continue          # degenerate output is excluded from effect estimates
         rows.append({"alpha": float(r["alpha"]), "corrected": r["corrected"] == "True",
                      "direction": r.get("direction") or "up",
-                     "init": r["init_sequence_id"], "dgravy": float(r["delta_gravy"])})
+                     "init": r["init_sequence_id"], "dprop": row_delta(r)})
     # per-sample steering-attributable effect: subtract this init's own no-steering run in the
     # same arm and direction, removing the correction's drift and per-init variation
-    base = {(r["direction"], r["corrected"], r["init"]): r["dgravy"]
+    base = {(r["direction"], r["corrected"], r["init"]): r["dprop"]
             for r in rows if r["alpha"] == neutral_alpha}
     for r in rows:
         b = base.get((r["direction"], r["corrected"], r["init"]))
-        r["attr"] = None if b is None else r["dgravy"] - b
+        r["attr"] = None if b is None else r["dprop"] - b
     if apply_gate:
-        print(f"[report] {len(rows)}/{len(raw)} non-degenerate rows")
-    return rows
+        print(f"[report] {len(rows)}/{len(raw)} non-degenerate rows "
+              f"(steered property: {prop.label})")
+    return rows, prop
 
 
 def cell_stats(rows, direction, corrected, alpha, field) -> Optional[Tuple[float, float, int]]:
@@ -80,15 +83,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--neutral-alpha", type=float, default=0.0)
-    ap.add_argument("--property", default="hydrophobicity (GRAVY)",
-                    help="human-readable property name for axis labels")
+    ap.add_argument("--property-label", default=None,
+                    help="override the axis label for the steered property; by default it "
+                         "is read from the run's own CSV (the `property` column)")
     ap.add_argument("--no-titles", action="store_true",
                     help="omit in-figure titles entirely, for journals that want the figure "
                          "bare and all description in the caption")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
-    rows = load_rows(run_dir, args.neutral_alpha)
+    rows, prop = load_rows(run_dir, args.neutral_alpha)
+    prop_label = args.property_label or prop.label
     run = RunLogger(run_dir)
     alphas = sorted({r["alpha"] for r in rows})
     dirs = sorted({r["direction"] for r in rows}, key=lambda d: 0 if d == "up" else 1)
@@ -131,10 +136,10 @@ def main():
         ax.set_xticks(range(len(alphas)))
         ax.set_xticklabels(xlabels)
         ax.set_xlabel("steering strength α")
-        ax.set_ylabel(f"change in {args.property}\n(steering-attributable, mean ± SEM)")
-        title(ax, f"Change in {args.property} vs. steering strength, both directions")
+        ax.set_ylabel(f"change in {prop_label}\n(steering-attributable, mean ± SEM)")
+        title(ax, f"Change in {prop_label} vs. steering strength, both directions")
         ax.legend(fontsize=9, loc="upper left")
-        ax.annotate("solid = steered toward hydrophobic\ndashed = steered away",
+        ax.annotate(f"solid = steered toward {prop.high_name}\ndashed = steered away",
                     xy=(0.015, 0.03), xycoords="axes fraction", ha="left", fontsize=8.5,
                     color=style.SECONDARY)
         p = style.save_fig(fig, run.figures_dir / "fig_divergence.png")
@@ -147,19 +152,19 @@ def main():
     for i, (corrected, lab) in enumerate(ARMS):
         vals, errs = [], []
         for d in dirs:
-            st = cell_stats(rows, d, corrected, args.neutral_alpha, "dgravy")
+            st = cell_stats(rows, d, corrected, args.neutral_alpha, "dprop")
             vals.append(st[0] if st else np.nan)
             errs.append(st[1] if st else np.nan)
         ax2.bar(xs + (i - 0.5) * width, vals, width, yerr=errs, capsize=3,
                 color=colour[corrected], label=lab, edgecolor=style.SURFACE, linewidth=1)
     ax2.axhline(0, color=style.INK, linewidth=1)
     ax2.set_xticks(xs)
-    ax2.set_xticklabels(["started hydrophilic\n(low-GRAVY held-out set)" if d == "up"
-                         else "started hydrophobic\n(high-GRAVY held-out set)" for d in dirs])
-    ax2.set_ylabel(f"change in {args.property}\nwith NO steering applied (mean ± SEM)")
+    ax2.set_xticklabels([f"started {prop.low_name}\n(low held-out set)" if d == "up"
+                         else f"started {prop.high_name}\n(high held-out set)" for d in dirs])
+    ax2.set_ylabel(f"change in {prop_label}\nwith NO steering applied (mean ± SEM)")
     # keep each title line short enough to sit inside the axes at this width — a long second
     # line runs past the panel and reads as a stray break
-    title(ax2, f"Change in {args.property} with no steering applied")
+    title(ax2, f"Change in {prop_label} with no steering applied")
     ax2.legend(fontsize=9)
     p2 = style.save_fig(fig2, run.figures_dir / "fig_baseline_drift.png")
     print(f"[report] wrote {p2}")
@@ -174,8 +179,7 @@ def main():
     have_fold = bool(fold)
     if have_fold:
         # attach pTM by sample_id
-        by_id = {r["sample_id"]: r for r in csv.DictReader(
-            open(run_dir / "expB_diffmean_gravy.csv"))}
+        by_id = {r["sample_id"]: r for r in csv.DictReader(open(find_run_csv(run_dir)))}
         for r in rows:
             r["ptm"] = None
         keyed = {(rr["direction"], rr["corrected"], rr["init"], rr["alpha"]): rr for rr in rows}
@@ -205,11 +209,11 @@ def main():
                 xs2.append(xpos[a]); ys2.append(st[0]); es2.append(st[1])
         axA.errorbar(xs2, ys2, yerr=es2, color=colour[corrected], marker="o", ms=5.5,
                      linewidth=2, capsize=2.5, elinewidth=1, label=lab)
-    axA.set_ylabel(f"change in\n{args.property}")
+    axA.set_ylabel(f"change in\n{prop_label}")
     # the second line identifies WHICH subset is plotted, which is needed to read the panel;
     # it is description, not interpretation
-    title(axA, f"Change in {args.property} and structural confidence vs. steering strength\n"
-               "sequences started hydrophilic, steered toward hydrophobic")
+    title(axA, f"Change in {prop_label} and structural confidence vs. steering strength\n"
+               f"sequences started {prop.low_name}, steered toward {prop.high_name}")
     axA.legend(fontsize=9, loc="upper left")
 
     if have_fold:
@@ -275,7 +279,7 @@ def main():
         # treatment, so gating is post-treatment selection: it preferentially removes
         # successfully-steered sequences. The gate here is mild (~3%) and the two estimates
         # agree, which is a stronger statement than choosing one — so report both.
-        ungated = load_rows(run_dir, args.neutral_alpha, apply_gate=False)
+        ungated, _ = load_rows(run_dir, args.neutral_alpha, apply_gate=False)
         ung: Dict[str, dict] = {}
         print("\n[report] same divergence WITHOUT the quality gate (the gate is "
               "post-treatment; agreement between the two is the point)")
@@ -301,10 +305,10 @@ def main():
             print(f"  α={a:<5} {bits}")
         run.log_summary(divergence_ungated=ung)
 
-    write_run_summary(run, run_dir, args)
+    write_run_summary(run, run_dir, args, prop_label)
 
 
-def write_run_summary(run, run_dir: Path, args) -> None:
+def write_run_summary(run, run_dir: Path, args, prop_label: str) -> None:
     """Emit run_summary.md from summary.json — the repo's per-run write-up convention.
 
     Reads the logged metrics rather than recomputing, so the summary cannot drift from what
@@ -322,7 +326,7 @@ def write_run_summary(run, run_dir: Path, args) -> None:
     L = [f"# {run_dir.name}", ""]
     L += [f"- git commit: `{s.get('git_commit', '?')}`"
           f"{' (dirty)' if s.get('git_dirty') else ''}",
-          f"- steering property: {args.property}", ""]
+          f"- steering property: {prop_label}", ""]
 
     L += ["## Steering effect (attributable, i.e. each arm differenced against its own α=0)", ""]
     att = g("steering_attributable_by_direction") or {"up": g("steering_attributable", default={})}

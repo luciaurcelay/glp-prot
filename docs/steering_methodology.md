@@ -34,15 +34,32 @@ by `clamp` (hard-set) or `scale_shift` (`z* = a·z + b`). Scored by a strict
 C2H2 regex plus ESMFold pLDDT. **Not re-run since the Exp B rebuild** — none of
 the corrections below have been applied to it.
 
-**Experiment B** — diff-of-means steering on hydrophobicity (`--experiment B`).
-A direction `v` is built from the difference between high- and low-GRAVY real
-sequences' activations; steering is `h' = renorm(h + alpha·v)`. Scored by
-ΔGRAVY.
+**Experiment B** — diff-of-means steering on a whole-sequence property
+(`--experiment B --property {gravy,charge,instability}`). A direction `v` is
+built from the difference between top- and bottom-quartile real sequences'
+activations; steering is `h' = renorm(h + alpha·v)`.
+
+The three properties are Banerjee et al.'s set, and only `gravy` has been run:
+
+| `--property` | scored as | high / low quartile |
+|---|---|---|
+| `gravy` | Kyte-Doolittle mean hydropathy | hydrophobic / hydrophilic |
+| `charge` | net charge at pH 7 **per residue** | cationic / anionic |
+| `instability` | Guruprasad instability index | unstable / stable |
+
+Charge is per residue on purpose: net charge is a sum, so quartiles of it are
+partly quartiles of length, and the vector would encode length. The other two
+scores are already length-normalized.
+
+Every generation is scored on **all three** regardless of which was steered
+(`delta_gravy`, `delta_charge`, `delta_instability` are always present), which is
+what `scripts/analyze_property_specificity.py` reads. Off-target effects cannot
+be recovered later without regenerating, so they are always written.
 
 Exp B is **bidirectional** by default (`--directions auto` → both when the
-contrast file supports it). "up" starts from held-out *low*-GRAVY proteins and
-applies `+alpha·v`; "down" starts from held-out *high*-GRAVY proteins and
-applies `−alpha·v`. Both held-out sets are carved out of their quartile before
+contrast file supports it). "up" starts from the held-out *low*-quartile
+proteins and applies `+alpha·v`; "down" starts from the held-out *high*-quartile
+proteins and applies `−alpha·v`. Both held-out sets are carved out of their quartile before
 the vector is computed, so neither direction's starting points contaminate it.
 
 Bidirectional matters because it is the only design that separates real
@@ -158,6 +175,9 @@ Always compare against the held-out set the run actually generates from
 | flag | what it controls |
 |---|---|
 | `--exp-name` | **required**, unique — metrics/figures redirect is keyed on it |
+| `--property` | `gravy` (default), `charge` or `instability` |
+| `--alpha-mode` | `raw` (default) or `relative`. **`relative` for any cross-property comparison** — see below |
+| `--match-length` | force the contrast sets onto a shared length distribution (build-time only) |
 | `--alphas` | steering strengths to sweep |
 | `--directions` | `auto` (default), `up`, `down`, or `up,down` |
 | `--t-start` | SDEdit noise level. Default 0.5 for A, **0.7 for B** |
@@ -167,14 +187,33 @@ Always compare against the held-out set the run actually generates from
 | `--fold` | ESMFold pLDDT in-loop. **Exp A only** — for Exp B use the separate fold stage |
 | `--t-start-pilot` / `--generation-pilot` | sweeps that exit before the main run |
 
+## Comparing properties: alpha has to mean the same thing
+
+`h + alpha·v` rotates `h` by an angle set by `alpha·||v||/||h||`, and the three
+properties' vectors have different norms — so the same alpha grid is three
+different perturbation sizes. `--alpha-mode relative` reinterprets alpha as the
+fraction of `mean||h||` added along `v/||v||`, which is comparable by
+construction. `raw` remains the default because every existing run used it; a
+three-property table must use `relative` throughout, including a re-run of
+hydrophobicity.
+
+The contrast build also reports the **length gap** between its two sets in
+pool-SD units and warns above 0.25. If it warns, rebuild with `--match-length
+--restart` — otherwise the vector partly encodes length rather than the property.
+
 ## Running it end to end
 
 ```bash
 sbatch --account=ehpc394 scripts/cluster/submit_steering.sh B <UNIQUE-NAME> <config> "<alphas>" "" \
+  --property charge --alpha-mode relative \
   --ckpt <...>/glp_final.pt --scaler <...>/rep_statistics.pt
 sbatch --account=ehpc394 scripts/cluster/submit_fold.sh <run-dir>      # ESMFold2 pLDDT/pTM
 $GLP_VENV/bin/python scripts/plot_steering_report.py       --run-dir <run-dir>
 $GLP_VENV/bin/python scripts/analyze_steering_naturalness.py --run-dir <run-dir>
+
+# once two or more properties have been run:
+$GLP_VENV/bin/python scripts/analyze_property_specificity.py \
+  --run-dirs <gravy-run>,<charge-run>,<instability-run> --out-run-dir <run-dir>
 ```
 
 The fold stage runs in a **separate Python 3.12 venv** (ESMFold2 needs `esm`,
@@ -183,7 +222,8 @@ launcher deliberately does not source `env_mn5.sh`. ~2.6 s/sequence, resumable.
 
 ## Outputs
 
-`runs/<run>/steering_diffmean_hydro_<name>/` — per-sequence CSV,
+`runs/<run>/steering_diffmean_{hydro,charge,instability}_<name>/` —
+per-sequence CSV (`expB_diffmean_<property>.csv`),
 `fold_confidence.csv` sidecar (keyed on `sample_id`, with `seq_sha1` so it
 cannot be merged against regenerated sequences), `metrics/summary.json`,
 `run_summary.md`, and `figures/`.
@@ -201,3 +241,4 @@ its own panel once already.
 | `pass_rate_*` | confidently-folded yield as an outcome |
 | `off_manifold_diagnostic` | GLP loss vs alpha, with one correction pass |
 | `generation_tradeoff` | operating points (from `plot_generation_tradeoff.py`) |
+| `property_specificity` | steered × measured matrix, and its residual after the natural coupling |

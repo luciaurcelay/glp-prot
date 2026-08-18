@@ -46,6 +46,7 @@ from typing import Dict, List, Optional, Tuple
 import _bootstrap  # noqa: F401
 import numpy as np
 
+from glp_plm.eval.steering_properties import find_run_csv, row_delta, run_property
 from glp_plm.experiments import RunLogger, style
 
 # a well-folded natural protein, folded through the same pipeline, as a scale anchor
@@ -190,13 +191,13 @@ def pass_rate_by_alpha(rows: List[dict], key: str, thresholds: List[float],
 
 def load(run_dir: Path, csv_name: Optional[str]) -> Tuple[List[dict], List[dict]]:
     gen_path = None
-    for name in ([csv_name] if csv_name else
-                 ["expB_diffmean_gravy.csv", "expA_sae_zincfinger.csv"]):
-        if name and (run_dir / name).exists():
-            gen_path = run_dir / name
-            break
-    if gen_path is None:
-        raise SystemExit(f"no generation CSV found in {run_dir}")
+    if csv_name and (run_dir / csv_name).exists():
+        gen_path = run_dir / csv_name
+    else:
+        try:
+            gen_path = find_run_csv(run_dir)
+        except FileNotFoundError:
+            raise SystemExit(f"no generation CSV found in {run_dir}")
     side = run_dir / "fold_confidence.csv"
     if not side.exists():
         raise SystemExit(f"{side} missing — run scripts/cluster/submit_fold.sh on this run first")
@@ -227,8 +228,8 @@ def load(run_dir: Path, csv_name: Optional[str]) -> Tuple[List[dict], List[dict]
         merged.append({
             **g, "alpha": float(g["alpha"]), "corrected": g["corrected"] == "True",
             "direction": g.get("direction") or "up",
-            "concept_score": float(g["delta_gravy"]) if "delta_gravy" in g
-            else (1.0 if g.get("motif_hit") == "True" else 0.0),
+            "concept_score": (row_delta(g) if ("delta_prop" in g or "delta_gravy" in g)
+                              else (1.0 if g.get("motif_hit") == "True" else 0.0)),
             "pppl": num(g.get("naturalness_score")),
             "comp": num(g.get("composition_distance")),
             "plddt": num(f.get("plddt")), "ptm": num(f.get("ptm")),
@@ -254,7 +255,7 @@ def main():
                     help="concept axis. 'attributable' subtracts, per sample, the same init's "
                          "own alpha=0 run in the same arm and direction, so the plot shows "
                          "what STEERING did rather than what the correction does on its own "
-                         "(that drift is 65-97%% of raw ΔGRAVY at alpha<=2). 'raw' is the "
+                         "(that drift is 65-97%% of the raw effect at alpha<=2 for GRAVY). 'raw' is the "
                          "unadjusted final-minus-init")
     ap.add_argument("--neutral-alpha", type=float, default=0.0,
                     help="the no-steering alpha that 'attributable' differences against")
@@ -280,7 +281,7 @@ def main():
         r["_y"] = None if b is None else r["concept_score"] - b
         n_nobase += b is None
     if args.y_metric == "attributable":
-        print(f"[naturalness] y = steering-attributable ΔGRAVY "
+        print(f"[naturalness] y = steering-attributable change in the steered property "
               f"(alpha={args.neutral_alpha} baseline; {n_nobase} row(s) had no baseline)")
 
     # ---- the justification: how each axis rates the sequences the filter rejects ----

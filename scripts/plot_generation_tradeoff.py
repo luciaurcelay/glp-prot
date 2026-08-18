@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple
 import _bootstrap  # noqa: F401
 import numpy as np
 
+from glp_plm.eval.steering_properties import row_delta, run_property
 from glp_plm.experiments import RunLogger, style
 
 
@@ -68,7 +69,8 @@ def load(run_dir: Path, temperature: Optional[float]) -> List[dict]:
                     "mask": float(g.get("mask_fraction") or 0.10),
                     "temp": t, "alpha": float(g["alpha"]),
                     "corr": g["corrected"] == "True", "init": g["init_sequence_id"],
-                    "dgravy": float(g["delta_gravy"]), "ptm": float(f["ptm"]),
+                    "dprop": row_delta(g), "ptm": float(f["ptm"]),
+                    "property": g.get("property") or "",
                     "degenerate": is_degenerate(g["sequence"])})
     return out
 
@@ -91,7 +93,9 @@ def main():
     rows: List[dict] = []
     for d in args.run_dirs.split(","):
         rows += load(Path(d.strip()), args.temperature)
-    print(f"[tradeoff] {len(rows)} folded sequences at T={args.temperature:g}")
+    prop = run_property(rows)
+    print(f"[tradeoff] {len(rows)} folded sequences at T={args.temperature:g} "
+          f"(steered property: {prop.label})")
 
     natural = None
     if args.natural_fold and Path(args.natural_fold).exists():
@@ -113,10 +117,10 @@ def main():
             # among survivors alone is survivor-biased, and at T=0.5/30 rounds only 7 of 15
             # survive, so the surviving mean says little about the setting.
             deg_rate = (sum(r["degenerate"] for r in all_uns) / len(all_uns)) if all_uns else None
-            base = {r["init"]: r["dgravy"] for r in rows if r["mask"] == mask
+            base = {r["init"]: r["dprop"] for r in rows if r["mask"] == mask
                     and r["rounds"] == rr and r["alpha"] == args.neutral_alpha and r["corr"]
                     and not r["degenerate"]}
-            eff = [r["dgravy"] - base[r["init"]] for r in rows if r["mask"] == mask
+            eff = [r["dprop"] - base[r["init"]] for r in rows if r["mask"] == mask
                    and r["rounds"] == rr and r["alpha"] == args.steered_alpha and r["corr"]
                    and not r["degenerate"] and r["init"] in base]
             if len(unsteered) < 3 or len(eff) < 3:
@@ -211,7 +215,7 @@ def main():
         axT.plot([], [], "o", color=style.MUTED, alpha=0.55, ms=7, linestyle="none",
                  label="mostly degenerate output")
     axT.legend(fontsize=9, loc="upper left")
-    axT.set_ylabel(f"steering-attributable ΔGRAVY\nat α={args.steered_alpha:g}")
+    axT.set_ylabel(f"steering-attributable {prop.delta_label}\nat α={args.steered_alpha:g}")
     axB.set_ylabel("structural confidence\n(ESMFold2 pTM, no steering)")
     axB.set_xscale("log")
     axB.set_xlabel("expected fraction of residues resampled  "

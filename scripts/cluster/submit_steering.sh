@@ -27,9 +27,21 @@
 #   sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_steering.sh \
 #     B hydro1 configs/configs_lucia/esm8m_500m_4096_d24.yaml
 #
-# Exp B's first run also builds runs/<run>/steering_diffmean_hydro/gravy_contrast.json
-# (UniRef50 GRAVY contrast sets — scripts/build_gravy_contrast.py) if it doesn't
-# already exist; that step runs inline inside this same job, before generation.
+# Exp B steers ONE of three whole-sequence properties (Banerjee et al.'s set):
+# hydrophobicity (default), charge, or instability. Pass it as an extra arg after the
+# five positionals — leave alphas/n_sequences as "" to keep their defaults:
+#   sbatch --qos=acc_bsccs --time=1-00:00:00 scripts/cluster/submit_steering.sh \
+#     B charge1 configs/configs_lucia/esm8m_500m_4096_d24.yaml "" "" --property charge
+# For a run that will be COMPARED across properties add --alpha-mode relative, which
+# puts alpha in units of ||h|| instead of 1/||v|| so the three grids mean the same
+# thing (see run_steering.py --alpha-mode). Each property gets its own out-dir leaf
+# (steering_diffmean_{hydro,charge,instability}_<NAME>) and its own CSV.
+#
+# Exp B's first run also builds runs/<run>/steering_diffmean_<leaf>/<property>_contrast.json
+# (UniRef50 contrast sets — scripts/build_property_contrast.py) if it doesn't
+# already exist; that step runs inline inside this same job, before generation. Check
+# its length-gap warning: if the two contrast sets differ in length, the vector partly
+# encodes length and the build should be repeated with --match-length --restart.
 #
 # If `config.output_dir` is a run you don't own on $GLP_RUNS_ROOT (e.g. checkpoints
 # produced by a teammate), point output_dir at a directory YOU own instead (so

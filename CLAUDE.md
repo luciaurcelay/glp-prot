@@ -34,7 +34,8 @@ glp_plm/            our package
   diffusion/        flow_matching, sampler (Euler; sample / sample_on_manifold), scaler
   train/            trainer (flow-matching loop, cosine+warmup)
   eval/             frechet, pca_overlap, meta_neurons, baselines, probing_1d,
-                    probing_f1, concept_selection   (loss_recovered = W2, deferred)
+                    probing_f1, concept_selection, steering_properties (the three
+                    steerable whole-sequence properties + run-CSV readers)
   experiments/      RunLogger (metrics) + figure registry + make_report (auto-renders figures)
 configs/            esm8m_h100.yaml — the single canonical config (6-blk/d=320, MN5/H100,
                     fp32/precache, real UniRef50 @ 100M acts). Historical Mac PoC configs
@@ -113,7 +114,32 @@ advantage so the comparison is asymmetric).
 **Still open (probing):** Gate G2 (SAE-reconstruction FD + %Loss-Recovered — both
 local-feasible, not run), F1 on all 104 concepts.
 
-### W4 steering — Exp B (diff-of-means × hydrophobicity) is measured
+### W4 steering — three properties are implemented, one is measured
+Exp B steers whichever of Banerjee et al.'s three properties `--property` names:
+`gravy` (hydrophobicity), `charge` (net charge at pH 7 **per residue** — net charge is a
+sum, so quartiles of it are partly quartiles of length) or `instability` (Guruprasad
+index). `glp_plm/eval/steering_properties.py` is the registry; contrasts come from
+`scripts/build_property_contrast.py` (was `build_gravy_contrast.py`). **Only `gravy` has
+actually been run** — everything below is the hydrophobicity result.
+
+Four things to know before running the new ones (full rationale: `docs/steering_history.md`
+§14):
+- **Every generation is scored on all three properties**, whichever was steered, so
+  `scripts/analyze_property_specificity.py` can build the steered × measured matrix. Read
+  its off-diagonal against the *natural* correlation panel — the three properties are
+  coupled in real proteins, and reproducing that coupling is correct behaviour, not leakage.
+- **`--alpha-mode relative` for any cross-property comparison.** Raw alpha is in units of
+  1/‖v‖ and the three vectors have different norms, so a shared grid is three different
+  perturbation sizes. Raw stays the default because every existing run used it.
+- **Check the contrast build's length-gap warning** (in pool-SD units); rebuild with
+  `--match-length --restart` if it fires, or the vector encodes length.
+- **Instability is the informative one:** it's a sum over *dipeptides*, so unlike GRAVY and
+  charge a purely compositional artifact — such as the correction's own Leu/Val drift —
+  can't produce it. `analyze_steering_confound.py` decomposes per property (residues, or
+  dipeptides for instability); DIWV spans −15.9…+58.3, so check whether a gain came from a
+  broad shift or a few stacked dipeptides.
+
+### Exp B on hydrophobicity (diff-of-means × GRAVY) is measured
 Canonical run: `runs/steering_crg/steering_diffmean_hydro_bidir_n40` (bidirectional, 40
 held-out starts per direction, t_start 0.7, 1120 generations, all folded). Launch with
 `scripts/cluster/submit_steering.sh B <UNIQUE-NAME> …` — the name is **required** (see
@@ -180,7 +206,9 @@ step 0). Without it generation dies in `nnsight` with an `expand()` shape error.
 **Baseline discipline:** compare foldability against the held-out set the run actually
 generates from (0.373 or 0.629), never the pooled 0.501 average.
 
-**Still open (steering):** Exp A has never been re-run with any of the above; the
+**Still open (steering):** no charge or instability run has been executed (the code is in,
+the science is planned — `docs/steering_history.md` §14); Exp A has never been re-run with
+any of the above; the
 correction's own foldability cost is suggested by three marginal signals but unestablished;
 we steer one layer / masked positions only where Huang et al. steer all layers and tokens
 (the untested deviation); neither operating point reaches natural foldability. ESMFold2
