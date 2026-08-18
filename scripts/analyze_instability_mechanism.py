@@ -195,13 +195,30 @@ def main():
             entry[k] = {"divergence": float(np.mean(u) - np.mean(dn)),
                         "p": float(mannwhitneyu(u, dn).pvalue)}
         if entry:
+            # A null is only informative with a bound on it: report a CI on the
+            # order-specific component and on its share, so "no order effect" means
+            # "at most X% of the effect" rather than "we could not detect one".
+            for k in ("total", "comp", "order"):
+                u = np.array([r[f"attr_{k}"] for r in cell(rows, "up", corrected, alpha)
+                              if r[f"attr_{k}"] is not None])
+                dn = np.array([r[f"attr_{k}"] for r in cell(rows, "down", corrected, alpha)
+                               if r[f"attr_{k}"] is not None])
+                se = float(np.sqrt(u.std(ddof=1) ** 2 / len(u) + dn.std(ddof=1) ** 2 / len(dn)))
+                entry[k]["se"] = se
+                entry[k]["ci95"] = [entry[k]["divergence"] - 1.96 * se,
+                                    entry[k]["divergence"] + 1.96 * se]
             div[name] = entry
             t, c, o = entry["total"], entry["comp"], entry["order"]
+            lo, hi = (x / t["divergence"] for x in o["ci95"])
+            entry["order_share"] = o["divergence"] / t["divergence"]
+            entry["order_share_ci95"] = sorted([lo, hi])
             print(f"  {name:>10}: total {t['divergence']:>+8.2f} (p={t['p']:.1e})"
                   + (f" = {t['divergence']/sd:+.2f} SD" if sd else "")
-                  + f"  |  composition {c['divergence']:>+8.2f} (p={c['p']:.1e})"
-                  f"  order {o['divergence']:>+8.2f} (p={o['p']:.1e})"
-                  f"  -> order share {o['divergence']/t['divergence']:.0%}")
+                  + f"  |  composition {c['divergence']:>+8.2f} (p={c['p']:.1e})")
+            print(f"  {'':>10}  order {o['divergence']:>+8.2f} "
+                  f"[95% CI {o['ci95'][0]:+.2f}, {o['ci95'][1]:+.2f}] (p={o['p']:.1e})"
+                  f"  ->  order share {entry['order_share']:.0%} "
+                  f"[{min(lo, hi):.0%}, {max(lo, hi):.0%}]")
 
     # ---- 3. shuffle control on the closed form ----
     if args.shuffle_check:
