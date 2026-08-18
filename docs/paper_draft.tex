@@ -45,19 +45,19 @@
 \begin{abstract}
 The Generative Latent Prior (GLP) models a frozen network's activations with a diffusion
 model, a \emph{generative} alternative to sparse dictionaries for interpretability. We port
-GLP from language to protein language models, reading ESM-2 activations at the exact hook
-point InterPLM's sparse autoencoders (SAEs) consume, and report three findings. First, a
+GLP from language to protein language models and report three findings. First, a
 flow-matching GLP's generation quality improves monotonically with depth and data, all runs
 falling on one loss--compute curve. Second, probed one unit at a time for Swiss-Prot
 concepts, GLP's internal units isolate concepts at least as cleanly as InterPLM's released
-SAE features. Third, used as an on-manifold prior for activation steering of three
-biochemical properties, the GLP correction is what makes steering effective --- but the
-accompanying naturalness claim fails, and the three-property design lets us trace the cause
-to the decoding loop rather than the prior, show that the intervention moves amino-acid
-composition rather than sequence order, and demonstrate that standard naturalness metrics
-rate known non-proteins above genuine output. The negative results are as much the
-contribution as the positive one: they say what a generative activation prior does and does
-not buy for concept discovery and editing in PLMs.
+sparse-autoencoder features. Third, used as an on-manifold prior for activation steering of
+three biochemical properties, the GLP correction is what makes steering effective, and it does
+restore the edited activations to GLP's learned manifold; but that on-manifold-ness does not
+translate into more natural, structurally plausible proteins. The three-property design lets
+us localise this failure to the decoding loop rather than the prior, show that the
+intervention moves amino-acid composition rather than sequence order, and demonstrate that
+standard naturalness metrics rate known non-proteins above genuine output. The negative
+results are as much the contribution as the positive one: they say what a generative
+activation prior does and does not buy for concept discovery and editing in PLMs.
 \end{abstract}
 
 \section{Introduction}
@@ -72,15 +72,14 @@ directly with no linearity or sparsity assumption. In the LLM setting GLP serves
 lens on representations and as an on-manifold prior for editing them.
 
 We take the first step of porting GLP to PLMs, and scope our claims to what we have
-\emph{built and validated}. Our contributions are: (i) a pipeline producing GLP training
-activations byte-identical to InterPLM's SAE substrate, a flow-matching GLP on ESM-2
+\emph{built and validated}. Our contributions are: (i) a pipeline producing GLP a flow-matching GLP on ESM-2
 activations, and a characterization of how its generation quality scales with depth and data
 (Section~\ref{sec:gen-quality}); (ii) a single-unit concept-probing study showing GLP's
 internal units isolate Swiss-Prot concepts at least as cleanly as InterPLM's released SAE
 features, with a linear-falsification control (Section~\ref{sec:probing-results}); and
 (iii) a three-property test of GLP as an on-manifold prior for activation steering
 (Section~\ref{sec:steering-results}), in which the correction makes steering effective but
-the naturalness claim fails --- a failure the three-property design localizes to the
+the naturalness benefit it was meant to buy does not appear, a failure the three-property design localizes to the
 decoder, not the prior. Throughout, the negative results are deliberate: a generative
 activation prior is worth characterizing by what it does not buy as much as by what it does.
 
@@ -89,90 +88,89 @@ activation prior is worth characterizing by what it does not buy as much as by w
 
 \subsection{GLP on ESM-2 activations}
 
-ESM-2-8M (\texttt{facebook/esm2\_t6\_8M\_UR50D}) is frozen throughout. We read the residual
-stream after transformer block~4 ($d{=}320$) --- the exact tensor InterPLM's released SAE was
-trained on --- and a unit test enforces this ``hook parity'' against InterPLM's own embedder,
-since any mismatch would void every SAE-vs-GLP comparison (Appendix~\ref{app:pipeline}). We
-reservoir-sample UniRef50 sequences, embed them through frozen ESM-2 at that layer, and write
-per-residue activations to a memory-mapped store with a fitted per-feature standardizer,
-reused across all runs at a given data scale so a depth sweep never re-extracts.
-
-GLP is a stack of SwiGLU MLP blocks (LayerNorm, timestep-modulated gate, no attention,
-single-token) with $d_{\text{model}}{=}640$, $d_{\text{mlp}}{=}1280$; depth
-$n_{\text{blocks}}\!\in\!\{3,6,12,24\}$ ($11.1$--$80.0$M parameters) is the variable we scan.
-It is trained by flow matching: given standardized $z_0$, noise $\epsilon$, and
-$t\!\sim\!U(0,1)$, form $z_t{=}(1{-}t)z_0{+}t\epsilon$ and regress the velocity
-$\epsilon{-}z_0$ under MSE, one epoch over the store (Appendix~\ref{app:repro} for optimizer
-settings). GLP's per-block gated activations --- its ``meta-neurons'' --- are the internal
-units we probe. We assess generation quality by Fréchet Distance to held-out real
-activations, relative to the FD(train,\,val) real-vs-real bound, and by top-2 PCA overlap; FD
-is sampler-step-dependent and we quote it at 1000 steps (Appendix~\ref{app:fd}).
+ESM-2-8M is frozen throughout. We read the residual stream after transformer block~4, the
+exact tensor InterPLM's released SAE was trained on, so that GLP and the SAE can be compared
+on identical inputs (Appendix~\ref{app:pipeline}). GLP is a stack of SwiGLU MLP blocks
+trained by flow matching to model the distribution of these activations; we scan its depth
+from 3 to 24 blocks. GLP's per-block gated activations, its ``meta-neurons'', are the
+internal units we probe. Generation quality is assessed by Fréchet Distance (FD) to held-out
+real activations, relative to a real-versus-real lower bound, and by principal-subspace
+overlap; architecture, training, and the sampler-step dependence of FD are in
+Appendices~\ref{app:repro} and~\ref{app:fd}.
 
 \subsection{Concept probing}
 \label{sec:method-probing}
 
-We ask whether a \emph{single} unit isolates a Swiss-Prot concept, following GLP's released
-probe protocol and InterPLM's split. Per concept and representation we filter to the 512
-units with the largest train-split positive-vs-negative mean-activation gap, fit a 1-D
-logistic regression to each, select by validation AUC, and report the selected unit's AUC on
-the disjoint test split. Four representations get the identical budget: GLP meta-neurons
-(pooled over 5 noise levels), InterPLM's SAE features, ESM's FFN neurons at the hooked block,
-and the raw residual stream. Negatives are drawn from the \emph{same proteins} that carry a
-positive instance, so a unit cannot win by recognizing protein identity
-(Appendix~\ref{app:pipeline}). Ten continuous properties (GRAVY, charge, instability index,
-$\dots$) use the same protocol at the protein level with linear regression and Spearman
-correlation. \emph{Falsification:} where a GLP meta-neuron beats every SAE feature, we
-regress it on the entire SAE dictionary (ridge, held-out $R^2$); a high $R^2$ means the
-winning direction is already a linear combination of SAE features --- a re-organization, not
-new information --- and we retract the stronger claim for that concept.
+We ask whether a \emph{single} unit isolates a Swiss-Prot concept. Per concept and
+representation we filter to the candidate units with the largest train-split
+positive-versus-negative activation gap, fit a 1-D logistic probe to each, select by
+validation AUC, and report the selected unit's AUC on a disjoint test split. Four
+representations receive an identical budget: GLP meta-neurons, InterPLM's SAE features, ESM's
+own feedforward neurons, and the raw residual stream. Negatives are drawn from the
+\emph{same} proteins that carry a positive instance, so a unit cannot win by recognising
+protein identity. Ten continuous properties are probed the same way at the protein level.
+As a falsification control, wherever a GLP meta-neuron beats every SAE feature we regress it
+on the entire SAE dictionary: if the SAE already spans it linearly, the win is a
+re-organisation rather than new information, and we retract the stronger claim
+(Appendix~\ref{app:pipeline}).
 
 \subsection{On-manifold steering}
 \label{sec:method-steering}
 
-We test whether GLP as an on-manifold prior lets steering reach a concept strength at better
-naturalness than steering alone (``naive''). A pre-registered gate must pass first: GLP's own
-generation FD must beat an SAE-reconstruction FD anchor. It does, for the
-$24$-block/$500$M model used below --- FD$(\text{gen})=2.58$ vs.\ FD$(\text{SAE-recon})=22.33$,
-an $8.7\times$ margin, with the SAE recovering $98.8\%$ of ESM's masked-LM loss
-(Appendix~\ref{app:steer-estimand}).
+The GLP thesis for editing is that correcting a steered activation back onto the learned
+manifold yields more natural output than steering alone (``naive''). We separate this into
+two questions. Does the correction restore \emph{on-manifold-ness}, measured by GLP's own
+diffusion loss, the quantity the correction optimises? And does on-manifold-ness translate
+into structurally plausible proteins, measured by an independent structure predictor
+(ESMFold2 pTM)? The first is the mechanism; the second is what a protein scientist means by
+natural, and the two need not agree. Before using GLP as a prior we require a pre-registered
+gate to pass, that GLP's own generation FD beat an SAE-reconstruction FD anchor; it passes
+comfortably for the model used here (Appendix~\ref{app:steer-estimand}).
 
-Steering follows a diff-of-means contrast \cite{huang2025diffmean}: a direction $v$ from the
-difference between the top and bottom UniRef50 quartiles of a property, applied as
-$h'{=}\mathrm{renorm}(h{+}\alpha v,\lVert h\rVert)$ and decoded by masked-Gibbs resampling
-(Algorithm~\ref{alg:steer}). After each mask-and-steer step, an optional SDEdit correction
-\cite{meng2022sdedit} noises the steered activation to a level $t_{\text{start}}$ and runs
-GLP's reverse process back to $0$, so the language head always sees a GLP sample rather than
-the raw $h{+}\alpha v$. Generation is \emph{bidirectional} --- an ``up'' arm from 40 held-out
-low-scoring proteins steered by $+\alpha v$, a ``down'' arm from 40 high-scoring proteins by
-$-\alpha v$, both held out before $v$ is built --- because a genuine direction pushes the two
-apart while any direction-independent artifact cancels in the difference. We steer the three
-properties of \cite{banerjee2025labelling}: hydrophobicity (GRAVY), net charge per residue,
-and the Guruprasad instability index. Two choices make them comparable: charge is scored per
-residue (net charge is a length proxy), and $\alpha$ is relative to $\lVert h\rVert$ (the
-three vectors have different norms); see Appendix~\ref{app:steer-estimand}.
+Steering follows a diff-of-means contrast \cite{huang2025diffmean}: a direction $v$ built
+from the gap between the top and bottom UniRef50 quartiles of a property, added to the
+hooked activation and renormalised, then decoded by masked-Gibbs resampling
+(Algorithm~\ref{alg:steer}). After each step an optional SDEdit correction
+\cite{meng2022sdedit} projects the steered activation back toward the manifold, so the
+language head sees a GLP sample rather than the raw edit. Generation is
+\emph{bidirectional}: an ``up'' arm starts from held-out low-scoring proteins and steers
+toward the property, a ``down'' arm from high-scoring proteins and steers away, both sets
+held out before $v$ is built. Bidirectionality is what makes the effect interpretable, since
+a genuine direction pushes the two apart while a direction-independent artifact cancels in
+their difference. We steer the three properties of \cite{banerjee2025labelling}:
+hydrophobicity, net charge, and instability. Two choices make them comparable across a single
+steering-strength grid: charge is scored per residue rather than as a net total, which would
+be a length proxy, and steering strength is expressed relative to the activation norm since
+the three vectors differ in scale (Appendix~\ref{app:steer-estimand}).
 
 Our headline estimand is the \textbf{divergence}: the up-minus-down difference of the
-\emph{steering-attributable} effect, each arm differenced against its own $\alpha{=}0$ run per
-starting protein --- necessary because the correction moves the concept score on its own
-(Appendix~\ref{app:steer-estimand}). Effects are reported in units of each property's
-UniRef50 standard deviation. Naturalness is ESMFold2 pTM, with a load-bearing degeneracy gate
-(any residue $\ge\!30\%$, $\le\!8$ distinct residues, or a homopolymer run $\ge\!12$): the
-obvious metrics score degenerate output \emph{above} genuine proteins, so the gate rather
-than any metric excludes junk, and it is calibrated against real proteins ($3.8\%$ rejected
-vs.\ $1.9$--$2.7\%$ of our output). We deviate from \cite{huang2025diffmean} by steering one
-layer at mutated positions only, forced by hook parity; the SAE-feature-clamp variant of
-\cite{villegas2025plmsae} is implemented but not re-run under these corrections
-(Appendix~\ref{app:steer-protocol}).
+\emph{steering-attributable} effect, each arm differenced against its own no-steering run per
+starting protein, which is necessary because the correction moves the concept score on its
+own (Appendix~\ref{app:steer-estimand}). Effects are reported in units of each property's
+natural spread. A load-bearing degeneracy gate excludes low-complexity collapse, because the
+obvious naturalness metrics rate such output \emph{above} genuine proteins; the gate is
+calibrated against real proteins rather than tuned against our own. Forced by hook parity we
+steer one layer at edited positions only, where \cite{huang2025diffmean} steer every layer
+and token; the SAE-feature-clamp variant of \cite{villegas2025plmsae} is implemented but not
+re-run under these corrections (Appendix~\ref{app:steer-protocol}).
 
 \section{Results}
 
 \subsection{Generation quality scales with compute}
 \label{sec:gen-quality}
 
-\textbf{GLP trains stably.} The flow-matching loss falls well below the $\approx 2.0$ trivial-predictor floor (predicting $0$ gives $\mathbb{E}\|\epsilon - z_0\|^2/d \approx 2$ for standardized $z_0$), converging to $0.84$--$1.02$ depending on scale (Fig.~\ref{fig:train}). Generated activations occupy the
-real distribution's principal subspace and refine toward it as sampler steps increase
-(Fig.~\ref{fig:pca}): at one step the sampler output is a collapsed blob, and by 1000
-steps it fills the real cloud.
+GLP trains stably, converging well below the trivial-predictor floor, and its samples fill
+the real activation distribution's principal subspace as the number of sampler steps grows
+(Appendix~\ref{app:scaling}). Across a grid of four depths and two data scales, two
+regularities emerge. The diffusion loss follows a compute power law: plotted against total
+compute $C{=}6ND$ \cite{kaplan2020}, all eight runs collapse onto one curve
+(Fig.~\ref{fig:flops}), so loss depends on how much compute is spent, not on whether it goes
+into depth or data. Our curve sits below the published LLM-activation reference, meaning our
+protein-activation models reach a lower loss at equal compute, though our roughly one-decade
+range is too narrow to pin the law's asymptote. Separately, Fréchet Distance to real
+activations falls monotonically with both depth and data, and depth pays off more when there
+is more data to support it (Appendix~\ref{app:scaling}).
+
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.58\textwidth]{figures/flops_vs_loss.png}
@@ -182,37 +180,6 @@ LLM-activation reference (dotted). Training curves, the FD grid and the scaling 
 Appendix~\ref{app:scaling}.}
 \label{fig:flops}
 \end{figure}
-
-
-
-
-\textbf{Generation quality follows a compute scaling law.} We train a grid of
-$4$ depths $\times\ 2$ data scales ($3/6/12/24$ blocks at $100$M and $500$M activations),
-comparing architectures by FD as in the original GLP work. Two clean regularities emerge.
-First, the diffusion loss follows a \emph{compute power law}: plotting the smoothed final
-loss against $C = 6ND$ ($N$ parameters, $D$ activations seen; Kaplan et al.\
-\cite{kaplan2020}), all eight runs fall on one curve (Fig.~\ref{fig:flops}). Loss depends
-essentially on total compute, not on whether that compute was spent on depth or on data ---
-a $24$-block model at $100$M and a $3$-block model at $500$M sit at similar compute
-\emph{and} similar loss. A fit $L(C) = E + A\,C^{-\alpha}$ gives slope $\alpha \approx
-0.056$; over our $\sim$1-decade compute range the irreducible term $E$ is unconstrained,
-so we report the slope and treat the fit as descriptive (Appendix~\ref{app:flops}). The
-published LLM-activation GLP reports a steeper $\alpha \approx 0.169$, yet our whole curve
-lies below it: at equal compute, our protein-activation models reach lower loss.
-
-
-
-
-
-\textbf{Depth and data both improve generation.} Table~\ref{tab:scaling} and
-Fig.~\ref{fig:fdsteps} show FD dropping monotonically with depth at each data scale, and
-with data at each depth. The best cell ($24$ blocks, $500$M) reaches FD $2.58$ (ratio
-$2.42\times$ over the lower bound), versus $4.28$ ($4.47\times$) for the $6$-block model at
-$100$M. Depth helps more with more data: at $100$M the FD ratio moves only $4.47\times
-\!\to\! 4.06\times$ across $6\!\to\!24$ blocks, while at $500$M it moves $3.31\times
-\!\to\! 2.42\times$. PCA spread-match and centering improve in lock-step (not shown).
-
-
 
 \subsection{Concept probing: GLP meta-neurons vs.\ the SAE}
 \label{sec:probing-results}
@@ -421,20 +388,16 @@ supported here.
 \subsection{On-manifold steering}
 \label{sec:steering-results}
 
-The setup is Section~\ref{sec:method-steering}: three properties, bidirectional, with and
-without the GLP correction, $3{,}360$ sequences folded with ESMFold2.
+We steer three properties, in both directions, with and without the GLP correction, and
+fold every generation (Section~\ref{sec:method-steering}).
 
-\textbf{GLP-correction is what makes steering work, on all three properties.} At a matched
-perturbation the corrected arm separates the two directions by $3.46$, $3.61$ and $1.59$
-natural standard deviations, while naive steering is indistinguishable from zero on
-hydrophobicity ($p{=}0.44$) and instability ($p{=}0.19$) and only marginal on charge
-($p{=}0.02$, a sixth the corrected effect; Table~\ref{tab:steer-div}). Across the full
-$\alpha$ sweep (Table~\ref{tab:steer-efficacy}) the corrected arm rises monotonically and is
-significant from the first or second grid point; the naive arm reaches a usable effect only
-at the strongest perturbation and stays $2.4$--$3.8\times$ weaker at matched $\alpha$. The
-claim is about \emph{where} on the dose-response curve a usable effect appears. Corrected
-entries from $\alpha{=}0.128$ survive Bonferroni across all 36 tests; removing the degeneracy
-gate changes them by at most $3.9\%$.
+\textbf{The correction is what makes steering work.} Without it, naive steering barely moves
+the two directions apart, and only reaches a usable effect at the strongest perturbation we
+test. With it, the two directions separate cleanly on all three properties, from the gentlest
+perturbations upward (Table~\ref{tab:steer-div}; full dose-response and significance in
+Appendix~\ref{app:steer-estimand}). Rescaled by each property's natural spread, the corrected
+effect is large and comparable across the three, so on-manifold correction is doing real
+work rather than riding one easy target.
 
 \begin{table}[t]
 \centering
@@ -457,6 +420,16 @@ instability index        & $15.73$  & $+5.30$  & $0.19$ & $+25.0$  & $+1.59$ \\
 \end{tabular}
 \end{table}
 
+\textbf{The directions are specific, and where they leak is legible.} Since every generation
+is scored on all three properties, the runs give a steered-versus-measured matrix
+(Fig.~\ref{fig:steer-spec}). Steering hydrophobicity leaves the other two essentially
+untouched; steering charge or instability spills into the others. This is not automatically a
+failure, because the properties covary in real proteins, so we subtract the coupling measured
+on the same natural pool and read the residual. The coupling itself corrects a common
+intuition: hydrophobicity and net charge are nearly independent, because a protein rich in
+both acidic and basic residues is hydrophilic yet close to neutral in net charge
+(Appendix~\ref{app:steer-specificity}).
+
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.98\textwidth]{figures/steer3_property_specificity.png}
@@ -467,51 +440,44 @@ there by construction. Outlined cells are on-target.}
 \label{fig:steer-spec}
 \end{figure}
 
-\textbf{Specificity is near-total for hydrophobicity, partial for the others.} Because every
-generation is scored on all three properties, the runs give a steered\,$\times$\,measured
-matrix (Fig.~\ref{fig:steer-spec}), read at a matched on-target effect. Hydrophobicity is
-almost perfectly specific ($-0.03$, $+0.07$ off-target against $+1.21$ on-target); charge
-moves instability $+0.60$, and instability moves hydrophobicity $-0.54$. Off-diagonals are
-not automatic failures --- the properties covary in real proteins --- so we subtract the
-natural coupling from the same pool. That coupling corrects a common intuition: hydrophobicity
-and instability correlate at $-0.35$, but hydrophobicity and \emph{net} charge only at
-$-0.03$, since a protein rich in both Lys and Glu is hydrophilic with near-zero net charge
-(Appendix~\ref{app:steer-specificity}).
+\textbf{The correction carries one compositional bias, and a predicted null confirms it.}
+Even at zero steering the correction shifts the concept score on its own, by enriching a
+small set of hydrophobic residues at the expense of charged ones. Because this is a single
+compositional shift, its effect on each property is predictable: it raises hydrophobicity,
+lowers the instability index, and, since it sheds acidic and basic residues in equal measure,
+leaves net charge untouched. The bidirectional design confirms the shift is a fixed bias
+rather than regression toward typical composition, and the same shift appears in all three
+runs, which share nothing but the correction operator (Appendix~\ref{app:steer-drift}). We
+report every effect net of this bias.
 
-\textbf{The correction's drift is one compositional bias, with charge as an entailed null.}
-At $\alpha{=}0$ the arms differ only by whether the correction ran, and it moves the concept
-score on its own: the bidirectional design shows a \emph{fixed} bias (equal from both
-starting sets, unlike mean reversion) of $+0.80/+0.82$ GRAVY and $-10.3/-11.6$ instability,
-but \emph{nothing} on charge. All three follow from one compositional shift --- Leu $+5.9$,
-Val $+5.4$ percentage points, charged residues down $\approx\!8$pp --- which raises GRAVY,
-stabilises, and sheds positive and negative charge in equal measure, so charge does not move.
-The shift is near-identical in all three runs, which share only the correction operator
-(Appendix~\ref{app:steer-drift}). Every number above is net of this drift.
+\textbf{The steering moves composition, not sequence order.} The instability index is the one
+target that depends on residue \emph{order}, not just composition, so each sequence splits
+exactly into a composition-determined part and an order-specific remainder. Almost all of the
+steering effect is compositional, with an order-specific share bounded below a small fraction
+(Appendix~\ref{app:steer-instability}). This also explains why instability, whose reachable
+compositional handle is smaller, moves less than the two purely compositional targets, and
+why steering it drags hydrophobicity along: the substitution that changes one changes the
+other.
 
-\textbf{The steering moves composition, not sequence order.} The instability index is a sum
-over adjacent residue pairs, so each sequence splits exactly into a composition-determined
-part (its expected index over random permutations, closed-form) and an order-specific excess.
-The steering-attributable divergence splits $+61.3$ composition to $+3.65$ order (95\% CI
-$[-1.1,+8.4]$): a bounded $\le\!13\%$ order share. Steering enriches Arg/Ser/Pro and depletes
-Val/Leu/Ile/Phe --- which also explains why instability moves half as far as the two purely
-compositional targets and why it drags hydrophobicity down (Appendix~\ref{app:steer-instability}).
-
-\textbf{The naturalness claim fails, at the decoder rather than the prior.} Across six natural
-starting sets spanning pTM $0.369$--$0.650$, the $\alpha{=}0$ \emph{naive} pass (no steering,
-no GLP) compresses them to a $0.088$-wide band ($0.227$--$0.315$; correlation between how well
-a set folds and how much it loses, $-0.98$); a fit gives a fixed point at pTM $0.215$
-(Appendix~\ref{app:steer-protocol}). Masked-Gibbs decoding drives every protein toward a
-common value regardless of where it began. GLP's activation-level behaviour is intact --- a
-single correction pass with no generation recovers $92$--$103\%$ of the diffusion-loss excess
-at the top grid points (Appendix~\ref{app:steer-sdedit}) --- and the correction itself costs
-no foldability ($-0.012$ pTM, 95\% CI $[-0.029,+0.005]$, $p{=}0.43$, pooled over 235 paired
-comparisons). Two consequences worth stating: no model-based naturalness metric is safe here
---- pLDDT and pseudo-perplexity rate degenerate output above genuine proteins on all three
-properties and pTM does so on instability, so the composition-based gate rather than any
-metric is load-bearing (Appendix~\ref{app:steer-metrics}); and a lighter decoding budget (5
-rounds, $T{=}0.5$) lands \emph{above} the fixed point, so the fixed point is a property of
-the budget, not the method. The SAE-feature-clamp experiment (Exp.~A) is implemented under
-the same methodology but not re-run, and no result is claimed for it.
+\textbf{On-manifold, yes; folded, no, and the two come apart.} The correction succeeds at its
+stated job: applied to a steered activation, it restores GLP's own diffusion loss to the
+unsteered level even under extreme steering, so the edited activation is returned to the
+manifold (Appendix~\ref{app:steer-sdedit}). What does not follow is more natural protein.
+Folding the generations, the decoding loop drives every starting protein toward a common,
+mediocre structural confidence regardless of how well it folded to begin with
+(Fig.~\ref{fig:steer-fp}); both the naive and corrected arms land in the same place, and the
+correction neither helps nor hurts foldability. So the naturalness benefit the prior was
+meant to buy does not appear, and the reason is the masked-Gibbs decoder, not GLP. The
+dissociation is the point: an activation can be squarely on GLP's manifold, and by GLP's own
+measure more typical than a real protein, while folding no better. A generative prior's
+self-assessed typicality is therefore not a safe proxy for sample quality. Two smaller
+observations reinforce the caution. No model-based naturalness metric is trustworthy here:
+structure- and language-model scores alike rate degenerate output above genuine proteins,
+which is why a composition-based degeneracy gate, not any single metric, is what separates
+results from junk (Appendix~\ref{app:steer-metrics}). And a lighter decoding budget folds
+better than the fixed point, confirming that the fixed point is a property of the decoder
+rather than of the method. The SAE-feature-clamp experiment is implemented under the same
+methodology but not re-run, and we claim no result for it.
 
 \section{Conclusions}
 \label{sec:limitations}
@@ -522,15 +488,19 @@ delivers: a flow-matching GLP on ESM-2 activations scales cleanly with compute, 
 internal units probe Swiss-Prot concepts at least as well as InterPLM's released SAE
 features. As an editing prior the picture is sharper and more cautionary. The GLP correction
 is what turns diff-of-means steering from ineffective into effective across all three
-biochemical properties we test --- so on-manifold correction is doing real work --- yet the
-naturalness benefit it was meant to buy does not appear, and the three-property design is what
-lets us say why: the loss is the masked-Gibbs decoder driving every protein to a common
-foldability, not the prior; the correction's own effect is a single compositional bias whose
-per-property signature includes an entailed null that holds; the steering reaches composition
-rather than sequence order; and the standard naturalness metrics are unreliable here. For
-concept discovery and editing in PLMs, a generative activation prior is best understood as a
-convenient, faithful \emph{read-out} of structure the network already encodes, whose value as
-an intervention tool is gated by a decoder these results locate as the next thing to fix.
+biochemical properties we test, and it does return the edited activations to GLP's manifold.
+Yet the naturalness benefit that on-manifold-ness was meant to buy does not appear, and the
+three-property design is what lets us say why. The lost structure is the masked-Gibbs decoder
+driving every protein toward a common foldability, not the prior. The correction's own effect
+is a single compositional bias whose per-property signature includes a predicted null that
+holds. The steering reaches composition rather than sequence order. And the standard
+naturalness metrics are unreliable here, rating degenerate output above genuine proteins. The
+recurring lesson is that a prior's self-assessed typicality is not sample quality: an
+activation can sit squarely on GLP's manifold while the protein it decodes to folds no
+better. For concept discovery and editing in PLMs, a generative activation prior is best
+understood as a convenient, faithful read-out of structure the network already encodes, whose
+value as an intervention tool is gated by a decoder these results locate as the next thing to
+fix.
 
 \medskip
 \noindent\textbf{Limitations and next steps.}
@@ -542,7 +512,7 @@ covers one intervention (diff-of-means) on three whole-sequence biochemical scal
 through amino-acid composition (Appendix~\ref{app:steer-instability}); we have not shown it
 reaches a structural or functional concept that composition does not determine, and the
 SAE-feature-clamp variant is not re-run. Forced by hook parity, we steer one layer at mutated
-positions only, where \cite{huang2025diffmean} steer every layer and token --- the untested
+positions only, where \cite{huang2025diffmean} steer every layer and token; this is the untested
 deviation, and the likely reason a relatedness-ranked variant of their algorithm underperformed
 here (Appendix~\ref{app:steer-protocol}). Finally, naturalness rests on ESMFold2 confidence and
 a hand-calibrated degeneracy gate that is load-bearing precisely because every model-based
@@ -550,7 +520,7 @@ metric is unreliable on at least one property.
 
 The most direct next step follows from the decoder result: replace iterated
 independent-position resampling, or steer all layers and tokens, and map the fixed point as a
-function of how much of the protein is rewritten --- the same full-layer change that would test
+function of how much of the protein is rewritten, the same full-layer change that would test
 whether steering can reach beyond composition. Beyond steering, the natural extensions are
 causal probing of the meta-neurons that win a concept, a category-balanced probing re-run, the
 generation-quality gate across the full scaling grid, and a wider compute range and host size
@@ -659,7 +629,7 @@ Data & Blocks & Params & $C = 6ND$ & FD@1000 & FD ratio & Loss \\
 \includegraphics[width=0.98\textwidth]{figures/fd_vs_steps.png}
 \caption{Fréchet Distance vs.\ sampler steps, by GLP depth and data scale (shared
 $y$-axis). FD falls with sampler steps everywhere (quote FD with its step count). Depth
-lowers FD monotonically, and the gain is larger at $500$M than at $100$M --- more data
+lowers FD monotonically, and the gain is larger at $500$M than at $100$M, more data
 lets extra depth pay off. The shallowest cells ($3$ vs.\ $6$ blocks) are near-identical at
 both scales; separation appears at $12$--$24$ blocks. Dashed lines: real-vs-real lower
 bound.}
@@ -679,10 +649,10 @@ at 1000 steps, on the real data's top-2 principal components.}
 \subsection{Reading the compute-scaling figure (Fig.~\ref{fig:flops})}
 \label{app:flops}
 
-Training a model costs \emph{compute} --- the total amount of arithmetic performed. A
+Training a model costs \emph{compute}, the total amount of arithmetic performed. A
 standard estimate \cite{kaplan2020} is $C = 6\,N\,D$, where $N$ is the number of model
 parameters (how large the model is) and $D$ is the number of training tokens it processes
-(here, activation vectors seen --- i.e.\ our data size). The factor $6$ is a fixed
+(here, activation vectors seen, i.e.\ our data size). The factor $6$ is a fixed
 bookkeeping constant for one forward-plus-backward pass per token. So a model accumulates
 more compute if it is \emph{bigger} (larger $N$) \emph{or} trained on \emph{more data}
 (larger $D$). Fig.~\ref{fig:flops} plots this compute $C$ on the horizontal axis (log
@@ -691,12 +661,12 @@ axis (lower is better).
 
 Each point is one of our eight trained models (four depths $\times$ two data sizes). The
 key observation is that they fall on a single downward line: the loss depends
-essentially on the \emph{total} compute, not on \emph{how} it was spent --- a small model
+essentially on the \emph{total} compute, not on \emph{how} it was spent, a small model
 on lots of data reaches about the same loss as a bigger model on less data, provided the
 compute matches. Such a relationship is called a \emph{scaling law}.
 
 We summarize the line by fitting $L(C) = E + A\,C^{-\alpha}$. Two numbers carry the
-meaning. $\alpha$ (``alpha'') is the slope: how quickly the loss falls as compute grows ---
+meaning. $\alpha$ (``alpha'') is the slope: how quickly the loss falls as compute grows, 
 a larger $\alpha$ means faster improvement per unit of compute. $E$ is the
 \emph{irreducible} loss, the floor you would approach with infinite compute ($A$ is just a
 scale constant). We find $\alpha \approx 0.056$. The original GLP work, on
@@ -710,11 +680,11 @@ the slope and treat the fitted curve as a descriptive guide rather than a precis
 \label{app:fd}
 
 FD compares two point clouds (here, generated vs.\ real activations) by their mean and
-covariance --- lower is better, and it is $0$ only when the two match in those first two
+covariance, lower is better, and it is $0$ only when the two match in those first two
 moments. Because our generator is a diffusion sampler, its output quality depends on the
 number of integration steps: too few steps and FD mostly reports \emph{sampler} error, not
-model quality. Fig.~\ref{fig:fdsteps} makes this explicit --- FD falls steeply from 20 to
-1000 steps --- so every FD number must be stated with its step count (we use 1000). We also
+model quality. Fig.~\ref{fig:fdsteps} makes this explicit, FD falls steeply from 20 to
+1000 steps, so every FD number must be stated with its step count (we use 1000). We also
 report FD as a \emph{ratio} to the FD(train, val) real-vs-real lower bound, which is the
 smallest FD achievable from finite samples of the true distribution; a ratio of $1$ would
 be perfect, and the ratio is comparable across models trained on the same data.
@@ -756,7 +726,7 @@ line~\ref{line:correct} executes.
 
 Three details are worth reading off the pseudocode because they are where our setup departs
 from the obvious one. First, the intervention is applied to the \emph{masked} positions
-only, at a single layer, and is re-applied from scratch every round --- it is not a
+only, at a single layer, and is re-applied from scratch every round, it is not a
 persistent edit to the model. Second, the correction operates on the steered activation
 before it is decoded, so what the language-model head sees is always a GLP sample, never the
 raw sum $h + \alpha v$. Third, the renormalisation in line~\ref{line:steer} makes
@@ -845,7 +815,7 @@ $\approx\!28.5$; a shared grid in raw units would therefore be three different
 perturbations. We sweep $\alpha \in \{0, 0.032, 0.064, 0.128, 0.257, 0.385, 0.642\}$ in
 units of $\lVert h\rVert$. Effects are reported in units of each property's standard
 deviation across the $5{,}790$-sequence UniRef50 pool the contrasts were drawn from
-($0.456$ GRAVY, $0.060$ charge/residue, $15.73$ index) --- not the spread of the held-out
+($0.456$ GRAVY, $0.060$ charge/residue, $15.73$ index), not the spread of the held-out
 starts, which is bimodal for the steered property by construction and would shrink exactly
 the on-target entries.
 
@@ -887,7 +857,7 @@ instability & 0.642 & $+17.01$ & $5{\times}10^{-5}$ & $+64.93$ & $4{\times}10^{-
 \label{app:steer-drift}
 
 Fig.~\ref{fig:steer-drift} shows the $\alpha{=}0$ arms by direction. Resampling alone
-reverts toward typical hydrophobicity --- the naive arm moves $+0.35$ from hydrophilic
+reverts toward typical hydrophobicity, the naive arm moves $+0.35$ from hydrophilic
 starts and $-0.28$ from hydrophobic ones, flipping sign with the starting point. The
 corrected arm does not flip: $+1.15$ and $+0.54$. The correction therefore carries a
 \emph{fixed} hydrophobic bias rather than regressing toward the training distribution's
@@ -909,8 +879,8 @@ Guruprasad table, and the accompanying loss of Lys$+$Arg ($4.0$pp) and Glu$+$Asp
 cancels in net charge.
 
 The strongest form of this evidence is that the compositional shift is near-identical in
-all three runs, which share no data --- different contrast sets, different held-out
-starting proteins, different steering vectors --- but the same correction operator:
+all three runs, which share no data, different contrast sets, different held-out
+starting proteins, different steering vectors, but the same correction operator:
 Leu $+5.9/+6.3/+6.7$pp and Val $+5.4/+5.7/+4.0$pp for the hydrophobicity, charge and
 instability runs respectively, with each of Glu, Lys, Arg and Asp down $1.3$--$2.8$pp. It
 is a property of SDEdit under this GLP, not of any steering direction.
@@ -956,8 +926,8 @@ pushes one way regardless.}
 \subsection{The naturalness metrics are unreliable, and differently so per property}
 \label{app:steer-metrics}
 
-Fig.~\ref{fig:steer-gate} scores the sequences our degeneracy filter \emph{rejects} ---
-unambiguous non-proteins --- against the sequences it keeps, for each steered property.
+Fig.~\ref{fig:steer-gate} scores the sequences our degeneracy filter \emph{rejects}, 
+unambiguous non-proteins, against the sequences it keeps, for each steered property.
 pLDDT and pseudo-perplexity are gamed everywhere. pTM is not a reliable substitute: its
 verdict changes with the property (Table~\ref{tab:steer-gate}).
 
@@ -983,8 +953,8 @@ The mechanism is visible in the second column. Charge's degenerate output is pol
 and poly-acidic chains are intrinsically disordered, so ESMFold correctly assigns them low
 confidence. Instability's is $43\%$ valine, which is what a confident $\beta$-sheet
 prediction looks like, so it scores above our own clean output. Whether a structural metric
-catches the junk therefore depends on whether \emph{that} junk happens to be foldable ---
-which is a property of the treatment, not of the metric --- and no axis can be chosen
+catches the junk therefore depends on whether \emph{that} junk happens to be foldable, 
+which is a property of the treatment, not of the metric, and no axis can be chosen
 safely in advance. A composition-based gate catches all three because it asks only whether
 the output is a sequence, not whether it is a good one. This is why the gate, and not any
 metric, is load-bearing in every number we report.
@@ -997,14 +967,14 @@ $38\%$ non-protein, and the two arms survive such a cut at different rates. We t
 report the fraction of \emph{all} generations that are non-degenerate \emph{and} above
 threshold. Second, on kept rows alone pseudo-perplexity correlates correctly with pLDDT
 ($\rho{=}-0.48$, $p{=}4{\times}10^{-17}$), which reads as mutual validation but is shared
-bias --- the correlation is computed after the filter has removed the rows that expose it.
+bias, the correlation is computed after the filter has removed the rows that expose it.
 Metric behaviour should be checked on rejected rows, not only on kept ones.
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.98\textwidth]{figures/steer3_gate_check_instability.png}
 \caption{Naturalness scores for sequences the composition filter kept versus rejected, for
-the instability run --- the case where pTM as well as pLDDT and pseudo-perplexity rates the
+the instability run, the case where pTM as well as pLDDT and pseudo-perplexity rates the
 rejected sequences above the kept ones.}
 \label{fig:steer-gate}
 \end{figure}
@@ -1016,7 +986,7 @@ Fig.~\ref{fig:steer-div3} is the per-property form of Table~\ref{tab:steer-effic
 shape is the same in all three: the GLP-corrected arms fan apart monotonically from the
 second grid point, while the naive arms stay flat until the top of the grid. The two
 directions are near-symmetric within each property, which a direction-independent artifact
-cannot produce --- at $\alpha{=}0.257$ on hydrophobicity, up $+0.785$ against down $-0.796$.
+cannot produce, at $\alpha{=}0.257$ on hydrophobicity, up $+0.785$ against down $-0.796$.
 
 \begin{figure}[htbp]
 \centering
@@ -1043,7 +1013,7 @@ Table~\ref{tab:steer-div} removes by rescaling to each property's natural spread
 \label{app:steer-specificity}
 
 Every generation is scored on all three properties regardless of which was steered, so the
-off-target columns are available without extra compute --- and cannot be recovered later
+off-target columns are available without extra compute, and cannot be recovered later
 without regenerating, which is why they are written unconditionally.
 
 The matrix in Fig.~\ref{fig:steer-spec} is read at a \emph{matched on-target effect}
@@ -1051,8 +1021,8 @@ The matrix in Fig.~\ref{fig:steer-spec} is read at a \emph{matched on-target eff
 $\alpha$. Comparing off-target numbers taken at different on-target strengths would
 penalise whichever property happened to be pushed hardest, which is a fact about the grid
 and not about the direction. The achieved on-target effects are $+1.21$, $+0.67$ and
-$+0.86$ SD for hydrophobicity, charge and instability. Charge is the loosest match --- its
-grid steps past $1$ SD between the second and third points --- and its off-target row
+$+0.86$ SD for hydrophobicity, charge and instability. Charge is the loosest match, its
+grid steps past $1$ SD between the second and third points, and its off-target row
 should be read with that in mind; a property whose grid misses the target by more than
 $0.35$ SD is flagged rather than silently used.
 
@@ -1068,7 +1038,7 @@ differently from how they covary in nature, which is interesting but is not by i
 defect. And the residual is undefined on the diagonal, where $r{=}1$ by construction.
 
 Read that way, hydrophobicity steering leaves residuals of $+0.01$ on charge and $+0.49$ on
-instability --- the latter because nature's coupling predicts a $-0.42$ move that does not
+instability, the latter because nature's coupling predicts a $-0.42$ move that does not
 happen, i.e.\ our output reaches hydrophobicity without the stabilisation that normally
 accompanies it. The instability$\rightarrow$hydrophobicity entry ($-0.54$ measured, $-0.24$
 residual) is explained by Appendix~\ref{app:steer-instability}: the substitution that
@@ -1081,8 +1051,8 @@ off-diagonal we cannot currently account for.
 
 Instability is the only steered property that is not a function of amino-acid composition:
 it is $\tfrac{10}{L}\sum_i \mathrm{DIWV}(x_i, x_{i+1})$, a sum over adjacent pairs. That
-makes it the one target a purely compositional artifact --- such as the correction's own
-Leu/Val drift --- cannot produce directly. It does not make the index independent of
+makes it the one target a purely compositional artifact, such as the correction's own
+Leu/Val drift, cannot produce directly. It does not make the index independent of
 composition, because dipeptide frequencies track it, so the two contributions have to be
 separated rather than assumed apart.
 
@@ -1100,11 +1070,11 @@ before using it.
 
 Splitting the steering-attributable divergence at the top of the grid gives a total of
 $+64.9$, of which $+61.3$ ($p{=}2{\times}10^{-14}$) is composition and $+3.65$
-(95\% CI $[-1.10, +8.41]$, $p{=}0.10$) is order --- an order-specific share of $6\%$ with a
+(95\% CI $[-1.10, +8.41]$, $p{=}0.10$) is order, an order-specific share of $6\%$ with a
 $13\%$ upper bound. The corresponding composition change is Arg $+8.7$, Pro $+7.5$, Ser
 $+7.5$ percentage points against Val $-5.9$, Leu $-5.7$, Phe $-2.6$, Ile $-2.5$.
 
-The dipeptides that contribute most --- RR, RS, SP, SS, SR, RP, PS, PP --- are exactly the
+The dipeptides that contribute most, RR, RS, SP, SS, SR, RP, PS, PP, are exactly the
 pairs formable from the three enriched residues, so their apparent concentration (five
 dipeptides account for half the positive contribution) is a readout of composition rather
 than evidence of targeted adjacencies. Reporting the ranking without the split would
@@ -1125,7 +1095,7 @@ Right: the largest per-dipeptide contributions.}
 Steering does move activations off the manifold, and monotonically in $\alpha$: GLP's
 diffusion loss on real held-out activations rises from $0.869$ unsteered to $1.743$ at the
 top of the grid (Fig.~\ref{fig:steer-sdedit}). Applying a single SDEdit pass to the steered
-activation with \emph{no} generation returns it to $0.944$ --- recovering $92\%$, $97\%$ and
+activation with \emph{no} generation returns it to $0.944$, recovering $92\%$, $97\%$ and
 $103\%$ of the excess at the top three grid points. Values at or above $100\%$ are real and
 mean the correction placed the activation in a \emph{higher}-density region of GLP's own
 distribution than the unsteered original; the same effect is why the corrected curve sits
@@ -1172,7 +1142,7 @@ effect $+0.057$, $+0.081$, $+0.078$ respectively. Fig.~\ref{fig:steer-tradeoff} 
 plots both objectives against $1-(1-\mathrm{mask})^{\mathrm{rounds}}$, the fraction of
 residues resampled at least once. Foldability stays within the starting proteins' own
 interval up to ${\sim}15\%$ coverage and declines beyond it, while the steering effect grows
-throughout --- so the trade-off is not between mask and rounds, but between total rewriting
+throughout, so the trade-off is not between mask and rounds, but between total rewriting
 and structure.
 
 \paragraph{The loop is a fixed point, not a constant penalty.} With only the two
@@ -1207,8 +1177,8 @@ instability, unstable       & $0.369$ & $0.227$ & $-38\%$ \\
 $\alpha{=}0$ against the top of the grid, paired by starting protein: $-0.004$ pTM
 ($p{=}0.70$) for hydrophobicity, $-0.025$ ($p{=}0.18$) for charge, $-0.031$ ($p{=}0.014$,
 Holm-adjusted $0.042$ across the three) for instability. Only instability is significant
-and only marginally; no pass rate moves significantly. The hydrophobicity result --- effect
-bought without further structural cost --- holds, and we do not claim the decline for the
+and only marginally; no pass rate moves significantly. The hydrophobicity result, effect
+bought without further structural cost, holds, and we do not claim the decline for the
 other two.
 
 \begin{table}[htbp]
@@ -1281,10 +1251,10 @@ used elsewhere in this paper.}
 \centering
 \includegraphics[width=0.95\textwidth]{figures/probing_per_concept.png}
 \caption{Per-concept/property GLP vs.\ SAE. Left: discrete concepts, colored by
-Swiss-Prot category --- most points sit above the diagonal (GLP wins), across
+Swiss-Prot category, most points sit above the diagonal (GLP wins), across
 categories, not concentrated in one bucket (the pool is dominated by
-domain/motif, 86/104, so a category-balanced re-run remains future work ---
-Section~\ref{sec:limitations}). Right: continuous properties, direct-labeled ---
+domain/motif, 86/104, so a category-balanced re-run remains future work, 
+Section~\ref{sec:limitations}). Right: continuous properties, direct-labeled, 
 GLP wins 8/10, led by gravy and sheet fraction.}
 \label{fig:probingscatter}
 \end{figure}
@@ -1556,7 +1526,7 @@ Disulfide bond & $u{=}0.9$, unit 10335 & 0.963 \\
 (Table~\ref{tab:app-falsification}) and $k^*$, the smallest $k \in \{2,5,10,20\}$ at
 which a joint logistic probe over the SAE's own top-$k$ features reaches GLP's test AUC
 (``never'' = no $k \le 20$ does). Sorted by $k^*$ (``never'' first, the 15-concept
-discovery list), then by $R^2$ ascending within each $k^*$ group --- deliberately not
+discovery list), then by $R^2$ ascending within each $k^*$ group, deliberately not
 sorted by $R^2$ alone, since Section~\ref{sec:probing-results} shows $R^2$ does not order
 this list the way the falsification-check table's ordering might suggest.}
 \label{tab:app-topk} \\
