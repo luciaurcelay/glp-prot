@@ -94,16 +94,27 @@ def load_run(run_dir: Path, neutral_alpha: float) -> Tuple[str, List[dict], dict
 
 
 def natural_sd(contrast: dict) -> Dict[str, float]:
-    """SD of each property across the run's own natural held-out starting proteins.
+    """SD of each property across natural proteins — the scale that makes an effect of
+    +0.5 GRAVY and one of +0.02 charge/residue commensurable.
 
-    The scale that makes three properties comparable has to come from the data the run
-    actually generates from, not from a global constant: an effect of +0.5 GRAVY and one of
-    +0.02 charge/residue are only commensurable as multiples of the natural spread.
+    It must come from the **UniRef50 pool**, not from the run's held-out starts. The two
+    held-out sets are drawn from opposite quartiles of the *steered* property, so their
+    pooled spread is bimodal and inflated for that one property while the off-target
+    properties keep a roughly natural spread. Standardizing by it would shrink precisely
+    the diagonal of this matrix — i.e. systematically understate on-target specificity.
     """
+    stats = contrast.get("pool_property_stats")
+    if stats:
+        return {k: stats[k]["sd"] for k in PROPERTY_KEYS if k in stats}
+    # Contrast files built before pool stats were recorded: fall back to the held-out
+    # starts, and say so, because the diagonal is then biased low.
     seqs = [h["sequence"] for h in
             (contrast.get("heldout") or []) + (contrast.get("heldout_high") or [])]
     if not seqs:
         return {}
+    print("[specificity] WARNING: this contrast predates `pool_property_stats`; "
+          "standardizing by the held-out starts instead, which understates the diagonal. "
+          "Rebuild the contrast with --restart for the correct scale.")
     scored = [score_all(s) for s in seqs]
     return {k: float(np.std([s[k] for s in scored], ddof=1)) for k in PROPERTY_KEYS}
 
@@ -135,10 +146,28 @@ def main():
     ap.add_argument("--run-dirs", required=True,
                     help="comma-separated Exp B run dirs, one per steered property")
     ap.add_argument("--out-run-dir", required=True, help="where the figure and metrics go")
+    ap.add_argument("--match-on", choices=["alpha", "effect"], default="effect",
+                    help="what to hold constant across the three properties. 'alpha' reads "
+                         "every property at --alpha, i.e. matched PERTURBATION: it answers "
+                         "'at the same push, which concept moves most'. 'effect' (default) "
+                         "picks each property's own alpha so the ON-TARGET divergence is "
+                         "closest to --target-effect, i.e. matched EFFECT: it answers 'at "
+                         "the same on-target gain, what does each direction cost off "
+                         "target'. The second is the fair reading of an off-target number — "
+                         "otherwise a property that was simply pushed harder looks less "
+                         "specific. Both need --alpha-mode relative runs to be meaningful.")
+    ap.add_argument("--target-effect", type=float, default=1.0,
+                    help="[--match-on effect] on-target divergence, in natural SD units, to "
+                         "match the three properties at")
+    ap.add_argument("--match-tolerance", type=float, default=0.35,
+                    help="[--match-on effect] how far, in SD, a property's best alpha may "
+                         "sit from --target-effect before the run is flagged as unmatched. "
+                         "A flagged row is NOT comparable to the others and says the alpha "
+                         "grid needs another point, not that the direction is unspecific.")
     ap.add_argument("--alpha", type=float, default=2.0,
-                    help="steering strength the matrix is evaluated at. 2.0 is where the "
-                         "hydrophobicity run separates the arms most cleanly while staying "
-                         "well below the degenerate regime")
+                    help="[--match-on alpha] steering strength the matrix is evaluated at. "
+                         "2.0 is where the hydrophobicity run separates the arms most "
+                         "cleanly while staying well below the degenerate regime")
     ap.add_argument("--neutral-alpha", type=float, default=0.0)
     ap.add_argument("--arm", choices=["corrected", "naive", "both"], default="corrected")
     ap.add_argument("--no-titles", action="store_true")
@@ -158,24 +187,68 @@ def main():
 
     # ---------------- the matrix ----------------
     results: Dict[str, dict] = {}
+    alpha_used: Dict[str, Dict[str, float]] = {}
     for corrected in arms:
         arm_name = "corrected" if corrected else "naive"
         cells: Dict[str, Dict[str, dict]] = {}
         sds = {k: natural_sd(contrasts[k]) for k in steered_keys}
+        chosen: Dict[str, float] = {}
+
+        for sk in steered_keys:
+            if args.match_on == "alpha":
+                chosen[sk] = args.alpha
+                continue
+            # matched effect: this property's own alpha whose ON-TARGET standardized
+            # divergence lands closest to the target. Comparing off-target numbers taken at
+            # different on-target strengths would penalise whichever property happened to be
+            # pushed hardest, which is a property of the grid, not of the direction.
+            sd = sds[sk].get(sk)
+            best, best_gap, best_eff = None, float("inf"), None
+            for a in sorted({r["alpha"] for r in runs[sk]}):
+                # The neutral alpha is the NO-STEERING control, not a weak steering setting.
+                # Leaving it in the candidate set lets a property whose grid overshoots the
+                # target "match" at zero steering, which reads as perfect specificity
+                # (all-zero row) — it happened on the first run of this code.
+                if a == args.neutral_alpha:
+                    continue
+                dv = divergence(runs[sk], sk, a, corrected)
+                if dv is None or not sd:
+                    continue
+                eff = dv[0] / sd
+                if abs(eff - args.target_effect) < best_gap:
+                    best, best_gap, best_eff = a, abs(eff - args.target_effect), eff
+            if best is None:
+                raise SystemExit(f"no usable steered alpha for {sk} in the {arm_name} arm — "
+                                 "run it with more sequences per cell, or use "
+                                 "--match-on alpha")
+            chosen[sk] = best
+            note = (f"[specificity] {arm_name}/{sk}: alpha={best:g}, on-target "
+                    f"{best_eff:+.2f} SD (target {args.target_effect:+.2f})")
+            if best_gap > args.match_tolerance:
+                note += ("  <-- NOT MATCHED: the alpha grid does not bracket the target, so "
+                         "this row is read at a different on-target strength than the others "
+                         "and its off-target numbers are not comparable to them")
+            print(note)
+
         for sk in steered_keys:
             cells[sk] = {}
             for mk in PROPERTY_KEYS:
-                dv = divergence(runs[sk], mk, args.alpha, corrected)
+                dv = divergence(runs[sk], mk, chosen[sk], corrected)
                 if dv is None:
                     continue
                 raw_div, pv, n = dv
                 sd = sds[sk].get(mk)
                 cells[sk][mk] = {"divergence": raw_div, "p": pv, "n": n,
-                                 "natural_sd": sd,
-                                 "standardized": raw_div / sd if sd else None}
+                                 "natural_sd": sd, "alpha": chosen[sk],
+                                 "standardized": raw_div / sd if sd else None,
+                                 "on_target": mk == sk}
         results[arm_name] = cells
+        alpha_used[arm_name] = chosen
 
-        print(f"\n=== {arm_name} arm, alpha={args.alpha:g}: steering-attributable divergence "
+        where = (f"alpha={args.alpha:g}" if args.match_on == "alpha"
+                 else f"matched on-target effect ≈ {args.target_effect:+.2f} SD, "
+                      "per-property alpha")
+        print(f"\n=== {arm_name} arm, {where}: steering-attributable divergence "
               "(up - down), in natural SD units ===")
         head = "  steered \\ measured  " + "".join(f"{k:>16}" for k in PROPERTY_KEYS)
         print(head)
@@ -191,12 +264,19 @@ def main():
     # ---------------- the natural-coupling reference ----------------
     # An off-target effect is only evidence of an unspecific vector once it exceeds what the
     # on-target effect would drag along through the properties' natural correlation.
-    corr = {}
-    for sk in steered_keys:
-        c = contrasts[sk].get("natural_correlations")
-        if c:
-            corr = c
-            break
+    # Each run's own contrast, not the first one that happens to have it: the three are
+    # built from the same UniRef50 pool so they should agree, and a disagreement means the
+    # builds used different pools — which the residual must not paper over.
+    corr_by_run = {sk: contrasts[sk].get("natural_correlations") for sk in steered_keys}
+    corr = next((c for c in corr_by_run.values() if c), {})
+    spread = [abs(a[x][y] - b[x][y]) for a in corr_by_run.values() if a
+              for b in corr_by_run.values() if b
+              for x in PROPERTY_KEYS for y in PROPERTY_KEYS]
+    if spread and max(spread) > 0.05:
+        print(f"[specificity] WARNING: the runs' contrast files disagree on the natural "
+              f"correlations by up to {max(spread):.2f} — they were built from different "
+              "UniRef50 pools (different seed or --n-raw-seqs). The residual panel assumes "
+              "one common reference.")
     if corr:
         print("\n=== natural correlations between the properties (UniRef50 pool, "
               "the coupling a faithful direction SHOULD reproduce) ===")
@@ -216,13 +296,17 @@ def main():
         on = cells[sk].get(sk, {}).get("standardized")
         for mk in PROPERTY_KEYS:
             got = cells[sk].get(mk, {}).get("standardized")
-            if got is None or on is None or not corr:
+            ref = corr_by_run.get(sk) or corr
+            if got is None or on is None or not ref:
                 residual[sk][mk] = None
             else:
-                residual[sk][mk] = got - corr[sk][mk] * on
+                # In SD units, a coupling of r predicts an off-target move of r x on-target.
+                residual[sk][mk] = got - ref[sk][mk] * on
 
     run = RunLogger(Path(args.out_run_dir))
-    run.log_summary(specificity_alpha=args.alpha, specificity=results,
+    run.log_summary(specificity_match_on=args.match_on, specificity_alpha=args.alpha,
+                    specificity_target_effect=args.target_effect,
+                    specificity_alpha_used=alpha_used, specificity=results,
                     specificity_residual=residual, natural_correlations=corr or None)
 
     # ---------------- figure ----------------
@@ -247,7 +331,7 @@ def main():
                             gridspec_kw={"width_ratios": [1] * len(panels) + [0.045]})
     cax = axs[0][-1]
     vmax = max((abs(v) for _, m in panels for row in m.values() for v in row.values()
-                if v is not None), default=1.0)
+                if v is not None), default=1.0) or 1.0     # TwoSlopeNorm rejects vmax == 0
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
     for ax, (name, mat) in zip(axs[0][:-1], panels):
         ax.grid(False)          # the shared style draws a hairline grid; not on a heatmap
@@ -280,7 +364,9 @@ def main():
         if not args.no_titles:
             ax.set_title(name, loc="left")
     fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax,
-                 label=f"divergence at α={args.alpha:g}\n(natural SD units)")
+                 label=("divergence (natural SD units)\n"
+                        + (f"at α={args.alpha:g}" if args.match_on == "alpha"
+                           else f"at matched on-target ≈{args.target_effect:+.2f} SD")))
     p = style.save_fig(fig, run.figures_dir / "property_specificity.png")
     print(f"\n[specificity] wrote {p}")
 

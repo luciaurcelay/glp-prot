@@ -46,7 +46,7 @@ from typing import Dict, List, Optional, Tuple
 import _bootstrap  # noqa: F401
 import numpy as np
 
-from glp_plm.eval.steering_properties import find_run_csv, row_delta, run_property
+from glp_plm.eval.steering_properties import find_run_csv, row_delta
 from glp_plm.experiments import RunLogger, style
 
 # a well-folded natural protein, folded through the same pipeline, as a scale anchor

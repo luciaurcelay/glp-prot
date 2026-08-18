@@ -216,6 +216,17 @@ $GLP_VENV/bin/python scripts/analyze_property_specificity.py \
   --run-dirs <gravy-run>,<charge-run>,<instability-run> --out-run-dir <run-dir>
 ```
 
+`--alpha-mode relative` **requires an explicit `--alphas`** — the raw default grid means a
+different perturbation in those units, and the point of relative mode is one grid shared
+across properties, which cannot be derived from a single property's scale. Run the
+contrast builds first and pick the grid from the `alpha_scale` each one reports.
+
+The specificity matrix defaults to `--match-on effect`: each property is read at its own
+alpha, chosen so the on-target divergence is closest to `--target-effect` (1 SD). Reading
+all three at one alpha instead (`--match-on alpha`) makes whichever property was pushed
+hardest look least specific, which is a fact about the grid, not the direction. A property
+whose grid does not bracket the target is flagged as unmatched rather than silently used.
+
 The fold stage runs in a **separate Python 3.12 venv** (ESMFold2 needs `esm`,
 which the project venv does not have and cannot get — MN5 is offline), so its
 launcher deliberately does not source `env_mn5.sh`. ~2.6 s/sequence, resumable.

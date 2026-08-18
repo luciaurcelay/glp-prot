@@ -677,6 +677,13 @@ regardless of which was steered. This is what makes
 measured, in natural-SD units. An off-target column that was never written
 cannot be recovered without regenerating, which is why it is unconditional.
 
+The matrix is read at **matched on-target effect** by default (`--match-on effect`), not
+at a shared alpha: comparing off-target numbers taken at different on-target strengths
+penalises whichever property happened to be pushed hardest, which is a property of the
+grid rather than of the direction. Alphas where the grid does not bracket the target are
+flagged as unmatched rather than quietly used. `--match-on alpha` gives the
+matched-perturbation reading instead.
+
 The matrix' second panel subtracts the *natural* coupling. The three properties
 are correlated in real proteins (charged residues are hydrophilic), and the
 contrast build now stores that correlation matrix from the UniRef50 pool. A
@@ -723,6 +730,34 @@ not optional for this target.
 - Nothing about the decoding-loop foldability cost (§13.6) is property-specific,
   so both new properties inherit it. The naturalness claim is not expected to
   come out differently.
+
+### 14.4a Bugs found in review before the first run
+
+Recorded because all four were the kind that produce a plausible number rather than a
+crash:
+
+1. **Composition decomposition weighted residues, not sequences.** `mean_i score(s_i)`
+   decomposes over the mean of per-sequence frequencies; pooling all residues into one bag
+   weights long proteins more, so the components no longer summed to the effect they
+   explained (error +0.0022 GRAVY on a mixed-length set). Invisible whenever the sequences
+   share a length, which is why the original single-sequence test passed.
+2. **Length-matched draws were length-ordered.** `_length_matched_draw` assembles indices
+   bin by bin and the caller splits the draw by position, so the held-out starts got the
+   shortest proteins — a length confound between the starts and the vector, introduced by
+   the fix for the length confound between the contrast sets. Now shuffled, and both sides
+   are capped at the shared per-bin capacity so their length distributions are identical by
+   construction rather than approximately.
+3. **`--match-on effect` could select alpha=0.** The neutral alpha is the no-steering
+   control; leaving it in the candidate set let a property whose grid overshoots the target
+   "match" at zero steering, producing an all-zero row that reads as perfect specificity.
+4. **The specificity matrix standardized by the held-out starts.** Those are drawn from
+   opposite quartiles of the *steered* property, so their pooled SD is bimodal and inflated
+   for exactly that property — shrinking the diagonal, i.e. understating on-target
+   specificity. Now standardized by the UniRef50 pool SD, recorded at build time.
+
+Also fixed: `analyze_steering_confound.py` used a homopolymer threshold of 8 where
+`run_steering.py` uses 12, so it analysed a smaller row set than the summary.json numbers
+it prints beside them, contradicting its own docstring.
 
 ### 14.5 Still open
 

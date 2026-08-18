@@ -1471,6 +1471,19 @@ def main():
             diffmean_vec = diffmean_vec * alpha_scale
             print(f"[steering] alpha-mode=relative: alpha is now the fraction of mean||h||="
                   f"{mean_act_norm:.4f} added along v/||v|| (raw-mode alpha x {alpha_scale:.3f})")
+            if not args.alphas:
+                # The raw default grid ('0,...,5,20') was chosen for GRAVY in RAW units; in
+                # relative units the same numbers mean an enormous perturbation (alpha=1
+                # adds a vector as long as ||h|| itself). And the point of relative mode is a
+                # grid SHARED across properties, which cannot be derived from one property's
+                # own scale — so it has to be stated explicitly.
+                raw_default = [float(a) for a in "0,0.05,0.25,0.5,1,2,5,20".split(",")]
+                equiv = ",".join(f"{a / alpha_scale:g}" for a in raw_default)
+                ap.error(
+                    "--alpha-mode relative requires an explicit --alphas: the raw default "
+                    "grid means a different perturbation in these units. For THIS property "
+                    f"the raw default grid is equivalent to --alphas {equiv}. Pick one grid "
+                    "and pass it to every property, or the runs are not comparable.")
         run.log_summary(steered_property=args.property, alpha_mode=args.alpha_mode,
                         alpha_scale=alpha_scale, vector_norm=float(gd["vector_norm"]),
                         contrast_length_gap_pool_sd=gd.get("length_gap_pool_sd"),
@@ -1768,6 +1781,18 @@ def main():
                            "plddt", "ptm", "direction", "sequence"])
 
         mode = "a" if existing else "w"
+        if existing and set(existing[0].keys()) != set(fieldnames):
+            # Appending rows in a different schema to an existing CSV produces a file whose
+            # header does not describe its own later rows — silent corruption that only
+            # shows up as nonsense in the analysis. This fires for runs started before the
+            # multi-property columns existed.
+            added = sorted(set(fieldnames) - set(existing[0]))
+            dropped = sorted(set(existing[0]) - set(fieldnames))
+            ap.error(
+                f"{csv_path} was written with a different column set (added: {added or '-'}; "
+                f"dropped: {dropped or '-'}), so resuming would append rows the header does "
+                "not describe. Pass --restart to regenerate it, or point --out-dir/--exp-name "
+                "at a fresh run.")
         rows_for_analysis = []
         for r in existing:
             # legacy CSVs (pre-generalization) carry only delta_gravy, which was the

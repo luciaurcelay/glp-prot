@@ -39,6 +39,12 @@ def test_charge_is_per_residue_not_net():
     assert abs(net) > 1.0                      # and it is genuinely a different scale
 
 
+#: How close the components must sum to the change they explain. GRAVY and instability
+#: are exact identities; charge carries a small residual because `charge_at_pH` adds two
+#: terminal terms that composition cannot see (~0.005 charge/residue at these lengths).
+DECOMPOSITION_TOL = {"gravy": 1e-9, "charge": 8e-3, "instability": 1e-9}
+
+
 @pytest.mark.parametrize("key", ["gravy", "charge"])
 def test_compositional_decomposition_is_exact(key):
     """GRAVY and charge are sum_a frequency(a) * weight(a), so the per-residue
@@ -47,7 +53,24 @@ def test_compositional_decomposition_is_exact(key):
     assert prop.compositional
     total = sum(v for _, v in prop.decompose([UBIQUITIN], [LYSOZYME]))
     actual = prop.score(LYSOZYME) - prop.score(UBIQUITIN)
-    assert total == pytest.approx(actual, abs=0.01)
+    assert total == pytest.approx(actual, abs=DECOMPOSITION_TOL[key])
+
+
+@pytest.mark.parametrize("key", ["gravy", "charge", "instability"])
+def test_decomposition_is_exact_across_sequences_of_different_lengths(key):
+    """The real call site decomposes a *set* of sequences against a *set* of starts, and
+    ours span 100-200 aa. Each sequence must be weighted equally, because what the
+    components have to reconstruct is the change in the MEAN PER-SEQUENCE score. Pooling
+    residues instead would weight long proteins more, and the error is invisible when every
+    sequence has the same length — which is why this case is tested separately."""
+    prop = get_property(key)
+    before = [UBIQUITIN, LYSOZYME, UBIQUITIN[:40]]
+    after = [LYSOZYME, UBIQUITIN, LYSOZYME[:150]]
+    assert len({len(s) for s in before + after}) > 1        # the case that exposes it
+    total = sum(v for _, v in prop.decompose(before, after))
+    actual = (np.mean([prop.score(s) for s in after])
+              - np.mean([prop.score(s) for s in before]))
+    assert total == pytest.approx(actual, abs=DECOMPOSITION_TOL[key])
 
 
 def test_instability_decomposition_sums_over_dipeptides():
@@ -59,7 +82,7 @@ def test_instability_decomposition_sums_over_dipeptides():
     assert len(dec) > 20                       # dipeptides, not 20 residues
     total = sum(v for _, v in dec)
     actual = instability_score(LYSOZYME) - instability_score(UBIQUITIN)
-    assert total == pytest.approx(actual, abs=1e-6)
+    assert total == pytest.approx(actual, abs=DECOMPOSITION_TOL["instability"])
     assert dec == sorted(dec, key=lambda t: -abs(t[1]))
 
 
@@ -89,3 +112,64 @@ def test_run_property_falls_back_to_gravy_for_legacy_rows():
 def test_run_property_reads_the_csv_name_when_the_column_is_blank():
     assert run_property([{"property": ""}], "runs/x/expB_diffmean_instability.csv").key \
         == "instability"
+
+
+# --------------------------------------------------------------------------- #
+#  Contrast construction (scripts/build_property_contrast.py)
+# --------------------------------------------------------------------------- #
+def _synthetic_pool(rng, n=600):
+    """A pool where the property and LENGTH are deliberately confounded: high-GRAVY
+    sequences are made systematically longer. That is the situation --match-length exists
+    for, and it is not hypothetical — it is what a sum-valued score (net charge) does on
+    its own."""
+    from glp_plm.eval.steering_properties import score_all as _score_all
+
+    pool = []
+    for _ in range(n):
+        hydrophobic = rng.random() < 0.5
+        alphabet = "LVIAFM" if hydrophobic else "KRDENQ"
+        # overlapping, not disjoint: real length distributions overlap, and a pool with no
+        # shared support is refused outright by _length_matched_draw (correctly — there is
+        # nothing to match on).
+        length = int(rng.integers(140, 200) if hydrophobic else rng.integers(100, 165))
+        seq = "".join(rng.choice(list(alphabet + "GSTP")) for _ in range(length))
+        pool.append((seq, _score_all(seq)))
+    return pool
+
+
+def test_length_matching_equalizes_the_contrast_sets():
+    import sys
+    sys.path.insert(0, "scripts")
+    from build_property_contrast import build_contrast
+
+    rng = np.random.default_rng(0)
+    pool = _synthetic_pool(rng)
+    kw = dict(prop_key="gravy", n_per_set=30, n_heldout=10, seed=0, n_heldout_high=10)
+
+    unmatched = build_contrast(pool, match_length=False, **kw)
+    matched = build_contrast(pool, match_length=True, **kw)
+
+    def gap(sets):
+        return (np.mean([len(s) for s, _ in sets["high"]])
+                - np.mean([len(s) for s, _ in sets["low_in"]]))
+
+    assert abs(gap(unmatched)) > 20          # the confound is real in this pool
+    assert abs(gap(matched)) < abs(gap(unmatched)) / 4
+
+
+def test_length_matched_heldout_is_not_length_biased():
+    """The matched draw is assembled bin by bin and the caller splits it by position, so
+    without a shuffle the held-out starts would be the shortest proteins in the draw —
+    a length confound between the starts and the vector, reintroduced by the fix for the
+    length confound between the two contrast sets."""
+    import sys
+    sys.path.insert(0, "scripts")
+    from build_property_contrast import build_contrast
+
+    rng = np.random.default_rng(1)
+    sets = build_contrast(_synthetic_pool(rng), prop_key="gravy", n_per_set=30,
+                          n_heldout=10, seed=0, n_heldout_high=10, match_length=True)
+    for held, kept in (("heldout", "low_in"), ("heldout_high", "high")):
+        h = np.mean([len(s) for s, _ in sets[held]])
+        k = np.mean([len(s) for s, _ in sets[kept]])
+        assert abs(h - k) < 12, f"{held} mean length {h:.1f} vs {kept} {k:.1f}"

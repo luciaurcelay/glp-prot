@@ -101,9 +101,16 @@ def _length_matched_draw(low_q: List, high_q: List, n_low: int, n_high: int,
                          rng: np.random.Generator, n_bins: int = 10) -> Tuple[List, List]:
     """Draw from both quartiles under a SHARED length distribution.
 
-    Bins lengths, weights each bin by min(available_low, available_high) so neither side
-    can be asked for more than it has, then draws that shape from both sides. Rounding
-    shortfalls are topped up greedily from bins with slack on the relevant side."""
+    Bins lengths, then draws the *same per-bin counts* from both sides. Two details make
+    that hold exactly rather than approximately:
+
+      * every bin's capacity is capped at min(available_low, available_high), so a bin can
+        never be over-drawn on one side and topped up elsewhere — which would silently put
+        the two sides back on different length distributions, i.e. undo the whole point;
+      * the returned indices are SHUFFLED. They are assembled bin by bin, and the caller
+        splits the draw into held-out starts and held-in contrast members by position, so
+        an unshuffled result would hand the held-out set the shortest proteins.
+    """
     def lens(q):
         return np.array([len(s) for s, _ in q])
 
@@ -115,31 +122,31 @@ def _length_matched_draw(low_q: List, high_q: List, n_low: int, n_high: int,
     lo_idx = [np.flatnonzero(lo_bin == b) for b in range(n_bins)]
     hi_idx = [np.flatnonzero(hi_bin == b) for b in range(n_bins)]
 
-    w = np.array([min(len(lo_idx[b]), len(hi_idx[b])) for b in range(n_bins)], dtype=float)
-    if w.sum() == 0:
+    cap = np.array([min(len(lo_idx[b]), len(hi_idx[b])) for b in range(n_bins)], dtype=int)
+    if cap.sum() == 0:
         raise ValueError("no length bin is populated on both sides — cannot length-match")
-    p = w / w.sum()
+    n_want = max(n_low, n_high)
+    if n_want > cap.sum():
+        raise ValueError(
+            f"length-matched draw needs {n_want} per side but only {cap.sum()} sequences "
+            "sit in bins populated on BOTH sides — raise --n-raw-seqs, widen "
+            "--min-len/--max-len, or drop --match-length")
+    p = cap / cap.sum()
 
-    def draw(idx_by_bin, n_want):
-        take = np.minimum(np.floor(p * n_want).astype(int),
-                          np.array([len(i) for i in idx_by_bin]))
-        # top up rounding shortfall in the bins that still have room, biggest bins first
-        order = np.argsort(-p)
-        while take.sum() < n_want:
-            progressed = False
-            for b in order:
-                if take.sum() >= n_want:
-                    break
-                if take[b] < len(idx_by_bin[b]):
-                    take[b] += 1
-                    progressed = True
-            if not progressed:
-                raise ValueError(f"length-matched draw could not reach n={n_want}; "
-                                 "raise --n-raw-seqs or pass --no-match-length")
-        return np.concatenate([rng.choice(idx_by_bin[b], size=take[b], replace=False)
-                               for b in range(n_bins) if take[b]])
+    take = np.minimum(np.floor(p * n_want).astype(int), cap)
+    # top up the rounding shortfall in bins that still have shared capacity, biggest first
+    for b in np.argsort(-p):
+        if take.sum() >= n_want:
+            break
+        take[b] = min(take[b] + (n_want - take.sum()), cap[b])
 
-    return list(draw(lo_idx, n_low)), list(draw(hi_idx, n_high))
+    def draw(idx_by_bin, n_side):
+        picked = np.concatenate([rng.choice(idx_by_bin[b], size=take[b], replace=False)
+                                 for b in range(n_bins) if take[b]])
+        rng.shuffle(picked)
+        return list(picked[:n_side])
+
+    return draw(lo_idx, n_low), draw(hi_idx, n_high)
 
 
 def build_contrast(pool: List[Tuple[str, Dict[str, float]]], prop_key: str, n_per_set: int,
@@ -177,8 +184,10 @@ def build_contrast(pool: List[Tuple[str, Dict[str, float]]], prop_key: str, n_pe
     low_sel = [low_quartile[i] for i in low_idx]
     heldout, low_in = low_sel[:n_heldout], low_sel[n_heldout:]
     high_sel = [high_quartile[i] for i in high_idx]
-    # take the high heldout from the TOP of the quartile ordering for symmetry with the low
-    # side (which takes the most extreme low draws first via the sorted quartile)
+    # Both draws are in random order (np.random.Generator.choice without replacement, and
+    # _length_matched_draw shuffles), so this split is a random partition of the drawn
+    # subset — the held-out starts are NOT the most extreme members of their quartile, and
+    # the two directions are symmetric by construction.
     heldout_high, high_in = high_sel[:n_heldout_high], high_sel[n_heldout_high:]
 
     return {"high": high_in, "low_in": low_in,
@@ -259,6 +268,16 @@ def build_property_contrast(cfg, out_path: Path, prop_key: str = "gravy",
               f"{len_gap_sd:+.2f} pool SD, so the diff-of-means vector partly encodes "
               "LENGTH rather than the property. Rebuild with --match-length --restart.")
 
+    # Length-matching is not free: if length and the property are confounded in the pool,
+    # restricting both sets to a shared length band also narrows the PROPERTY gap, i.e.
+    # buys a cleaner vector with a weaker contrast. Print both so the trade is visible in
+    # one line rather than inferred by diffing two builds.
+    pool_prop_sd = float(np.std([p[prop_key] for _, p in pool], ddof=1)) or 1.0
+    prop_gap_sd = (float(np.mean([p[prop_key] for _, p in sets["high"]]))
+                   - float(np.mean([p[prop_key] for _, p in sets["low_in"]]))) / pool_prop_sd
+    print(f"[contrast/{prop_key}] contrast separation: {prop_gap_sd:+.2f} pool SD of "
+          f"{prop_key} (the signal the vector is built from)")
+
     extractor = ActivationExtractor(cfg.data.model_name, cfg.data.layer, device=device)
     high_means = whole_seq_mean_acts(extractor, [s for s, _ in sets["high"]])
     low_means = whole_seq_mean_acts(extractor, [s for s, _ in sets["low_in"]])
@@ -293,7 +312,17 @@ def build_property_contrast(cfg, out_path: Path, prop_key: str = "gravy",
         "prop_low_in_mean": float(np.mean(low_scores)), "prop_low_in_max": float(np.max(low_scores)),
         "length_high_mean": len_high, "length_low_mean": len_low,
         "length_gap_pool_sd": len_gap_sd, "match_length": match_length,
+        "prop_gap_pool_sd": prop_gap_sd,
         "pool_size": n, "natural_correlations": corr,
+        # Mean/SD of every property over the whole length-filtered pool. This — not the
+        # spread of the held-out starts — is the scale that makes effects on different
+        # properties comparable: the held-out sets are drawn from OPPOSITE quartiles of the
+        # steered property, so their pooled SD is bimodal and inflated for that property
+        # alone, which would shrink exactly the diagonal of the specificity matrix.
+        "pool_property_stats": {
+            k: {"mean": float(np.mean([p[k] for _, p in pool])),
+                "sd": float(np.std([p[k] for _, p in pool], ddof=1))}
+            for k in PROPERTY_KEYS},
         "min_len": min_len, "max_len": max_len, "seed": seed,
         "heldout": heldout_payload(sets["heldout"]),
         # high-score starting points for the "down" steering direction (-alpha*v). Ids are

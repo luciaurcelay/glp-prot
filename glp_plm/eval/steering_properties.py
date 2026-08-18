@@ -34,7 +34,8 @@ Three design decisions live here, and they are the ones a reviewer would push on
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWY")
@@ -62,7 +63,12 @@ def gravy_score(seq: str) -> float:
 def charge_score(seq: str) -> float:
     """Net charge at pH 7 divided by length. Higher = more cationic.
 
-    Per residue, not net: see this module's docstring, point 1.
+    Per residue, not net: see this module's docstring, point 1. Not *perfectly*
+    length-invariant — `charge_at_pH` adds a fixed N- and C-terminal term that does not
+    scale with length, worth ~0.005 charge/residue at 100 aa and half that at 200 aa. That
+    residual is ~10% of the natural spread, an order of magnitude smaller than the length
+    dependence of net charge, and the contrast builder's length-gap diagnostic covers what
+    is left.
     """
     return float(_pa(seq).charge_at_pH(CHARGE_PH)) / max(len(seq), 1)
 
@@ -80,12 +86,26 @@ def instability_score(seq: str) -> float:
 #  Exact decompositions — "where did the change come from?"
 # --------------------------------------------------------------------------- #
 def _aa_frequencies(seqs: Sequence[str]) -> Dict[str, float]:
-    c: Counter = Counter()
-    total = 0
+    """Mean over sequences of each sequence's own residue frequency.
+
+    Each sequence weighted EQUALLY, not each residue. The decomposition has to reconstruct
+    the mean of a per-sequence score, and
+
+        mean_i GRAVY(s_i) = mean_i sum_a f_i(a) w(a) = sum_a [mean_i f_i(a)] w(a),
+
+    which is this quantity. Pooling all residues into one bag instead would weight long
+    proteins more and the components would no longer sum to the effect they explain — a
+    silent error, since it only shows up when the sequences differ in length (ours span
+    100-200 aa).
+    """
+    if not seqs:
+        return {a: 0.0 for a in sorted(CANONICAL_AA)}
+    acc = {a: 0.0 for a in sorted(CANONICAL_AA)}
     for s in seqs:
-        c.update(s)
-        total += len(s)
-    return {a: c.get(a, 0) / max(total, 1) for a in sorted(CANONICAL_AA)}
+        c = Counter(s)
+        for a in acc:
+            acc[a] += c.get(a, 0) / max(len(s), 1)
+    return {a: v / len(seqs) for a, v in acc.items()}
 
 
 def _kd_table() -> Dict[str, float]:
@@ -239,10 +259,8 @@ SCORE_ALL_KEYS: List[str] = PROPERTY_KEYS + ["net_charge"]
 LEGACY_CSV = "expB_diffmean_gravy.csv"
 
 
-def find_run_csv(run_dir) -> "Path":
+def find_run_csv(run_dir) -> Path:
     """The one `expB_diffmean_<property>.csv` in `run_dir` (Exp A's CSV as a fallback)."""
-    from pathlib import Path
-
     run_dir = Path(run_dir)
     hits = sorted(run_dir.glob("expB_diffmean_*.csv"))
     if len(hits) > 1:
@@ -256,10 +274,8 @@ def find_run_csv(run_dir) -> "Path":
     raise FileNotFoundError(f"no steering CSV in {run_dir}")
 
 
-def find_contrast_json(run_dir, prop_key: Optional[str] = None) -> Optional["Path"]:
+def find_contrast_json(run_dir, prop_key: Optional[str] = None) -> Optional[Path]:
     """`<property>_contrast.json` in `run_dir`, or the legacy `gravy_contrast.json`."""
-    from pathlib import Path
-
     run_dir = Path(run_dir)
     if prop_key:
         p = run_dir / f"{prop_key}_contrast.json"

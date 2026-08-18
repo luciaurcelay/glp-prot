@@ -44,7 +44,10 @@ def is_degenerate(row: dict) -> bool:
     if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
         return True
     return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 8)
+            or int(float(row["max_homopolymer_run"])) >= 12)   # 12, not 8: 8 rejected a real
+            # protein with a run of 9, and run_steering.is_degenerate_sequence was raised to
+            # match. This file kept 8 and so analysed a SMALLER row set than the summary.json
+            # numbers it prints alongside — contradicting its own docstring.
 
 
 def attributable_from_rows(rows, neutral_alpha=0.0) -> dict:
