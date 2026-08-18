@@ -158,39 +158,66 @@ def main():
         "natural_ptm": natural[0] if natural else None})
 
     style.apply_style()
-    import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(8.2, 6.0))
-    masks = sorted({k[0] for k in cells})
-    shades = [style.ORANGE_DARK, style.ORANGE_MID, style.ORANGE_LIGHT]
+    # Plotted against expected coverage -- the fraction of residues resampled at least once,
+    # 1-(1-mask)^rounds -- rather than as a scatter in (pTM, effect) space.
+    #
+    # Two reasons. (a) mask fraction and round count turn out to be interchangeable: at
+    # coverage 0.10, settings 0.02x5, 0.05x2 and 0.10x1 give pTM 0.364/0.364/0.366 and effect
+    # +0.057/+0.081/+0.078. The 2-D grid is a 1-D family, so the three series are overlaid
+    # here to show that collapse rather than separated by colour. (b) The objective-space
+    # scatter spent its x-axis on pTM, whose per-cell SEM (0.04-0.08) is comparable to its
+    # whole range (0.30-0.42) -- every point's horizontal position was noise, the frontier was
+    # undetermined, and nine of fifteen settings piled into an unreadable blob.
+    #
+    # One colour, shape for mask fraction: three shades of the same hue failed the palette's
+    # own adjacency check (5.3-7.6 dE), and separating the series was never the point anyway.
+    def coverage(mask: float, rounds: int) -> float:
+        return 1.0 - (1.0 - mask) ** rounds
+
+    ok = {k: c for k, c in cells.items() if (c.get("degenerate_rate") or 0) < 0.25}
+    bad = {k: c for k, c in cells.items() if (c.get("degenerate_rate") or 0) >= 0.25}
+    shapes = {m: mk for m, mk in zip(sorted({k[0] for k in cells}), ("o", "s", "^", "D"))}
+    accent = style.method_color("glp")
+
+    fig, (axT, axB) = plt.subplots(2, 1, figsize=(7.4, 7.0), sharex=True,
+                                   gridspec_kw={"hspace": 0.12})
+    for src, colour, alpha, lbl in ((ok, accent, 1.0, None),
+                                    (bad, style.MUTED, 0.55, "mostly degenerate output")):
+        for (mask, rr), c in sorted(src.items(), key=lambda kv: coverage(*kv[0])):
+            x = coverage(mask, rr)
+            axT.errorbar([x], [c["effect"]], yerr=[c["effect_sem"]], color=colour, alpha=alpha,
+                         marker=shapes[mask], ms=7, capsize=2.5, elinewidth=1, linestyle="none")
+            axB.errorbar([x], [c["ptm"]], yerr=[c["ptm_sem"]], color=colour, alpha=alpha,
+                         marker=shapes[mask], ms=7, capsize=2.5, elinewidth=1, linestyle="none")
+    # trend through the usable settings only
+    xs = sorted(coverage(*k) for k in ok)
+    for ax, key in ((axT, "effect"), (axB, "ptm")):
+        ys = [ok[k][key] for k in sorted(ok, key=lambda k: coverage(*k))]
+        ax.plot(xs, ys, "-", color=accent, linewidth=1.4, alpha=0.55, zorder=0)
+
     if natural:
-        ax.axvspan(natural[0] - natural[1], natural[0] + natural[1],
-                   color=style.BASELINE, alpha=0.25, zorder=0)
-        ax.annotate("starting proteins\n(±SEM)", xy=(natural[0], 0.98),
-                    xycoords=("data", "axes fraction"), ha="center", va="top", fontsize=8.5,
-                    color=style.SECONDARY)
-    for i, mask in enumerate(masks):
-        ks = sorted([k for k in cells if k[0] == mask], key=lambda k: k[1])
-        xs = [cells[k]["ptm"] for k in ks]
-        ys = [cells[k]["effect"] for k in ks]
-        ax.errorbar(xs, ys, xerr=[cells[k]["ptm_sem"] for k in ks],
-                    yerr=[cells[k]["effect_sem"] for k in ks], fmt="-o", ms=6,
-                    color=shades[i % len(shades)], linewidth=1.8, capsize=2.5, elinewidth=1,
-                    label=f"mask {mask:g}")
-        for k, x, y in zip(ks, xs, ys):
-            ax.annotate(f"{k[1]}", (x, y), xytext=(6, 5), textcoords="offset points",
-                        fontsize=8, color=style.INK,
-                        path_effects=[pe.withStroke(linewidth=2.4, foreground=style.SURFACE)])
-    if front:
-        ax.step([p[0] for p in front], [p[1] for p in front], where="post",
-                color=style.PURPLE_LIGHT, linewidth=2.2, alpha=0.9, zorder=1,
-                label="non-dominated settings")
-    ax.set_xlabel("structural confidence with no steering applied (ESMFold2 pTM)")
-    ax.set_ylabel("steering-attributable ΔGRAVY at α=2")
-    ax.set_title("Steering effect vs. foldability across generation settings\n"
-                 "point labels are round counts; both axes mean ± SEM", loc="left")
-    ax.legend(fontsize=9, loc="upper left")
+        axB.axhspan(natural[0] - natural[1], natural[0] + natural[1],
+                    color=style.BASELINE, alpha=0.3, zorder=0)
+        axB.annotate("starting proteins", xy=(0.985, natural[0]),
+                     xycoords=("axes fraction", "data"), ha="right", va="bottom",
+                     fontsize=8.5, color=style.SECONDARY)
+    for m, mk in shapes.items():
+        axT.plot([], [], mk, color=accent, ms=7, linestyle="none", label=f"mask {m:g}")
+    if bad:
+        axT.plot([], [], "o", color=style.MUTED, alpha=0.55, ms=7, linestyle="none",
+                 label="mostly degenerate output")
+    axT.legend(fontsize=9, loc="upper left")
+    axT.set_ylabel(f"steering-attributable ΔGRAVY\nat α={args.steered_alpha:g}")
+    axB.set_ylabel("structural confidence\n(ESMFold2 pTM, no steering)")
+    axB.set_xscale("log")
+    axB.set_xlabel("expected fraction of residues resampled  "
+                   r"$1-(1-\mathrm{mask})^{\,\mathrm{rounds}}$")
+    axB.set_xticks([0.02, 0.05, 0.1, 0.2, 0.5, 1.0])
+    axB.set_xticklabels(["2%", "5%", "10%", "20%", "50%", "100%"])
+    axT.set_title("Steering effect and foldability against how much of the protein is rewritten",
+                  loc="left")
     p = style.save_fig(fig, Path(args.out_run_dir) / "figures" / "generation_tradeoff.png")
     print(f"\n[tradeoff] wrote {p}")
 
