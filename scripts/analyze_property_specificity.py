@@ -347,7 +347,12 @@ def main():
         for mk in PROPERTY_KEYS:
             got = cells[sk].get(mk, {}).get("standardized")
             ref = corr_by_run.get(sk) or corr
-            if got is None or on is None or not ref:
+            if mk == sk:
+                # r = 1 on the diagonal, so the residual there is identically zero. Printing
+                # "+0.00" in the on-target cell invites reading it as "no on-target effect",
+                # which is the opposite of what the panel shows — leave it blank.
+                residual[sk][mk] = None
+            elif got is None or on is None or not ref:
                 residual[sk][mk] = None
             else:
                 # In SD units, a coupling of r predicts an off-target move of r x on-target.
@@ -411,6 +416,9 @@ def main():
                 j = PROPERTY_KEYS.index(sk)
                 ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False,
                                            edgecolor=style.INK, linewidth=1.8))
+                if mat[sk][sk] is None:      # residual panel: undefined on the diagonal
+                    ax.text(j, i, "on-target", ha="center", va="center", fontsize=8,
+                            style="italic", color=style.MUTED)
         if not args.no_titles:
             ax.set_title(name, loc="left")
     fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax,
