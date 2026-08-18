@@ -1496,10 +1496,17 @@ def main():
                     "grid means a different perturbation in these units. For THIS property "
                     f"the raw default grid is equivalent to --alphas {equiv}. Pick one grid "
                     "and pass it to every property, or the runs are not comparable.")
+        # The contrast can live outside the run dir (a shared multi-property build passes
+        # --contrast), so record where it came from AND copy the two fields the analyses
+        # need out of it — otherwise a downstream script that only sees the run dir cannot
+        # standardize its numbers or subtract the natural coupling.
         run.log_summary(steered_property=args.property, alpha_mode=args.alpha_mode,
                         alpha_scale=alpha_scale, vector_norm=float(gd["vector_norm"]),
+                        contrast_path=str(contrast_path.resolve()),
                         contrast_length_gap_pool_sd=gd.get("length_gap_pool_sd"),
+                        contrast_prop_gap_pool_sd=gd.get("prop_gap_pool_sd"),
                         contrast_match_length=bool(gd.get("match_length")),
+                        contrast_pool_property_stats=gd.get("pool_property_stats"),
                         contrast_natural_correlations=gd.get("natural_correlations"))
         default_alphas = "0,0.05,0.25,0.5,1,2,5,20"
         neutral_alpha = 0.0  # diffmean_clamp's alpha=0 -> x_new == x exactly, no special-casing

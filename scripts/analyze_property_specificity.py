@@ -58,7 +58,36 @@ def is_degenerate(row: dict) -> bool:
             or int(float(row["max_homopolymer_run"])) >= 12)
 
 
-def load_run(run_dir: Path, neutral_alpha: float) -> Tuple[str, List[dict], dict]:
+def resolve_contrast(run_dir: Path, prop_key: str, override: Optional[str]) -> dict:
+    """The contrast this run used, wherever it lives.
+
+    A multi-property build writes one shared contrast per property outside any single run
+    dir and the run is pointed at it with --contrast, so globbing the run dir is not
+    enough. Order: explicit --contrasts override, then the path the run recorded in its own
+    summary.json, then the run dir itself (single-property runs that built it inline).
+    """
+    if override:
+        return json.loads(Path(override).read_text())
+    summary = run_dir / "metrics" / "summary.json"
+    if summary.exists():
+        recorded = json.loads(summary.read_text()).get("contrast_path")
+        if recorded and Path(recorded).exists():
+            return json.loads(Path(recorded).read_text())
+        # Runs before contrast_path was recorded may still carry the two fields directly.
+        s = json.loads(summary.read_text())
+        if s.get("contrast_pool_property_stats"):
+            return {"pool_property_stats": s["contrast_pool_property_stats"],
+                    "natural_correlations": s.get("contrast_natural_correlations")}
+    local = find_contrast_json(run_dir, prop_key)
+    if local:
+        return json.loads(local.read_text())
+    print(f"[specificity] WARNING: no contrast found for {run_dir.name} — pass "
+          f"--contrasts {prop_key}=<path>. Without it this run cannot be standardized.")
+    return {}
+
+
+def load_run(run_dir: Path, neutral_alpha: float, override: Optional[str] = None
+             ) -> Tuple[str, List[dict], dict]:
     csv_path = find_run_csv(run_dir)
     raw = list(csv.DictReader(open(csv_path)))
     prop = run_property(raw, csv_path)
@@ -89,8 +118,7 @@ def load_run(run_dir: Path, neutral_alpha: float) -> Tuple[str, List[dict], dict
             r[f"attr_{k}"] = (None if b is None or r[k] is None or b[k] is None
                               else r[k] - b[k])
 
-    contrast_path = find_contrast_json(run_dir, prop.key)
-    contrast = json.loads(contrast_path.read_text()) if contrast_path else {}
+    contrast = resolve_contrast(run_dir, prop.key, override)
     print(f"[specificity] {run_dir.name}: steered {prop.key}, {len(rows)} clean rows")
     return prop.key, rows, contrast
 
@@ -143,11 +171,26 @@ def divergence(rows: List[dict], key: str, alpha: float, corrected: bool
     return float(np.mean(u) - np.mean(d)), pv, min(len(u), len(d))
 
 
+def _override_for(run_dir: Path, overrides: Dict[str, str]) -> Optional[str]:
+    """Match a `<property>=<path>` override to this run by the property in its CSV name."""
+    if not overrides:
+        return None
+    name = find_run_csv(run_dir).name
+    for key, path in overrides.items():
+        if name == f"expB_diffmean_{key}.csv":
+            return path
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dirs", required=True,
                     help="comma-separated Exp B run dirs, one per steered property")
     ap.add_argument("--out-run-dir", required=True, help="where the figure and metrics go")
+    ap.add_argument("--contrasts", default="",
+                    help="comma-separated <property>=<path to its _contrast.json>, for runs "
+                         "whose contrast lives outside the run dir and predates the "
+                         "recording of `contrast_path` in summary.json")
     ap.add_argument("--match-on", choices=["alpha", "effect"], default="effect",
                     help="what to hold constant across the three properties. 'alpha' reads "
                          "every property at --alpha, i.e. matched PERTURBATION: it answers "
@@ -175,10 +218,15 @@ def main():
     ap.add_argument("--no-titles", action="store_true")
     args = ap.parse_args()
 
+    overrides = dict(kv.split("=", 1) for kv in args.contrasts.split(",") if "=" in kv)
     runs = {}
     contrasts = {}
     for d in args.run_dirs.split(","):
-        key, rows, contrast = load_run(Path(d.strip()), args.neutral_alpha)
+        d = Path(d.strip())
+        # the override is keyed by property, which we only learn inside load_run — so try
+        # each override path against this run and let load_run pick by key
+        key, rows, contrast = load_run(d, args.neutral_alpha,
+                                       override=_override_for(d, overrides))
         if key in runs:
             raise SystemExit(f"two runs both steer {key!r} — pass one run per property")
         runs[key], contrasts[key] = rows, contrast
