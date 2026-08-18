@@ -513,9 +513,27 @@ rounds, $T{=}0.5$) lands \emph{above} the fixed point, so the fixed point is a p
 the budget, not the method. The SAE-feature-clamp experiment (Exp.~A) is implemented under
 the same methodology but not re-run, and no result is claimed for it.
 
-\section{Limitations and next steps}
+\section{Conclusions}
 \label{sec:limitations}
 
+Porting the Generative Latent Prior to protein language models is worthwhile, but for
+different reasons than the LLM setting first suggested. As a lens on representations it
+delivers: a flow-matching GLP on ESM-2 activations scales cleanly with compute, and its
+internal units probe Swiss-Prot concepts at least as well as InterPLM's released SAE
+features. As an editing prior the picture is sharper and more cautionary. The GLP correction
+is what turns diff-of-means steering from ineffective into effective across all three
+biochemical properties we test --- so on-manifold correction is doing real work --- yet the
+naturalness benefit it was meant to buy does not appear, and the three-property design is what
+lets us say why: the loss is the masked-Gibbs decoder driving every protein to a common
+foldability, not the prior; the correction's own effect is a single compositional bias whose
+per-property signature includes an entailed null that holds; the steering reaches composition
+rather than sequence order; and the standard naturalness metrics are unreliable here. For
+concept discovery and editing in PLMs, a generative activation prior is best understood as a
+convenient, faithful \emph{read-out} of structure the network already encodes, whose value as
+an intervention tool is gated by a decoder these results locate as the next thing to fix.
+
+\medskip
+\noindent\textbf{Limitations and next steps.}
 We report training rather than held-out loss for the scaling curve, over a $\sim$1-decade
 compute range that leaves the power law's floor unconstrained, on a single host (ESM-2-8M) at
 one hook layer varying only depth. The probing comparison is single-unit and correlational,
