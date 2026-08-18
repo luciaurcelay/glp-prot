@@ -99,6 +99,17 @@ def load(run_dir: Path, neutral_alpha: float, override: Optional[str]) -> dict:
     starts = {("up", str(h["id"])): h["sequence"] for h in contrast.get("heldout") or []}
     starts.update({("down", str(h["id"])): h["sequence"]
                    for h in contrast.get("heldout_high") or []})
+    if sd is None:
+        # Every "in natural SD units" number depends on this, and a silent fallback to 1.0
+        # would print the raw value under an SD heading — different scales per property,
+        # which is exactly what the SD normalization exists to prevent.
+        print(f"[cross-property] WARNING: no pool_property_stats for {run_dir.name}; SD-unit "
+              f"columns will be blank. Pass --contrasts {prop.key}=<path to its "
+              "_contrast.json> (runs from before `contrast_path` was recorded in "
+              "summary.json need it explicitly).")
+    if not starts:
+        print(f"[cross-property] WARNING: no held-out sequences for {run_dir.name}; the "
+              "alpha=0 composition change will be skipped.")
     return {"prop": prop, "rows": rows, "clean": clean, "natural": natural,
             "pool_sd": sd, "starts": starts, "name": run_dir.name}
 
@@ -232,24 +243,27 @@ def main():
           f"{'corr up':>10} {'corr dn':>10} | {'fixed bias':>22}")
     drift: Dict[str, dict] = {}
     for R in runs:
-        p, sd = R["prop"], R["pool_sd"] or 1.0
+        p, sd = R["prop"], R["pool_sd"]
         m = {(d, c): np.mean(cell(R["clean"], d, c, args.neutral_alpha, "delta") or [np.nan])
              for d in ("up", "down") for c in (False, True)}
         bu, bd = m[("up", True)] - m[("up", False)], m[("down", True)] - m[("down", False)]
         drift[p.key] = {"naive_up": float(m[("up", False)]), "naive_down": float(m[("down", False)]),
                         "corrected_up": float(m[("up", True)]), "corrected_down": float(m[("down", True)]),
                         "fixed_bias_up": float(bu), "fixed_bias_down": float(bd),
-                        "fixed_bias_sd": float((bu + bd) / 2 / sd)}
-        print(f"  {p.key:>14} {sd:>8.4f} | {m[('up', False)]:>+10.3f} {m[('down', False)]:>+10.3f} | "
+                        "fixed_bias_sd": float((bu + bd) / 2 / sd) if sd else None}
+        sd_str = f"{(bu + bd) / 2 / sd:+.2f} SD" if sd else "SD n/a"
+        print(f"  {p.key:>14} {sd if sd else float('nan'):>8.4f} | "
+              f"{m[('up', False)]:>+10.3f} {m[('down', False)]:>+10.3f} | "
               f"{m[('up', True)]:>+10.3f} {m[('down', True)]:>+10.3f} | "
-              f"up {bu:>+8.3f} down {bd:>+8.3f} ({(bu + bd) / 2 / sd:+.2f} SD)")
+              f"up {bu:>+8.3f} down {bd:>+8.3f} ({sd_str})")
     summary["alpha0_drift"] = drift
     tex_table(tables / "alpha0_drift.tex",
               r"\begin{tabular}{lrrrrr}" + "\n"
               r"property & naive up & naive down & corrected up & corrected down & fixed bias (SD) \\",
               [f"{k} & ${v['naive_up']:+.3f}$ & ${v['naive_down']:+.3f}$ & "
                f"${v['corrected_up']:+.3f}$ & ${v['corrected_down']:+.3f}$ & "
-               f"${v['fixed_bias_sd']:+.2f}$ \\\\" for k, v in drift.items()],
+               + (f"${v['fixed_bias_sd']:+.2f}$" if v['fixed_bias_sd'] is not None else "---")
+               + r" \\" for k, v in drift.items()],
               "Concept change with \\emph{no} steering applied ($\\alpha{=}0$), by arm and "
               "starting set. A fixed bias adds the same amount from both sets; mean "
               "reversion flips sign with the set and cancels in the corrected$-$naive "
@@ -305,12 +319,17 @@ def main():
         fig2, ax2 = plt.subplots(figsize=(7.6, 4.6))
         keys = list(drift)
         x = np.arange(len(keys)); w = 0.2
-        sds = {R["prop"].key: (R["pool_sd"] or 1.0) for R in runs}
+        sds = {R["prop"].key: R["pool_sd"] for R in runs}
+        if any(v is None for v in sds.values()):
+            print("  [skip] alpha0_drift.png needs pool SDs for every property")
+            sds = None
         series = [("naive_up", "naive, from low set", style.ORANGE_MID, "//"),
                   ("naive_down", "naive, from high set", style.ORANGE_LIGHT, "//"),
                   ("corrected_up", "corrected, from low set", style.PURPLE_DARK, None),
                   ("corrected_down", "corrected, from high set", style.PURPLE_LIGHT, None)]
         for i, (field, lab, col, hatch) in enumerate(series):
+            if sds is None:
+                break
             ax2.bar(x + (i - 1.5) * w, [drift[k][field] / sds[k] for k in keys], w,
                     color=col, label=lab, edgecolor=style.SURFACE, linewidth=1, hatch=hatch)
         ax2.axhline(0, color=style.INK, linewidth=1)
