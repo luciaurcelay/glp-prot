@@ -127,6 +127,15 @@ def divergence(rows, alpha, corrected) -> Optional[Tuple[float, float, int]]:
     return float(np.mean(u) - np.mean(d)), float(mannwhitneyu(u, d).pvalue), min(len(u), len(d))
 
 
+def tex_p(p: float) -> str:
+    """A p-value a reader can parse at a glance: plain decimal down to 0.01, scientific
+    below. `f"{p:.0e}"` renders 0.96 as "1e+00", which reads as p=1."""
+    if p >= 0.01:
+        return f"${p:.2f}$"
+    exp = int(np.floor(np.log10(p)))
+    return f"${p / 10 ** exp:.0f}{{\\times}}10^{{{exp}}}$"
+
+
 def tex_table(path: Path, colspec: str, header: str, body: List[str], caption: str,
               label: str):
     """A complete booktabs table. Rule order is toprule / header / midrule / rows /
@@ -186,8 +195,8 @@ def main():
             print(f"  {a:>8.4f} | {n_['divergence']:>+12.4f} {n_['p']:>9.1e} | "
                   f"{c_['divergence']:>+12.4f} {c_['p']:>9.1e} | "
                   + (f"{c_['sd_units']:>8.2f}" if c_["sd_units"] else f"{'--':>8}"))
-            body.append(f"{p.key} & {a:g} & ${n_['divergence']:+.3f}$ & ${n_['p']:.0e}$ & "
-                        f"${c_['divergence']:+.3f}$ & ${c_['p']:.0e}$ & "
+            body.append(f"{p.key} & {a:.4g} & ${n_['divergence']:+.3f}$ & {tex_p(n_['p'])} & "
+                        f"${c_['divergence']:+.3f}$ & {tex_p(c_['p'])} & "
                         + (f"${c_['sd_units']:+.2f}$" if c_["sd_units"] else "---") + r" \\")
     summary["efficacy"] = eff
     tex_table(tables / "efficacy.tex", "llrrrrr",
