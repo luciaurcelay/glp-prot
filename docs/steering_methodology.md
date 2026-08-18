@@ -125,11 +125,18 @@ directions use different sequences).
 
 ## Naturalness: which axis, and why
 
-**Do not use pseudo-perplexity or pLDDT as the naturalness axis.** On this
-generation setup, the sequences the degeneracy gate rejects score *better* on
-both than our clean output — poly-Leu/Val junk beats real ubiquitin on pLDDT.
-pTM is the least bad and is what `analyze_steering_naturalness.py` uses by
-default, but on the larger run even pTM is merely indistinguishable from junk.
+**No model-based naturalness metric is safe, and which one fails depends on the
+property being steered.** Pseudo-perplexity and pLDDT rate the sequences the gate
+rejects *above* our clean output on all three properties. pTM's verdict changes
+with the property: indistinguishable on hydrophobicity, correctly discriminating
+on charge (whose junk is poly-acidic and disordered), and outright gamed on
+instability (whose junk is 43% valine, which reads as a confident β-sheet).
+
+The reason is general: whether a metric catches the junk depends on whether that
+particular junk happens to be foldable, and which junk gets made is a property of
+the treatment. So a naturalness axis cannot be chosen safely in advance.
+`analyze_steering_naturalness.py` still defaults to pTM but prints a per-metric
+verdict against the rejected rows — read it every time rather than assuming.
 
 **Check metrics on the rejected rows, not just the kept ones.** On kept rows
 alone pppl and pLDDT correlate correctly with each other, which looks like
@@ -142,6 +149,12 @@ threshold, so degenerate output counts as failure. Filtering on pLDDT≥70
 instead would keep 87% of the degenerate sequences and 12% of the clean ones.
 
 ## The degeneracy gate
+
+It is defined **once**, in `glp_plm/eval/steering_properties.py`
+(`is_degenerate_sequence` for a raw string, `is_degenerate_row` for a run CSV row;
+a test pins the two together). It had seven independent copies across the analysis
+scripts at one point and one of them had silently drifted, so a script analysed a
+different row set from the numbers it printed beside.
 
 `is_degenerate_sequence`: ≥30% one residue, ≤8 distinct amino acids, or a
 ≥12-long homopolymer run. Calibrated against real proteins — it rejects 3/80
@@ -259,3 +272,10 @@ its own panel once already.
 | `off_manifold_diagnostic` | GLP loss vs alpha, with one correction pass |
 | `generation_tradeoff` | operating points (from `plot_generation_tradeoff.py`) |
 | `property_specificity` | steered × measured matrix, and its residual after the natural coupling |
+| `decoding_fixed_point` | natural vs post-decoding pTM for every start set; the loop's fixed point |
+| `alpha0_drift` | what the correction does at zero steering, per property, in natural SD |
+| `instability_mechanism` | composition vs order split of the instability effect |
+
+Cross-property artefacts come from `scripts/analyze_cross_property.py`, which also
+writes `tables/*.tex` (booktabs, ready to `\input`). The copies used by the paper
+live in `docs/figures/steer3_*.png` and `docs/tables/`.

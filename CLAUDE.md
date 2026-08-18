@@ -114,18 +114,19 @@ advantage so the comparison is asymmetric).
 **Still open (probing):** Gate G2 (SAE-reconstruction FD + %Loss-Recovered — both
 local-feasible, not run), F1 on all 104 concepts.
 
-### W4 steering — all three properties are now measured (efficacy; naturalness pending)
+### W4 steering — all three properties measured, efficacy and naturalness
 Exp B steers whichever of Banerjee et al.'s three properties `--property` names:
 `gravy` (hydrophobicity), `charge` (net charge at pH 7 **per residue** — net charge is a
 sum, so quartiles of it are partly quartiles of length) or `instability` (Guruprasad
 index). `glp_plm/eval/steering_properties.py` is the registry; contrasts come from
 `scripts/build_property_contrast.py` (was `build_gravy_contrast.py`).
 
-**All three ran on 2026-08-18** (`steering_diffmean_{hydro,charge,instability}_rel_*_n40`,
+**All three ran and folded on 2026-08-18** (`steering_diffmean_{hydro,charge,instability}_rel_*_n40`,
 `--alpha-mode relative`). Headline: the efficacy claim generalizes — corrected divergence
 at the matched perturbation is 3.46 / 3.61 / 1.59 pool SD for hydrophobicity / charge /
 instability, with the naive arm flat in all three. The hydrophobicity run replicates the
-canonical one exactly. **Naturalness for the two new properties is not yet measured.**
+canonical one exactly. Naturalness fails for all three, for the decoding-loop reason
+(finding 5 below), not because of GLP.
 
 The `--alpha=0` drift settled the mechanism question: the SDEdit correction carries ONE
 fixed compositional bias (Leu +5.9pp, Val +5.4pp), and its per-property signature is what
@@ -169,7 +170,13 @@ Four findings that change how results must be reported:
 2. **That drift is a fixed hydrophobic bias, not mean-reversion.** Steering down from
    HIGH-GRAVY starts, naive flips sign (−0.28) while corrected stays positive (+0.54).
    The up-only design could not distinguish these.
-3. **Both model-based naturalness metrics are gamed.** The sequences
+3. **No naturalness metric is safe, and WHICH one fails depends on the property.**
+   pLDDT and pseudo-perplexity are gamed on all three. pTM is indistinguishable on
+   hydrophobicity, *discriminates* on charge (junk is poly-acidic, hence disordered), and is
+   *gamed* on instability (junk is 43% Val, which reads as a confident β-sheet). Whether a
+   metric catches the junk depends on whether that junk happens to be foldable — a property
+   of the treatment, not the metric. Read the per-metric verdict every run; never assume.
+   Superseded detail (hydrophobicity only): The sequences
    `is_degenerate_sequence` rejects (64% Leu+Val) score pLDDT 67 vs clean 54
    (p=3e-06) and pseudo-perplexity 7.3 vs 14.8 (p=7e-18) — i.e. *better* than our own
    output. pTM is merely indistinguishable (p=0.86). **The hand-tuned degenerate filter,
@@ -188,6 +195,13 @@ for a natural protein), and at alpha=0 the correction cuts confidently-folded yi
 **Steering runs need a unique `--exp-name`.** `RunLogger` redirects metrics/figures to
 `$GLP_RUNS_ROOT/<basename(out_dir)>/`, keyed on the leaf alone, so the old fixed leaf made
 every Exp B run silently clobber the previous one's metrics and figures.
+
+**One definition per thing.** The degeneracy gate and contrast resolution live in
+`glp_plm/eval/steering_properties.py` and nowhere else — the gate had seven copies and one
+had drifted, so a script silently analysed a different row set from the numbers beside it.
+Cross-property numbers, LaTeX tables and the decoding/drift figures come from
+`scripts/analyze_cross_property.py`; paper copies are in `docs/figures/steer3_*.png` and
+`docs/tables/`.
 
 **Figures state what is plotted, not what it means** — interpretation goes in the paper
 caption. A claim baked into a PNG went stale against its own panel once already.
