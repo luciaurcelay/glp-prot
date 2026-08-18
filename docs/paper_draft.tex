@@ -664,6 +664,48 @@ test whether the power law holds across host sizes. For probing, the natural nex
 causal: intervening on the meta-neurons that win a concept, rather than only reading them
 out.
 
+\begin{thebibliography}{9}
+\small
+\bibitem{simon2024interplm}
+E.~Simon and J.~Zou.
+\newblock InterPLM: Discovering interpretable features in protein language models via
+sparse autoencoders.
+\newblock \emph{Nature Methods}, 2024.
+
+\bibitem{lin2023esm2}
+Z.~Lin et~al.
+\newblock Evolutionary-scale prediction of atomic-level protein structure with a
+language model.
+\newblock \emph{Science}, 379(6637):1123--1130, 2023.
+
+\bibitem{luo2026glp}
+G.~Luo et~al.
+\newblock Generative Latent Priors: diffusion models of neural activations.
+\newblock 2026.
+
+\bibitem{kaplan2020}
+J.~Kaplan et~al.
+\newblock Scaling laws for neural language models.
+\newblock \emph{arXiv:2001.08361}, 2020.
+
+\bibitem{meng2022sdedit}
+C.~Meng et~al.
+\newblock SDEdit: Guided image synthesis and editing with stochastic differential
+equations.
+\newblock \emph{ICLR}, 2022.
+
+\bibitem{huang2025diffmean}
+K.~Huang et~al.
+\newblock Steering protein language model representations via diff-of-means contrast
+vectors.
+\newblock \emph{arXiv:2509.07983}, 2025.
+
+\bibitem{villegas2025plmsae}
+E.~Villegas Garcia and A.~Ansuini.
+\newblock Sparse autoencoders for interpretable steering of protein language models.
+\newblock \emph{arXiv:2502.09135}, 2025.
+\end{thebibliography}
+
 \newpage
 \appendix
 
@@ -731,7 +773,6 @@ shares one store; configs declare it explicitly so no cell re-extracts. Each run
 its full resolved configuration and a per-launch manifest (SLURM allocation, git commit,
 submit arguments), and training is checkpoint/resumable, so any cell can be reproduced or
 continued from its recorded state.
-
 
 \section{Steering: what we measure and why}
 \label{app:steer-estimand}
@@ -1300,46 +1341,5 @@ Transit peptide\_Chloroplast & 0.872 & 20 \\
 Domain\_Ig-like C1-type & 0.892 & 20 \\
 \end{longtable}
 
-\begin{thebibliography}{9}
-\small
-\bibitem{simon2024interplm}
-E.~Simon and J.~Zou.
-\newblock InterPLM: Discovering interpretable features in protein language models via
-sparse autoencoders.
-\newblock \emph{Nature Methods}, 2024.
-
-\bibitem{lin2023esm2}
-Z.~Lin et~al.
-\newblock Evolutionary-scale prediction of atomic-level protein structure with a
-language model.
-\newblock \emph{Science}, 379(6637):1123--1130, 2023.
-
-\bibitem{luo2026glp}
-G.~Luo et~al.
-\newblock Generative Latent Priors: diffusion models of neural activations.
-\newblock 2026.
-
-\bibitem{kaplan2020}
-J.~Kaplan et~al.
-\newblock Scaling laws for neural language models.
-\newblock \emph{arXiv:2001.08361}, 2020.
-
-\bibitem{meng2022sdedit}
-C.~Meng et~al.
-\newblock SDEdit: Guided image synthesis and editing with stochastic differential
-equations.
-\newblock \emph{ICLR}, 2022.
-
-\bibitem{huang2025diffmean}
-K.~Huang et~al.
-\newblock Steering protein language model representations via diff-of-means contrast
-vectors.
-\newblock \emph{arXiv:2509.07983}, 2025.
-
-\bibitem{villegas2025plmsae}
-E.~Villegas Garcia and A.~Ansuini.
-\newblock Sparse autoencoders for interpretable steering of protein language models.
-\newblock \emph{arXiv:2502.09135}, 2025.
-\end{thebibliography}
 
 \end{document}
