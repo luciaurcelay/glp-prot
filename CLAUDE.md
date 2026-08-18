@@ -114,13 +114,24 @@ advantage so the comparison is asymmetric).
 **Still open (probing):** Gate G2 (SAE-reconstruction FD + %Loss-Recovered — both
 local-feasible, not run), F1 on all 104 concepts.
 
-### W4 steering — three properties are implemented, one is measured
+### W4 steering — all three properties are now measured (efficacy; naturalness pending)
 Exp B steers whichever of Banerjee et al.'s three properties `--property` names:
 `gravy` (hydrophobicity), `charge` (net charge at pH 7 **per residue** — net charge is a
 sum, so quartiles of it are partly quartiles of length) or `instability` (Guruprasad
 index). `glp_plm/eval/steering_properties.py` is the registry; contrasts come from
-`scripts/build_property_contrast.py` (was `build_gravy_contrast.py`). **Only `gravy` has
-actually been run** — everything below is the hydrophobicity result.
+`scripts/build_property_contrast.py` (was `build_gravy_contrast.py`).
+
+**All three ran on 2026-08-18** (`steering_diffmean_{hydro,charge,instability}_rel_*_n40`,
+`--alpha-mode relative`). Headline: the efficacy claim generalizes — corrected divergence
+at the matched perturbation is 3.46 / 3.61 / 1.59 pool SD for hydrophobicity / charge /
+instability, with the naive arm flat in all three. The hydrophobicity run replicates the
+canonical one exactly. **Naturalness for the two new properties is not yet measured.**
+
+The `--alpha=0` drift settled the mechanism question: the SDEdit correction carries ONE
+fixed compositional bias (Leu +5.9pp, Val +5.4pp), and its per-property signature is what
+that predicts — +1.77 SD on GRAVY, −0.70 SD on instability, and **none on charge**, which
+is the null control (the correction sheds K+R and E+D in near-equal measure). Full numbers:
+`docs/steering_history.md` §14.5.
 
 Four things to know before running the new ones (full rationale: `docs/steering_history.md`
 §14):

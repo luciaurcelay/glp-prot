@@ -769,11 +769,93 @@ Also fixed: `analyze_steering_confound.py` used a homopolymer threshold of 8 whe
 `run_steering.py` uses 12, so it analysed a smaller row set than the summary.json numbers
 it prints beside them, contradicting its own docstring.
 
-### 14.5 Still open
+### 14.5 First results (2026-08-18, jobs 44772569 / 44773025-27)
 
-- No charge or instability run has been executed. Every number in the paper is
-  hydrophobicity.
-- The length-gap decision (`--match-length`) is unresolved until the builds have
-  been run and their gaps read.
-- Whether to re-run hydrophobicity under `--alpha-mode relative` for a
-  comparable three-property table.
+Contrast build: one shared 5,790-sequence UniRef50 pool, length gaps +0.13 / -0.03 / -0.13
+pool SD (all under the 0.25 threshold, so **`--match-length` was not needed** and the full
+contrast separation of +2.37..+2.51 pool SD is kept). Three runs at
+`--alpha-mode relative`, grid `0,0.032117,...,0.642336` chosen so hydrophobicity maps onto
+its canonical raw grid 0/0.25/0.5/1/2/3/5. 1,120 generations each, 30 rounds, T=1.0,
+t_start 0.7, n=40 starts per direction.
+
+**The hydrophobicity run is an exact replication.** Divergences +0.248/+0.552/+0.969/
++1.581/+2.508/+3.382 against the canonical +0.25/+0.55/+0.97/+1.58/+2.51/+3.38; alpha=0
+drift +1.145/+0.536 against +1.15/+0.54; degenerate 30/1120 = 2.7% against 2.7%. Relative
+mode is a pure re-parameterization, as intended.
+
+**The efficacy claim holds for all three properties.** The corrected arm separates the two
+directions from low alpha; the naive arm is indistinguishable from zero until high alpha:
+
+| property | corrected divergence @ alpha=0.257 | in pool SD | naive @ same alpha |
+|---|---|---|---|
+| hydrophobicity | +1.581 GRAVY (p=2.4e-13) | 3.46 | +0.077 (p=0.44) |
+| charge | +0.216 charge/res (p=1.9e-14) | 3.61 | +0.055 (p=0.02) |
+| instability | +25.0 index (p=7.4e-9) | 1.59 | +5.3 (p=0.19) |
+
+Charge is steered as strongly as hydrophobicity. Instability moves about half as far,
+which is the expected direction for a dipeptide (order-dependent) target under a
+composition-shifting intervention.
+
+**Prediction that failed:** §14.4 predicted charge would collapse into homopolymers sooner
+than GRAVY (poly-K/R, poly-E/D). It had the *lowest* degenerate rate of the three: 1.9%
+against 2.7% for GRAVY and 2.1% for instability.
+
+**The specificity matrix** (matched on-target effect ~1 SD, corrected arm; rows steered,
+columns measured, natural SD units):
+
+| steered \ measured | GRAVY | charge | instability |
+|---|---|---|---|
+| gravy | **+1.21** | -0.03 | +0.07 |
+| charge | -0.18 | **+0.67** | +0.60 |
+| instability | -0.54 | +0.08 | **+0.86** |
+
+Hydrophobicity is almost perfectly specific. The other two leak: charge moves instability
+nearly as much as it moves charge, and instability moves GRAVY by -0.54. After subtracting
+the natural coupling the residuals are gravy->instability +0.49, charge->instability +0.49,
+instability->gravy -0.24, charge->gravy -0.16. Note the sign on the first: nature says
+raising GRAVY should *lower* instability (r=-0.35), and our GRAVY steering leaves it
+slightly up — i.e. it reaches the target property without the stabilization that naturally
+accompanies it. Read as evidence, not proof: the coupling is observational and an
+intervention is not obliged to reproduce it.
+
+**The alpha=0 correction drift is ONE fixed compositional bias seen through three lenses —
+and the third is a null control.** At alpha=0 the corrected arm's composition shifts
+L +5.9pp, V +5.4pp, E -2.8pp, K -2.4pp, R -1.6pp, D -1.6pp (the naive arm moves nothing by
+more than 0.7pp). Project that onto each property:
+
+| property | naive up / down | corrected up / down | fixed bias (corrected - naive) |
+|---|---|---|---|
+| hydrophobicity | +0.347 / -0.282 | +1.145 / +0.536 | **+0.798 / +0.818** (+1.77 SD) |
+| charge | +0.055 / -0.039 | +0.063 / -0.071 | +0.008 / -0.032 (-0.20 SD) |
+| instability | +14.99 / -15.48 | +4.66 / -27.13 | **-10.33 / -11.65** (-0.70 SD) |
+
+A fixed bias adds the same amount from both starting sets; mean reversion flips sign and
+cancels in the difference. GRAVY and instability both show a fixed bias, equal from both
+sets to within 3% and 12% respectively — and their signs are what Leu/Val enrichment
+predicts (most hydrophobic residues; stabilizing in the DIWV table). Charge shows none,
+which is also predicted: the correction sheds positive (K+R, 4.0pp) and negative (E+D,
+4.4pp) charge in near-equal measure, so they cancel. The naive arm is clean, near-symmetric
+mean reversion on all three.
+
+This is the strongest evidence yet for the §13.2 account, because it includes a case where
+the mechanism predicts *no* effect and none is found. The alpha=0 confound is not a quirk
+of hydrophobicity; it is a measurable property of the SDEdit operator with a per-property
+signature that can be predicted in advance.
+
+### 14.6 Still open
+
+- **Naturalness for the two new properties is unmeasured** — the fold stage
+  (pLDDT/pTM) is running; nothing about foldability is claimed for charge or
+  instability yet. The decoding-loop cost (§13.6) is property-independent, so it
+  is expected to carry over unchanged.
+- The instability gain has not been decomposed into dipeptides yet, so we do not
+  know whether it came from a broad shift or from stacking a few high-DIWV pairs.
+  That check is the whole reason instability was included — run
+  `analyze_steering_confound.py` on that run.
+- The two leaking off-diagonals (charge->instability +0.60, instability->gravy
+  -0.54) are unexplained.
+- The natural-correlation table does not include *net* charge, so the
+  counterfactual that motivates the per-residue decision ("ranking on net charge
+  would have ranked on length, r=?") is asserted rather than measured. One extra
+  4-minute pool scan would settle it.
+- Exp A has still never been re-run.
