@@ -684,12 +684,22 @@ grid rather than of the direction. Alphas where the grid does not bracket the ta
 flagged as unmatched rather than quietly used. `--match-on alpha` gives the
 matched-perturbation reading instead.
 
-The matrix' second panel subtracts the *natural* coupling. The three properties
-are correlated in real proteins (charged residues are hydrophilic), and the
-contrast build now stores that correlation matrix from the UniRef50 pool. A
-faithful direction should reproduce the coupling; only the residual is evidence
-of an unspecific vector. Reading a raw off-diagonal cell as "leakage" would
-mistake protein chemistry for a defect in the method.
+The matrix' second panel subtracts the *natural* coupling. The properties are
+correlated in real proteins, and the contrast build now stores that correlation matrix
+from the UniRef50 pool. A faithful direction should reproduce the coupling; only the
+residual is evidence of an unspecific vector. Reading a raw off-diagonal cell as
+"leakage" would mistake protein chemistry for a defect in the method.
+
+**The coupling is now measured, and it is not the one anyone assumes.** On the shared
+5,790-sequence UniRef50 pool: GRAVY x instability r = -0.348, charge x instability
+r = +0.160, and GRAVY x charge r = **-0.030** — essentially zero. The intuition that
+"charged residues are hydrophilic, so charge and GRAVY must anti-correlate" is wrong for
+*net* charge per residue, because a protein rich in both Lys and Glu is strongly
+hydrophilic with near-zero net charge. That makes hydrophobicity and charge close to
+orthogonal axes here, so leakage between those two is genuinely informative rather than
+expected; hydrophobicity and instability are the pair where coupling has to be subtracted
+before an off-target number means anything. Length correlates |r| <= 0.053 with all three,
+confirming the per-residue normalization.
 
 **4. Alpha is not comparable across properties in raw mode.** `h + alpha*v`
 rotates `h` by an angle set by `alpha*||v||/||h||`, and the three vectors have

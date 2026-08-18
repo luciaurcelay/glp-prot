@@ -56,6 +56,12 @@ Every generation is scored on **all three** regardless of which was steered
 what `scripts/analyze_property_specificity.py` reads. Off-target effects cannot
 be recovered later without regenerating, so they are always written.
 
+Read an off-target number against the properties' *natural* coupling, measured on
+the shared UniRef50 pool at build time: GRAVY x instability −0.348, charge x
+instability +0.160, GRAVY x charge −0.030. Only the last pair needs no correction —
+net charge per residue is near-orthogonal to hydrophobicity, since a protein rich
+in both Lys and Glu is hydrophilic with near-zero net charge.
+
 Exp B is **bidirectional** by default (`--directions auto` → both when the
 contrast file supports it). "up" starts from the held-out *low*-quartile
 proteins and applies `+alpha·v`; "down" starts from the held-out *high*-quartile

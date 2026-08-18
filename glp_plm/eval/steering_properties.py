@@ -17,9 +17,15 @@ Three design decisions live here, and they are the ones a reviewer would push on
 
 2. **Every generated sequence is scored on every property, not just the steered one.**
    That is what makes an off-target/specificity matrix possible: steering charge
-   should move charge and leave hydrophobicity roughly where the natural covariance
-   between the two would put it. Without the off-target columns there is no way to
-   tell a concept direction from a generic "make this protein weirder" direction.
+   should move charge and leave the others where the natural covariance between them
+   would put it. Without the off-target columns there is no way to tell a concept
+   direction from a generic "make this protein weirder" direction.
+
+   Measured on a 5,790-sequence UniRef50 pool, that covariance is GRAVY x instability
+   -0.348, charge x instability +0.160, and GRAVY x charge only -0.030 — the last is
+   worth knowing because the obvious intuition (charged residues are hydrophilic) is
+   wrong for *net* charge: a protein rich in both Lys and Glu is hydrophilic with
+   near-zero net charge. Hydrophobicity and charge are therefore near-orthogonal axes.
 
 3. **Each property carries its own exact decomposition.** GRAVY and charge are linear
    in amino-acid composition, so a change in them decomposes exactly into per-residue

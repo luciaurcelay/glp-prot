@@ -12,9 +12,11 @@ A concept direction should light up its diagonal. A vector that just makes prote
 lights up whole rows. Neither can be told apart from a single-property experiment, which is
 why every generation is scored on every property (glp_plm/eval/steering_properties.py).
 
-**Off-diagonal cells are not automatically failures.** The three properties are correlated in
-real proteins — charged residues are hydrophilic, so charge and GRAVY anti-correlate — and a
-faithful direction should reproduce that coupling. The natural correlation matrix from the
+**Off-diagonal cells are not automatically failures.** The properties are correlated in real
+proteins — measured on our own UniRef50 pool, GRAVY x instability r = -0.35 — and a faithful
+direction should reproduce that coupling. (GRAVY x charge is the pair that does NOT need the
+correction: r = -0.03. Net charge per residue is near-orthogonal to hydrophobicity, because a
+protein rich in both Lys and Glu is hydrophilic with near-zero net charge.) The natural correlation matrix from the
 contrast build is therefore printed alongside, and the figure's second panel is the residual:
 measured off-target minus what the on-target effect would produce through the natural
 correlation alone. That residual, not the raw off-target number, is the evidence of an
