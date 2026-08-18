@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -30,19 +29,10 @@ import _bootstrap  # noqa: F401
 import numpy as np
 
 from glp_plm.eval.steering_properties import (SteeringProperty, find_run_csv,
-                                              row_delta, run_property)
+                                              is_degenerate_row, row_delta, run_property)
 from glp_plm.experiments import RunLogger, style
 
 ARMS = ((False, "naive"), (True, "GLP-corrected"))
-
-
-def is_degenerate(row: dict) -> bool:
-    seq = row.get("sequence") or ""
-    if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
-        return True
-    return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 12)   # 12, not 8: 8 rejected a real
-            # protein with a run of 9 (see run_steering.is_degenerate_sequence)
 
 
 def load_rows(run_dir: Path, neutral_alpha: float, apply_gate: bool = True
@@ -52,7 +42,7 @@ def load_rows(run_dir: Path, neutral_alpha: float, apply_gate: bool = True
     prop = run_property(raw, path)
     rows = []
     for r in raw:
-        if apply_gate and is_degenerate(r):
+        if apply_gate and is_degenerate_row(r):
             continue          # degenerate output is excluded from effect estimates
         rows.append({"alpha": float(r["alpha"]), "corrected": r["corrected"] == "True",
                      "direction": r.get("direction") or "up",

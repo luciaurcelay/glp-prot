@@ -39,14 +39,13 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
-from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import _bootstrap  # noqa: F401
 import numpy as np
 
-from glp_plm.eval.steering_properties import find_run_csv, row_delta
+from glp_plm.eval.steering_properties import find_run_csv, is_degenerate_row, row_delta
 from glp_plm.experiments import RunLogger, style
 
 # a well-folded natural protein, folded through the same pipeline, as a scale anchor
@@ -55,12 +54,7 @@ UBIQUITIN_REF = {"plddt": 80.0, "ptm": 0.74}
 
 def is_degenerate(row: dict) -> bool:
     """Mirrors run_steering.is_degenerate_sequence so this analyses the same row set."""
-    seq = row.get("sequence") or ""
-    if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
-        return True
-    return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 12)   # 12, not 8: 8 rejected a real
-            # protein with a run of 9 (see run_steering.is_degenerate_sequence)
+    return is_degenerate_row(row)
 
 
 def rescue_fraction(naive: List[dict], corrected: List[dict], key: str,

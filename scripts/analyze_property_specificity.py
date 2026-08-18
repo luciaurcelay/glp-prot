@@ -40,55 +40,16 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
-from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import _bootstrap  # noqa: F401
 import numpy as np
 
-from glp_plm.eval.steering_properties import (PROPERTY_KEYS, find_contrast_json, find_run_csv,
-                                              get_property, run_property, score_all)
+from glp_plm.eval.steering_properties import (PROPERTY_KEYS, find_run_csv, get_property,
+                                              is_degenerate_row, resolve_contrast,
+                                              run_property, score_all)
 from glp_plm.experiments import RunLogger, style
-
-
-def is_degenerate(row: dict) -> bool:
-    """Mirrors run_steering.is_degenerate_sequence — this must analyse exactly the row set
-    the run's own summary.json reported on."""
-    seq = row.get("sequence") or ""
-    if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
-        return True
-    return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 12)
-
-
-def resolve_contrast(run_dir: Path, prop_key: str, override: Optional[str]) -> dict:
-    """The contrast this run used, wherever it lives.
-
-    A multi-property build writes one shared contrast per property outside any single run
-    dir and the run is pointed at it with --contrast, so globbing the run dir is not
-    enough. Order: explicit --contrasts override, then the path the run recorded in its own
-    summary.json, then the run dir itself (single-property runs that built it inline).
-    """
-    if override:
-        return json.loads(Path(override).read_text())
-    summary = run_dir / "metrics" / "summary.json"
-    if summary.exists():
-        recorded = json.loads(summary.read_text()).get("contrast_path")
-        if recorded and Path(recorded).exists():
-            return json.loads(Path(recorded).read_text())
-        # Runs before contrast_path was recorded may still carry the two fields directly.
-        s = json.loads(summary.read_text())
-        if s.get("contrast_pool_property_stats"):
-            return {"pool_property_stats": s["contrast_pool_property_stats"],
-                    "natural_correlations": s.get("contrast_natural_correlations")}
-    local = find_contrast_json(run_dir, prop_key)
-    if local:
-        return json.loads(local.read_text())
-    print(f"[specificity] WARNING: no contrast found for {run_dir.name} — pass "
-          f"--contrasts {prop_key}=<path>. Without it this run cannot be standardized.")
-    return {}
 
 
 def load_run(run_dir: Path, neutral_alpha: float, override: Optional[str] = None
@@ -105,7 +66,7 @@ def load_run(run_dir: Path, neutral_alpha: float, override: Optional[str] = None
 
     rows = []
     for r in raw:
-        if is_degenerate(r):
+        if is_degenerate_row(r):
             continue
         row = {"alpha": float(r["alpha"]), "corrected": r["corrected"] == "True",
                "direction": r.get("direction") or "up", "init": r["init_sequence_id"]}

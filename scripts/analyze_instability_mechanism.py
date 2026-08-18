@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -43,20 +42,10 @@ from typing import Dict, List, Tuple
 import _bootstrap  # noqa: F401
 import numpy as np
 
-from glp_plm.eval.steering_properties import (find_contrast_json, find_run_csv,
-                                              instability_decomposition, instability_score,
-                                              run_property)
+from glp_plm.eval.steering_properties import (find_run_csv, instability_decomposition,
+                                              instability_score, is_degenerate_row,
+                                              resolve_contrast, run_property)
 from glp_plm.experiments import RunLogger, style
-
-
-def is_degenerate(row: dict) -> bool:
-    """Mirrors run_steering.is_degenerate_sequence, so this analyses exactly the row set
-    the run's own summary.json reported on."""
-    seq = row.get("sequence") or ""
-    if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
-        return True
-    return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 12)
 
 
 def expected_instability(seq: str) -> float:
@@ -98,7 +87,7 @@ def load(run_dir: Path, neutral_alpha: float) -> Tuple[List[dict], object]:
                          "is about the one target that is not a function of composition")
     rows = []
     for r in raw:
-        if is_degenerate(r):
+        if is_degenerate_row(r):
             continue
         seq = r["sequence"]
         exp = expected_instability(seq)
@@ -144,13 +133,7 @@ def main():
         raise SystemExit(f"alpha={alpha} not in this run ({alphas})")
 
     sd = None
-    cj = find_contrast_json(run_dir, "instability")
-    summary = run_dir / "metrics" / "summary.json"
-    stats = None
-    if cj:
-        stats = json.loads(cj.read_text()).get("pool_property_stats")
-    if stats is None and summary.exists():
-        stats = json.loads(summary.read_text()).get("contrast_pool_property_stats")
+    stats = resolve_contrast(run_dir, "instability").get("pool_property_stats")
     if stats:
         sd = stats["instability"]["sd"]
 

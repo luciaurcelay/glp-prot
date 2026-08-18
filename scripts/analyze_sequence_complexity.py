@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Tuple
 import _bootstrap  # noqa: F401
 import numpy as np
 
-from glp_plm.eval.steering_properties import (find_contrast_json, find_run_csv,
+from glp_plm.eval.steering_properties import (find_run_csv, is_degenerate_row, resolve_contrast,
                                               row_delta, run_property)
 from glp_plm.experiments import RunLogger, style
 
@@ -69,12 +69,7 @@ def complexity(seq: str, window: int = SEG_WINDOW, k1: float = SEG_K1) -> Dict[s
 
 
 def is_degenerate(row: dict) -> bool:
-    seq = row.get("sequence") or ""
-    if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
-        return True
-    return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 12)   # 12, not 8: 8 rejected a real
-            # protein with a run of 9 (see run_steering.is_degenerate_sequence)
+    return is_degenerate_row(row)
 
 
 def attributable(rows: List[dict], neutral_alpha: float) -> None:
@@ -135,11 +130,9 @@ def main():
     # they were drawn from the steered property's extremes, so if e.g. very hydrophobic
     # natural proteins are themselves locally low-complexity — transmembrane stretches are —
     # then a threshold that flags them measures the property we steer toward, not degeneracy.
-    import json
     natural: Dict[str, List[dict]] = {}
-    gc = find_contrast_json(run_dir, prop.key)
-    if gc is not None and gc.exists():
-        d = json.loads(gc.read_text())
+    d = resolve_contrast(run_dir, prop.key)
+    if d.get("heldout"):
         for setname, entries in ((f"held-out, {prop.low_name} (up starts)", d.get("heldout") or []),
                                  (f"held-out, {prop.high_name} (down starts)", d.get("heldout_high") or [])):
             natural[setname] = [complexity(e["sequence"], args.window) for e in entries]

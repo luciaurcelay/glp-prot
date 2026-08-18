@@ -310,6 +310,97 @@ def run_property(rows: Sequence[dict], csv_path=None) -> SteeringProperty:
     return get_property("gravy")
 
 
+# --------------------------------------------------------------------------- #
+#  The degeneracy gate — ONE definition
+# --------------------------------------------------------------------------- #
+#: Thresholds for `is_degenerate_sequence`. These are load-bearing: the gate, not any
+#: naturalness metric, is what keeps non-proteins out of every effect estimate (both
+#: pLDDT and pseudo-perplexity rate poly-Leu/Val junk ABOVE our own clean output —
+#: docs/steering_history.md §13.3). They are calibrated against real proteins: applied to
+#: the 80 natural held-out UniRef50 starts the runs begin from, they reject 3.8%, against
+#: 2.9% of our own generations, so the gate is not tuned to target our failure mode.
+#:
+#: `min_homopolymer_run` is 12 rather than 8 because 8 rejected an otherwise ordinary
+#: natural protein with a run of 9; natural runs here have median 3 and p95 5.1.
+#:
+#: Do NOT tighten this on local complexity: complexity is affected by the treatment, so a
+#: complexity cut removes the successfully-steered sequences (§13.4).
+GATE_MIN_UNIQUE_AA = 8
+GATE_MIN_HOMOPOLYMER_RUN = 12
+GATE_MAX_SINGLE_AA_FRACTION = 0.30
+
+
+def max_homopolymer_run(seq: str) -> int:
+    best = run = 1 if seq else 0
+    for i in range(1, len(seq)):
+        run = run + 1 if seq[i] == seq[i - 1] else 1
+        best = max(best, run)
+    return best
+
+
+def is_degenerate_sequence(seq: str) -> bool:
+    """Does this generation collapse into low-complexity repeats?
+
+    Sequence-only, so it works on a raw string, a run CSV row, or a natural protein
+    without any of them having to agree on column names. `is_degenerate_row` is the
+    thin wrapper for CSV rows, which carry the two counts precomputed.
+    """
+    if not seq:
+        return True
+    if max(Counter(seq).values()) / len(seq) >= GATE_MAX_SINGLE_AA_FRACTION:
+        return True
+    return (len(set(seq)) <= GATE_MIN_UNIQUE_AA
+            or max_homopolymer_run(seq) >= GATE_MIN_HOMOPOLYMER_RUN)
+
+
+def is_degenerate_row(row: dict) -> bool:
+    """`is_degenerate_sequence` for a run CSV row, using its precomputed counts when
+    present so a large analysis does not re-scan every sequence.
+
+    Every analysis script must go through this. The gate had seven independent copies at
+    one point and one of them had drifted to `min_homopolymer_run=8`, so that script
+    silently analysed a smaller row set than the summary.json numbers it printed beside.
+    """
+    seq = row.get("sequence") or ""
+    if seq and max(Counter(seq).values()) / len(seq) >= GATE_MAX_SINGLE_AA_FRACTION:
+        return True
+    uniq = row.get("unique_aa_count")
+    hom = row.get("max_homopolymer_run")
+    if uniq in (None, "") or hom in (None, ""):
+        return is_degenerate_sequence(seq)
+    return (int(float(uniq)) <= GATE_MIN_UNIQUE_AA
+            or int(float(hom)) >= GATE_MIN_HOMOPOLYMER_RUN)
+
+
+def resolve_contrast(run_dir, prop_key: str, override: Optional[str] = None) -> dict:
+    """The contrast a run used, wherever it lives.
+
+    A multi-property build writes one shared contrast per property OUTSIDE any single run
+    dir, and the runs are pointed at it with `--contrast`, so globbing the run dir finds
+    nothing. Resolution order: explicit override, the path the run recorded in its own
+    summary.json, then the run dir (single-property runs that built it inline).
+
+    Returns {} rather than raising, so a caller that only needs the optional parts of a
+    contrast (a natural-sequence reference, say) can degrade instead of dying.
+    """
+    import json
+
+    run_dir = Path(run_dir)
+    if override:
+        return json.loads(Path(override).read_text())
+    summary = run_dir / "metrics" / "summary.json"
+    if summary.exists():
+        s = json.loads(summary.read_text())
+        recorded = s.get("contrast_path")
+        if recorded and Path(recorded).exists():
+            return json.loads(Path(recorded).read_text())
+        if s.get("contrast_pool_property_stats"):
+            return {"pool_property_stats": s["contrast_pool_property_stats"],
+                    "natural_correlations": s.get("contrast_natural_correlations")}
+    local = find_contrast_json(run_dir, prop_key)
+    return json.loads(local.read_text()) if local else {}
+
+
 def row_delta(row: dict) -> float:
     """The steered property's change for one generated sequence.
 

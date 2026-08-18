@@ -26,28 +26,14 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from collections import Counter
 from pathlib import Path
 from statistics import mean
 
 import _bootstrap  # noqa: F401
 
-from glp_plm.eval.steering_properties import (find_contrast_json, find_run_csv, row_delta,
-                                              run_property)
+from glp_plm.eval.steering_properties import (find_run_csv, is_degenerate_row, resolve_contrast,
+                                              row_delta, run_property)
 from glp_plm.experiments import style
-
-
-def is_degenerate(row: dict) -> bool:
-    """Mirrors run_steering.is_degenerate_sequence (kept in sync deliberately: this script
-    must analyse exactly the row set that produced summary.json's Part 3 numbers)."""
-    seq = row["sequence"]
-    if seq and max(Counter(seq).values()) / len(seq) >= 0.30:
-        return True
-    return (int(float(row["unique_aa_count"])) <= 8
-            or int(float(row["max_homopolymer_run"])) >= 12)   # 12, not 8: 8 rejected a real
-            # protein with a run of 9, and run_steering.is_degenerate_sequence was raised to
-            # match. This file kept 8 and so analysed a SMALLER row set than the summary.json
-            # numbers it prints alongside — contradicting its own docstring.
 
 
 def attributable_from_rows(rows, neutral_alpha=0.0) -> dict:
@@ -75,6 +61,10 @@ def main():
     ap.add_argument("--run-dir", required=True,
                     help="steering out-dir (holds expB_diffmean_<property>.csv and the "
                          "matching <property>_contrast.json)")
+    ap.add_argument("--contrast",
+                    help="path to the run's <property>_contrast.json. Only needed when the "
+                         "contrast lives outside the run dir (a shared multi-property build) "
+                         "AND the run predates `contrast_path` being recorded in summary.json")
     ap.add_argument("--out", help="output PNG (default <run-dir>/figures/alpha0_confound.png)")
     ap.add_argument("--top-components", type=int, default=20,
                     help="how many decomposition components panel A shows. All 20 residues "
@@ -95,20 +85,30 @@ def main():
         r["_alpha"] = float(r["alpha"])
         r["_corr"] = r["corrected"] == "True"
         r["_delta"] = row_delta(r)
-    clean = [r for r in rows if not is_degenerate(r)]
+    clean = [r for r in rows if not is_degenerate_row(r)]
     print(f"property={prop.key}  rows={len(rows)}  clean={len(clean)}  "
           f"degenerate={len(rows) - len(clean)}")
 
-    contrast = find_contrast_json(run_dir, prop.key)
-    if contrast is None:
-        raise SystemExit(f"no <property>_contrast.json in {run_dir}")
-    heldout = {str(h["id"]): h["sequence"]
-               for h in json.loads(contrast.read_text())["heldout"]}
+    contrast = resolve_contrast(run_dir, prop.key, args.contrast)
+    if not contrast.get("heldout"):
+        raise SystemExit(
+            f"no contrast with held-out sequences for {run_dir}. A multi-property build "
+            "writes the contrast outside the run dir; pass --contrast <path> (runs from "
+            "before `contrast_path` was recorded in summary.json need it explicitly).")
+    # Keyed on (direction, id), NOT id alone. The two held-out sets are numbered
+    # independently from 0, so `heldout[init_sequence_id]` silently hands every "down" row
+    # the "up" set's protein of the same index — a wrong `before` for half the rows of any
+    # bidirectional run, and the decomposition is a before/after difference.
+    heldout = {("up", str(h["id"])): h["sequence"] for h in contrast["heldout"]}
+    heldout.update({("down", str(h["id"])): h["sequence"]
+                    for h in contrast.get("heldout_high") or []})
 
     # ---- Panel A data: alpha=0 corrected drift, decomposed into the property's own
     # components (residues for GRAVY/charge, dipeptides for instability) ----
     a0c = [r for r in clean if r["_alpha"] == 0.0 and r["_corr"]]
-    dec = prop.decompose([heldout[r["init_sequence_id"]] for r in a0c],
+    a0c = [r for r in a0c if (r.get("direction") or "up", r["init_sequence_id"]) in heldout]
+    dec = prop.decompose([heldout[(r.get("direction") or "up", r["init_sequence_id"])]
+                          for r in a0c],
                          [r["sequence"] for r in a0c])
     total = sum(v for _, v in dec)
     shown = dec[:args.top_components]

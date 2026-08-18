@@ -173,3 +173,38 @@ def test_length_matched_heldout_is_not_length_biased():
         h = np.mean([len(s) for s, _ in sets[held]])
         k = np.mean([len(s) for s, _ in sets[kept]])
         assert abs(h - k) < 12, f"{held} mean length {h:.1f} vs {kept} {k:.1f}"
+
+
+# --------------------------------------------------------------------------- #
+#  The degeneracy gate
+# --------------------------------------------------------------------------- #
+def test_gate_agrees_between_the_sequence_and_row_forms():
+    """Analyses read rows (which carry precomputed counts); other callers pass raw
+    strings. They must not be able to disagree — the gate had seven independent copies at
+    one point and one had drifted, so a script silently analysed a different row set from
+    the summary.json numbers it printed beside."""
+    from glp_plm.eval.steering_properties import (is_degenerate_row, is_degenerate_sequence,
+                                                  max_homopolymer_run)
+    cases = [LYSOZYME, UBIQUITIN, "L" * 130, "LV" * 65, UBIQUITIN[:30] + "A" * 20,
+             "".join("ACDEFGHIKLMNPQRSTVWY"[i % 20] for i in range(140))]
+    for seq in cases:
+        row = {"sequence": seq, "unique_aa_count": len(set(seq)),
+               "max_homopolymer_run": max_homopolymer_run(seq)}
+        assert is_degenerate_row(row) == is_degenerate_sequence(seq), seq[:40]
+
+
+def test_gate_rejects_junk_and_keeps_real_proteins():
+    from glp_plm.eval.steering_properties import is_degenerate_sequence
+    assert is_degenerate_sequence("L" * 130)            # homopolymer
+    assert is_degenerate_sequence("LV" * 65)            # two residues only
+    assert not is_degenerate_sequence(LYSOZYME)
+    assert not is_degenerate_sequence(UBIQUITIN)
+
+
+def test_gate_row_form_falls_back_when_the_counts_are_missing():
+    """Natural-protein CSVs (heldout_starts.csv) have no count columns."""
+    from glp_plm.eval.steering_properties import is_degenerate_row
+    assert is_degenerate_row({"sequence": "L" * 130})
+    assert not is_degenerate_row({"sequence": LYSOZYME})
+    assert not is_degenerate_row({"sequence": LYSOZYME, "unique_aa_count": "",
+                                  "max_homopolymer_run": ""})
