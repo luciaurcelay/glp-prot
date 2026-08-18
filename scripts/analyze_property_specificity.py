@@ -13,14 +13,19 @@ lights up whole rows. Neither can be told apart from a single-property experimen
 why every generation is scored on every property (glp_plm/eval/steering_properties.py).
 
 **Off-diagonal cells are not automatically failures.** The properties are correlated in real
-proteins — measured on our own UniRef50 pool, GRAVY x instability r = -0.35 — and a faithful
-direction should reproduce that coupling. (GRAVY x charge is the pair that does NOT need the
-correction: r = -0.03. Net charge per residue is near-orthogonal to hydrophobicity, because a
-protein rich in both Lys and Glu is hydrophilic with near-zero net charge.) The natural correlation matrix from the
-contrast build is therefore printed alongside, and the figure's second panel is the residual:
-measured off-target minus what the on-target effect would produce through the natural
-correlation alone. That residual, not the raw off-target number, is the evidence of an
-unspecific vector.
+proteins, and a faithful direction should reproduce that coupling. Measured on our own
+UniRef50 pool: GRAVY x instability -0.35, charge x instability +0.16, GRAVY x charge only
+-0.03 — the last pair needs no correction at all, because net charge per residue is
+near-orthogonal to hydrophobicity (a protein rich in both Lys and Glu is hydrophilic with
+near-zero net charge). The correlation matrix recorded by the contrast build is therefore
+printed alongside, and the figure's second panel is the residual: measured off-target minus
+what the on-target effect would produce through the natural coupling alone.
+
+That residual is the evidence to weigh, not the raw off-target number — but weigh it as
+evidence, not proof. The coupling is an OBSERVATIONAL correlation across natural proteins;
+an intervention is not obliged to reproduce it, so a non-zero residual says the direction
+moves the properties differently from how they covary in nature, which is interesting and
+is not by itself a defect.
 
 Every quantity here is (a) steering-attributable — differenced against the same init's own
 alpha=0 run in the same arm and direction, so the correction's own drift is removed — and
