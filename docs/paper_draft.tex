@@ -24,6 +24,7 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{subcaption}
+\usepackage{longtable}
 \usepackage{amsmath}
 \usepackage{amssymb}
 
@@ -56,8 +57,9 @@ not: the correction is what makes steering effective. The accompanying \emph{nat
 claim fails, and we trace why: masked-Gibbs decoding removes a quarter to a half of the
 structural confidence on its own, before any steering, so both arms degrade equally for
 reasons unrelated to GLP. We further find that the naturalness metrics used in this setting
-score known non-proteins above genuine output. Concept probing of GLP's internal units is
-left as future work.
+score known non-proteins above genuine output. Probing GLP's internal units for Swiss-Prot
+concepts, a single meta-neuron at a time, we find they isolate concepts at least as cleanly
+as InterPLM's released SAE features.
 \end{abstract}
 
 \section{Introduction}
@@ -76,15 +78,14 @@ We take the first step of porting GLP to PLMs. Our contribution here is delibera
 scoped to the parts we have \emph{built and validated}: (i) a data pipeline that produces
 GLP training activations byte-identical to InterPLM's SAE substrate; (ii) a flow-matching
 GLP trained on ESM-2 activations; (iii) a study of its generation quality and how
-that quality scales with model depth and training data; and (iv) a first test of GLP as
-an on-manifold prior for activation steering, following a pre-registered gate (GLP's own
-generation-quality FD must beat the SAE's reconstruction-quality FD before steering claims
-are made on top of it --- Section~\ref{sec:steering-results}). The downstream promise of
-GLP for protein discovery --- surfacing concept-carrying units --- motivates this
-substrate but concept \emph{probing} is future work; we do not make probing claims in this
-paper.
+that quality scales with model depth and training data; (iv) a concept-probing study of GLP's internal
+units against InterPLM's released SAE (Section~\ref{sec:probing-results}); and (v) a test of
+GLP as an on-manifold prior for activation steering, following a pre-registered gate (GLP's
+own generation-quality FD must beat the SAE's reconstruction-quality FD before steering
+claims are made on top of it --- Section~\ref{sec:steering-results}).
 
 \section{Method}
+\label{sec:method}
 
 \textbf{Substrate and hook parity.} ESM-2-8M (\texttt{facebook/esm2\_t6\_8M\_UR50D}) is
 frozen throughout. We read the residual stream after transformer block 4
@@ -104,8 +105,8 @@ $d_{\text{mlp}}{=}1280$. Depth $n_{\text{blocks}}$ is the variable we scan
 ($3,6,12,24$ blocks $=$ $11.1$--$80.0$M parameters). It is trained by flow matching: given
 a standardized activation $z_0$, noise $\epsilon$, and $t\!\sim\!U(0,1)$, form
 $z_t = (1{-}t)z_0 + t\epsilon$ and regress the velocity $\epsilon - z_0$ under MSE. (The
-per-block gated activations, which GLP calls ``meta-neurons,'' are the internal units a
-future probing/steering study would examine; we do not use them here.)
+per-block gated activations, which GLP calls ``meta-neurons,'' are the internal units we
+probe in Section~\ref{sec:probing-results}.)
 
 \textbf{Training.} Batch size $4096$ (GLP's reference batch), learning rate $5{\times}10^{-5}$
 with cosine decay and warmup, one epoch over the activation store. At 500M activations one
@@ -117,6 +118,30 @@ an Euler sampler, de-standardize, and compare to held-out real activations by (i
 Fréchet Distance FD(generated, real) against the FD(train, val) real-vs-real lower bound,
 and (ii) top-2 PCA overlap. FD depends strongly on the number of sampler steps and must be
 quoted with it (Appendix~\ref{app:fd}); we report FD at 1000 steps.
+
+\textbf{Concept probing.} We ask whether a \emph{single} unit isolates a Swiss-Prot
+concept, following GLP's own released probe protocol and InterPLM's evaluation split. Per
+concept and representation: filter to the 512 candidate units with the largest
+train-split mean-activation difference between positive and negative residues; fit a 1-D
+logistic regression per candidate; select the candidate by validation AUC; report that
+candidate's AUC on the disjoint test split (never select and report on the same split).
+Four representations receive the identical candidate budget: GLP meta-neurons (pooled
+across the 5 noise levels, so both unit and $u$ are selected, not fixed); InterPLM's
+released SAE features; ESM's own FFN intermediate neurons at the hooked block; and the
+raw residual stream. Negatives are drawn from the \emph{same proteins} that carry a
+positive instance of the concept, not from anywhere in the split --- otherwise a unit can
+win by recognizing protein identity rather than localizing the motif within a protein
+that has it. For 10 continuous sequence properties (GRAVY, molecular weight, isoelectric
+point, aromaticity, instability index, charge at pH 7, aliphatic index, and
+helix/turn/sheet fraction, computed directly from sequence, no annotation needed) the
+same protocol applies at the \emph{protein} level (mean-pooled residue activations, since
+these labels have no per-residue value), with 1-D linear regression and Spearman
+correlation in place of logistic regression and AUC. \emph{Falsification.} For every
+concept where a GLP meta-neuron beats every SAE feature, we regress that meta-neuron's
+activation on the \emph{entire} SAE dictionary (ridge regression, held-out $R^2$): a high
+$R^2$ means the winning direction is a linear combination of SAE features InterPLM's
+dictionary already contains --- a re-organization, not new information --- and the
+stronger claim must be retracted for that concept (Section~\ref{sec:probing-results}).
 
 \textbf{Generation-quality gate for steering.} Before using GLP as an on-manifold prior we
 require GLP's own generation FD to beat an SAE-reconstruction FD anchor ---
@@ -267,6 +292,215 @@ Data & Blocks & Params & $C = 6ND$ & FD@1000 & FD ratio & Loss \\
 \end{tabular}
 \end{table}
 
+\subsection{Concept probing: GLP meta-neurons vs.\ the SAE}
+\label{sec:probing-results}
+
+\textbf{GLP meta-neurons are the best single-unit probe, on both discrete concepts and
+continuous properties.} Table~\ref{tab:probing} and Figs.~\ref{fig:probingauc}--\ref{fig:probingscatter} compare the
+four representations on the 24-block/500M model: over 104 pre-registered Swiss-Prot
+concepts, GLP reaches mean test AUC $0.897$, ahead of ESM's own FFN neurons ($0.876$),
+the SAE ($0.842$), and the raw residual stream ($0.827$); every margin is significant by
+paired bootstrap (GLP$-$SAE $+0.055$, $94/104$ wins; GLP$-$FFN $+0.021$, $83/104$;
+GLP$-$raw $+0.070$, $98/104$). GLP leads on 4 of the 5 concept categories --- domain/motif
+($n{=}86$), chemical/PTM ($n{=}9$), structural ($n{=}4$), topology/localization
+($n{=}3$) --- and only trails on the 2-concept binding/catalytic bucket, too small to
+weigh. The same pattern holds for 10 continuous sequence properties (Spearman $\rho$,
+protein-level): GLP $0.663$ vs.\ SAE $0.605$, FFN $0.563$, raw $0.469$ (GLP$-$SAE
+significant, $8/10$ wins). GRAVY, the same target as the diff-of-means steering
+experiment (Section~\ref{sec:steering-results}), is one of GLP's clearest continuous
+wins ($\rho{=}0.815$ vs.\ SAE's $0.628$).
+
+\begin{table}[t]
+\centering
+\caption{1-D probing, 24-block/500M model, select-on-valid/report-on-test throughout.
+Discrete: mean test AUC, 104 Swiss-Prot concepts, 95\% bootstrap CI. Continuous: mean
+test Spearman $\rho$, 10 sequence properties.}
+\label{tab:probing}
+\begin{tabular}{lrrrr}
+\toprule
+ & GLP meta-neurons & SAE (InterPLM) & ESM FFN neurons & Raw residual stream \\
+\midrule
+Discrete AUC ($n{=}104$)   & \textbf{0.897} [0.879, 0.914] & 0.842 [0.821, 0.862] & 0.876 [0.858, 0.894] & 0.827 [0.808, 0.846] \\
+Continuous $\rho$ ($n{=}10$) & \textbf{0.663} [0.611, 0.720] & 0.605 [0.562, 0.653] & 0.563 [0.524, 0.603] & 0.469 [0.407, 0.532] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/probing_auc.png}
+\caption{Mean test AUC (104 discrete Swiss-Prot concepts) and mean test Spearman
+$\rho$ (10 continuous sequence properties), 95\% CI. GLP leads every baseline on
+both axes.}
+\label{fig:probingauc}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/probing_per_concept.png}
+\caption{Per-concept/property GLP vs.\ SAE. Left: discrete concepts, colored by
+Swiss-Prot category --- most points sit above the diagonal (GLP wins), across
+categories, not concentrated in one bucket (the pool is dominated by
+domain/motif, 86/104, so a category-balanced re-run remains future work ---
+Section~\ref{sec:limitations}). Right: continuous properties, direct-labeled ---
+GLP wins 8/10, led by gravy and sheet fraction.}
+\label{fig:probingscatter}
+\end{figure}
+
+\textbf{What this does and does not show.} A unit that best separates a concept's
+positive from negative residues shows GLP's representation is more convenient to probe
+--- not that it contains information the SAE's dictionary lacks. A diffusion model with
+no sparsity constraint could just have found a better rotation of a subspace the SAE
+already spans. To test this, for every concept where a GLP meta-neuron beats every SAE
+feature, we regress that meta-neuron's activation on the SAE's entire 10{,}240-feature
+dictionary and report the held-out $R^2$ (Section~\ref{sec:method}). This now covers the
+full concept set (94/104 concepts have a GLP meta-neuron beating every SAE feature;
+per-concept $R^2$ in Table~\ref{tab:app-falsification}): mean $R^2 = 0.752$, median
+$0.756$, IQR $[0.690, 0.841]$, $36\%$ above $0.8$. For most winning meta-neurons the
+SAE's dictionary already linearly explains most of their variance: GLP is a more
+convenient probe of structure the SAE already has, not evidence of new structure, for
+most concepts.
+
+But $R^2$ is a property of the whole meta-neuron, not of the slice that correlates with
+the concept. A low aggregate $R^2$ does not mean the concept is outside the SAE's span
+(the error could sit in unrelated variance); a high $R^2$ does not mean it is inside (the
+concept-relevant slice could still be unrecoverable). So we test the concept directly:
+for all 94 concepts, we fit a \emph{joint} logistic probe over the SAE's own top-$k$
+features ($k \in \{2, 5, 10, 20\}$, same protocol as above) and check whether combining
+features closes the gap to GLP's test AUC. On $79/94$ it does, at a median $k^*{=}5$
+(Fig.~\ref{fig:saetopk}a, Table~\ref{tab:app-topk}): the SAE has the concept, spread
+across several features rather than concentrated in one. On the remaining $15/94$, no
+combination up to $k{=}20$ reaches GLP --- direct evidence of concept-level information
+the dictionary does not jointly span.
+
+$R^2$ does not predict which 15 (Fig.~\ref{fig:saetopk}b): the Pearson/Spearman
+correlation between $R^2$ and $k^*$ (never-reaches censored past $k{=}20$) is
+$-0.035$/$-0.174$ across all 94, and the two groups' $R^2$ distributions are
+indistinguishable (not-in-dictionary mean $R^2{=}0.764$ vs.\ distributed-in-dictionary
+mean $R^2{=}0.750$). Disulfide bond has $R^2{=}0.963$ --- exactly the concept an
+aggregate-$R^2$ threshold would call ``already explained'' --- yet no top-20 SAE
+combination reaches GLP on it. Domain\_Sm has the lowest $R^2$ of all 94 ($0.332$) yet is
+fully recovered by $k{=}10$. Thresholding the aggregate $R^2$ would have flagged the
+wrong candidates and missed the strongest one; Section~\ref{sec:next-steps} uses the
+direct 15-concept list, not the $R^2$ ranking, as steering targets.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/sae_topk_kstar.png}
+\caption{Joint SAE top-$k$ recovery of the 94 GLP-winning concepts. (a) Smallest $k$ at
+which the SAE's own top-$k$ features, probed jointly, reach GLP's test AUC, by Swiss-Prot
+category ($15/94$ never reach it by $k{=}20$). (b) The same concepts' held-out $R^2$
+(Table~\ref{tab:app-falsification}) against $k^*$ --- near-zero correlation, with
+Disulfide bond ($R^2{=}0.963$, never reaches) and Domain\_Sm ($R^2{=}0.332$, reaches at
+$k{=}10$) as the two concepts that most starkly contradict what the $R^2$ heuristic alone
+would predict.}
+\label{fig:saetopk}
+\end{figure}
+
+\textbf{Does the SAE's discarded residual hide the concept instead?} For the 11 concepts
+with $R^2{<}0.6$ (Domain\_Sm $0.332$ through Domain\_EF-hand~4 $0.596$), we
+encode-then-decode every residue's activation through the SAE and probe what the
+reconstruction discards, $\text{residual} = x - \text{sae.decode}(\text{sae.encode}(x))$,
+with the same protocol as the raw-layer baseline. If a concept were recoverable from the
+residual, that would be direct evidence the SAE throws away exactly what encodes it. It
+is not: residual test AUC falls \emph{below} the SAE's own single best feature on $10/11$
+concepts (Fig.~\ref{fig:discoverykfeature}) and never approaches GLP's. Only
+Domain\_Ubiquitin-like, the one concept here also on the 15-concept not-in-dictionary
+list, and the residual does not help there either ($0.771$ vs.\ GLP's $0.994$, vs.\ the
+SAE's own top-20 AUC of $0.903$). The concept signal is not hiding in what the SAE
+discards --- it is in what the SAE keeps, distributed across features.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/discovery_kfeature.png}
+\caption{SAE top-$k$ test AUC curve ($k \in \{1,2,5,10,20\}$) for each of the 11
+$R^2{<}0.6$ concepts, GLP's meta-neuron test AUC as a dashed reference. Ten of eleven
+climb past GLP by $k{=}20$ (curve shape varies --- some plateau near $k{=}5$, others
+keep climbing); Domain\_Ubiquitin-like (top-left of the second row) is the exception,
+dipping at $k{=}2$ and never reaching GLP even at $k{=}20$, and is the only one of these
+11 where the residual probe (main text) was worth running as a follow-up.}
+\label{fig:discoverykfeature}
+\end{figure}
+
+\subsection{Does GLP's advantage come with an organisation cost?}
+\label{sec:discovery-organisation}
+
+The result above is about sufficiency: 15 concepts carry information the SAE dictionary
+does not jointly span. It says nothing about whether GLP's latent space is better
+\emph{organised} --- whether related concepts sit near each other, and whether a unit
+that wins one concept stays quiet on the rest. The SAE is trained with an explicit
+sparsity penalty pushing toward exactly that; GLP has no such term. We test both, against
+the SAE and against ESM's own FFN neurons (raw\_mlp) as a second baseline.
+
+\textbf{Family hierarchy.} For 8 Swiss-Prot families with 2+ annotated subtypes each
+(EF-hand 1--4, Ig-like C1/C2/V-type, RRM 1--2, zinc-finger C2H2/C4/RING, HTH myb-type
+1--2, GST N-/C-terminal, t-/v-SNARE, transit-peptide mitochondrion/chloroplast --- 24
+concepts, groupings in \texttt{configs/discovery\_families.yaml}, pending a
+domain-expert check), we pool each winning unit's activation to one vector per held-out
+test protein (500-protein subsample) and test whether within-family pairs correlate more
+than between-family pairs (self-pairs excluded; permutation test on family labels for the
+null). SAE and raw\_mlp recover the hierarchy; GLP does not (Fig.~\ref{fig:discoveryhierarchy}):
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+representation & within-family & between-family & difference & permutation $p$ \\
+\midrule
+GLP      & $0.007$ & $0.021$ & $-0.014$ & $0.587$ (not significant) \\
+SAE      & $0.172$ & $0.035$ & $+0.137$ & $0.001$ \\
+raw\_mlp & $0.322$ & $0.171$ & $+0.151$ & $0.001$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Concept-concept co-occurrence among these 24 concepts is $\approx\!0.2\%$ everywhere, so
+the SAE/raw\_mlp signal is not from shared annotations --- the units themselves cluster
+by family.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/discovery_hierarchy.png}
+\caption{Winning-unit correlation matrices, concepts ordered by family (white
+gridlines mark family boundaries), 500 test proteins. SAE and raw\_mlp show visible
+block-diagonal structure; GLP does not.}
+\label{fig:discoveryhierarchy}
+\end{figure}
+
+\textbf{Selectivity.} For every winning unit (one per concept-representation pair, $416$
+total) we compute its selectivity ratio (test AUC on its own concept over its
+second-best AUC across the other 103 concepts) and how many other concepts it exceeds
+AUC $0.8$ on --- the full unit$\times$concept AUC matrix, built fresh since
+\texttt{probe\_concept} never keeps it (Fig.~\ref{fig:discoveryselectivity}). SAE is the
+outlier in the intended direction: median $2$ other concepts above $0.8$, $56\%$ of units
+polysemantic. GLP is among the worst: median $10$, $95\%$ polysemantic, tied with
+raw\_mlp ($10$, $94\%$) and above raw\_layer ($6$, $90\%$). Selectivity ratios cluster
+near $1.0$ everywhere (median $0.90$--$0.97$): even the typical winning unit has some
+other concept it scores almost as well on.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/discovery_selectivity.png}
+\caption{(a) ECDF of selectivity ratio --- all four representations overlap heavily
+near ratio $1.0$, not a clean separation on its own. (b) Distribution of \# other
+concepts a unit exceeds AUC $0.8$ on, where the separation is unambiguous: SAE is
+tightly concentrated near $0$--$2$; GLP and raw\_mlp spread up to $30$--$40$.}
+\label{fig:discoveryselectivity}
+\end{figure}
+
+A weaker, illustrative check agrees: unsupervised clustering (k-means $k{=}5$, HDBSCAN)
+of all 104 winning units against Swiss-Prot category gives low, method-dependent
+agreement for both GLP and SAE (ARI $0.12$--$0.16$ for k-means, $\approx\!0$ for HDBSCAN;
+category is dominated by domain/motif at 80/104, which caps how informative this check
+can be), and neither representation separates cleanly under t-SNE (perplexity 30). Too
+weak to move the conclusion either way, but reported for completeness.
+
+GLP has no sparsity objective pushing units toward one-concept-per-unit organisation, so
+the information the SAE's dictionary cannot jointly represent ends up packed into units
+that are themselves less selective and less family-structured than the SAE's. GLP finds
+information the SAE's dictionary structurally lacks; it does not organise that
+information better than the SAE does. These are different claims, and only the first is
+supported here.
+
 \subsection{On-manifold steering}
 \label{sec:steering-results}
 
@@ -382,6 +616,7 @@ is implemented under the same methodology but has not been re-run since the corr
 above, and no result is claimed for it here.
 
 \section{Limitations}
+\label{sec:limitations}
 
 (i) We report \emph{training} loss (smoothed over the last 500 steps), not held-out
 validation loss; the compute-scaling collapse should be read with that caveat.
@@ -392,8 +627,9 @@ anchors (\%Loss-Recovered, SAE-reconstruction FD) are now run for the $24$-block
 model and pass, but only for that one cell of the scaling grid, not the full $8$-run grid.
 (iv) We study a single host (ESM-2-8M) at a single hook layer, and vary only depth (not
 width) in the scaling grid.
-(v) Concept \emph{probing} of GLP's internal units is \emph{not} validated in this paper
-and is stated only as future work.
+(v) The probing comparison is a single-unit, single-concept protocol on one host and one
+hook layer; it says which representation isolates a concept most cleanly, not whether those
+units are causal.
 (vi) The steering result covers one intervention (diff-of-means hydrophobicity) on one
 concept and one host, with $40$ starting proteins per direction; it has not been checked
 for generalization, and the SAE-feature-clamp intervention has not been re-run under these
@@ -412,6 +648,7 @@ could otherwise have used are demonstrably unreliable on these sequences
 (Appendix~\ref{app:steer-metrics}).
 
 \section{Next steps}
+\label{sec:next-steps}
 
 The naturalness result points at the decoding protocol rather than the prior, so the
 most direct next step is a decoder that does not destroy the fold: steering all layers and
@@ -423,7 +660,9 @@ been applied to it. Beyond steering: validate GLP's meta-neurons as a concept-pr
 substrate against the InterPLM SAE (with a nonlinearity falsification test); re-run the
 generation-quality gate across the full depth $\times$ data-scale grid rather than one cell;
 and extend the scaling grid to a wider compute range and to ESM-2-650M to constrain $E$ and
-test whether the power law holds across host sizes.
+test whether the power law holds across host sizes. For probing, the natural next step is
+causal: intervening on the meta-neurons that win a concept, rather than only reading them
+out.
 
 \newpage
 \appendix
@@ -470,6 +709,388 @@ model quality. Fig.~\ref{fig:fdsteps} makes this explicit --- FD falls steeply f
 report FD as a \emph{ratio} to the FD(train, val) real-vs-real lower bound, which is the
 smallest FD achievable from finite samples of the true distribution; a ratio of $1$ would
 be perfect, and the ratio is comparable across models trained on the same data.
+
+\section{Per-concept probing and falsification tables}
+\label{app:tables}
+
+Full per-concept/property numbers behind Table~\ref{tab:probing}, Fig.~\ref{fig:probingauc}, and Fig.~\ref{fig:probingscatter} (Section~\ref{sec:probing-results}).
+
+\begin{longtable}{p{6.0cm}rrrr}
+\caption{Per-concept test AUC, all 104 discrete Swiss-Prot concepts (24-block/500M model). Bold = best of the four representations.} \label{tab:app-discrete} \\
+\toprule
+Concept & GLP & SAE & Raw-layer & Raw-MLP \\
+\midrule
+\endfirsthead
+\multicolumn{5}{l}{\textit{(continued)}} \\
+\toprule
+Concept & GLP & SAE & Raw-layer & Raw-MLP \\
+\midrule
+\endhead
+\midrule \multicolumn{5}{r}{\textit{continued on next page}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+\multicolumn{5}{l}{\textbf{Domain / motif (n=86)}} \\
+Compositional bias\_Acidic residues & \textbf{0.973} & 0.966 & 0.922 & 0.910 \\
+Compositional bias\_Basic and acidic residues & \textbf{0.827} & 0.716 & 0.786 & 0.759 \\
+Compositional bias\_Basic residues & \textbf{0.946} & 0.926 & 0.794 & 0.891 \\
+Compositional bias\_Gly residues & \textbf{0.935} & 0.874 & 0.899 & 0.902 \\
+Compositional bias\_Low complexity & \textbf{0.866} & 0.808 & 0.849 & 0.861 \\
+Compositional bias\_Polar residues & 0.869 & 0.820 & 0.795 & \textbf{0.876} \\
+Compositional bias\_Pro residues & \textbf{0.948} & 0.889 & 0.907 & 0.908 \\
+Domain\_C-type lectin & \textbf{0.954} & 0.891 & 0.834 & 0.932 \\
+Domain\_C1q & \textbf{0.962} & 0.843 & 0.829 & 0.941 \\
+Domain\_CTCK & \textbf{0.757} & 0.657 & 0.704 & 0.751 \\
+Domain\_Collagen-like & \textbf{0.987} & 0.965 & 0.978 & 0.980 \\
+Domain\_DHHC & \textbf{0.871} & 0.855 & 0.813 & 0.780 \\
+Domain\_EF-hand 1 & \textbf{0.662} & 0.601 & 0.582 & 0.615 \\
+Domain\_EF-hand 2 & \textbf{0.748} & 0.747 & 0.677 & 0.745 \\
+Domain\_EF-hand 3 & \textbf{0.734} & 0.714 & 0.666 & 0.712 \\
+Domain\_EF-hand 4 & 0.675 & 0.649 & 0.645 & \textbf{0.696} \\
+Domain\_EGF-like & \textbf{0.948} & 0.925 & 0.919 & 0.913 \\
+Domain\_F-box & \textbf{0.995} & 0.966 & 0.894 & 0.916 \\
+Domain\_Fe2OG dioxygenase & \textbf{0.950} & 0.806 & 0.879 & 0.871 \\
+Domain\_G-alpha & \textbf{0.939} & 0.850 & 0.782 & 0.881 \\
+Domain\_GST C-terminal & \textbf{0.903} & 0.737 & 0.757 & 0.812 \\
+Domain\_GST N-terminal & \textbf{0.980} & 0.942 & 0.873 & 0.953 \\
+Domain\_Globin & \textbf{0.912} & 0.772 & 0.700 & 0.864 \\
+Domain\_H15 & \textbf{0.990} & 0.932 & 0.962 & 0.959 \\
+Domain\_HTH myb-type 1 & \textbf{0.963} & 0.911 & 0.939 & 0.942 \\
+Domain\_HTH myb-type 2 & \textbf{0.938} & 0.852 & 0.879 & 0.915 \\
+Domain\_IGFBP N-terminal & \textbf{0.759} & 0.752 & 0.670 & 0.758 \\
+Domain\_Ig-like & 0.917 & 0.868 & 0.847 & \textbf{0.935} \\
+Domain\_Ig-like C1-type & \textbf{0.952} & 0.884 & 0.788 & 0.942 \\
+Domain\_Ig-like C2-type & \textbf{0.812} & 0.704 & 0.658 & 0.758 \\
+Domain\_Ig-like C2-type 1 & \textbf{0.752} & 0.740 & 0.712 & 0.736 \\
+Domain\_Ig-like C2-type 2 & 0.772 & 0.721 & 0.737 & \textbf{0.794} \\
+Domain\_Ig-like V-type & \textbf{0.904} & 0.875 & 0.808 & 0.876 \\
+Domain\_J & \textbf{0.971} & 0.964 & 0.873 & 0.950 \\
+Domain\_K-box & \textbf{0.941} & 0.839 & 0.783 & 0.893 \\
+Domain\_LIM zinc-binding 1 & \textbf{0.829} & 0.791 & 0.777 & 0.773 \\
+Domain\_LIM zinc-binding 2 & \textbf{0.775} & 0.679 & 0.718 & 0.771 \\
+Domain\_MADS-box & 0.909 & 0.871 & 0.754 & \textbf{0.919} \\
+Domain\_MARVEL & \textbf{0.975} & 0.817 & 0.910 & 0.967 \\
+Domain\_MPN & 0.763 & \textbf{0.763} & 0.636 & 0.748 \\
+Domain\_N-acetyltransferase & \textbf{0.979} & 0.920 & 0.849 & 0.925 \\
+Domain\_Nudix hydrolase & \textbf{0.970} & 0.882 & 0.860 & 0.945 \\
+Domain\_PB1 & 0.902 & 0.676 & 0.908 & \textbf{0.980} \\
+Domain\_PDZ & 0.967 & 0.883 & 0.855 & \textbf{0.974} \\
+Domain\_PH & \textbf{0.885} & 0.799 & 0.840 & 0.867 \\
+Domain\_PPIase cyclophilin-type & 0.908 & 0.793 & 0.907 & \textbf{0.923} \\
+Domain\_Peptidase S1 & 0.981 & 0.940 & 0.917 & \textbf{0.986} \\
+Domain\_Protein kinase & 0.964 & 0.941 & 0.962 & \textbf{0.968} \\
+Domain\_RRM & \textbf{0.994} & 0.963 & 0.974 & 0.987 \\
+Domain\_RRM 1 & \textbf{0.856} & 0.826 & 0.786 & 0.853 \\
+Domain\_RRM 2 & \textbf{0.833} & 0.818 & 0.820 & 0.822 \\
+Domain\_SH2 & \textbf{0.845} & 0.687 & 0.751 & 0.748 \\
+Domain\_SH3 & \textbf{0.996} & 0.974 & 0.914 & 0.982 \\
+Domain\_Sm & 0.888 & 0.742 & 0.842 & \textbf{0.926} \\
+Domain\_THD & \textbf{0.916} & 0.801 & 0.778 & 0.893 \\
+Domain\_TSP type-1 & 0.677 & 0.681 & 0.657 & \textbf{0.781} \\
+Domain\_Thioredoxin & \textbf{0.959} & 0.861 & 0.867 & 0.941 \\
+Domain\_Tyrosine-protein phosphatase & \textbf{0.880} & 0.819 & 0.835 & 0.816 \\
+Domain\_UBC core & \textbf{0.866} & 0.625 & 0.680 & 0.816 \\
+Domain\_UPAR/Ly6 & 0.857 & 0.910 & 0.810 & \textbf{0.915} \\
+Domain\_Ubiquitin-like & \textbf{0.994} & 0.892 & 0.879 & 0.970 \\
+Domain\_bHLH & 0.914 & 0.811 & 0.866 & \textbf{0.918} \\
+Domain\_bZIP & \textbf{0.982} & 0.934 & 0.961 & 0.981 \\
+Domain\_sHSP & \textbf{0.992} & 0.986 & 0.976 & 0.992 \\
+Domain\_t-SNARE coiled-coil homology & \textbf{0.886} & 0.843 & 0.786 & 0.841 \\
+Domain\_v-SNARE coiled-coil homology & \textbf{0.971} & 0.964 & 0.893 & 0.957 \\
+Motif\_Nuclear localization signal & 0.826 & \textbf{0.881} & 0.741 & 0.837 \\
+Motif\_Nudix box & \textbf{0.996} & 0.978 & 0.956 & 0.991 \\
+Motif\_Switch 1 & \textbf{0.990} & 0.971 & 0.938 & 0.984 \\
+Motif\_Switch 2 & \textbf{0.980} & 0.946 & 0.931 & 0.969 \\
+Region\_Alpha-1 & \textbf{0.865} & 0.740 & 0.753 & 0.848 \\
+Region\_Alpha-2 & 0.811 & 0.700 & \textbf{0.847} & 0.810 \\
+Region\_Alpha-3 & \textbf{0.994} & 0.959 & 0.830 & 0.985 \\
+Region\_Basic motif & 0.983 & 0.986 & 0.954 & \textbf{0.988} \\
+Region\_Disordered & 0.884 & 0.776 & \textbf{0.885} & 0.878 \\
+Region\_Helix-loop-helix motif & \textbf{0.942} & 0.891 & 0.936 & 0.930 \\
+Region\_LID & \textbf{0.886} & 0.799 & 0.839 & 0.827 \\
+Region\_Leucine-zipper & \textbf{0.936} & 0.905 & 0.883 & 0.933 \\
+Region\_NMP & 0.937 & 0.935 & 0.911 & \textbf{0.959} \\
+Region\_Switch-II & \textbf{0.973} & 0.963 & 0.942 & 0.934 \\
+Zinc finger\_C2H2-type 1 & 0.850 & 0.806 & 0.804 & \textbf{0.871} \\
+Zinc finger\_C2H2-type 2 & \textbf{0.821} & 0.790 & 0.773 & 0.788 \\
+Zinc finger\_C2H2-type 3 & \textbf{0.844} & 0.743 & 0.787 & 0.834 \\
+Zinc finger\_C4-type & 0.713 & \textbf{0.721} & 0.619 & 0.567 \\
+Zinc finger\_RING-type & \textbf{0.966} & 0.948 & 0.888 & 0.961 \\
+Zinc finger\_any & \textbf{0.927} & 0.873 & 0.835 & 0.923 \\
+\multicolumn{5}{l}{\textbf{Chemical / PTM (n=9)}} \\
+Disulfide bond & \textbf{0.997} & 0.978 & 0.921 & 0.974 \\
+Glycosylation\_N-linked (GlcNAc\ldots{}) asparagine & \textbf{0.993} & 0.982 & 0.906 & 0.982 \\
+Glycosylation\_any & \textbf{0.960} & 0.925 & 0.881 & 0.935 \\
+Lipidation & 0.868 & 0.810 & \textbf{0.912} & 0.886 \\
+Modified residue\_N6-acetyllysine & 0.963 & \textbf{0.967} & 0.914 & 0.958 \\
+Modified residue\_N6-succinyllysine & 0.953 & \textbf{0.956} & 0.888 & 0.937 \\
+Modified residue\_Phosphoserine & \textbf{0.975} & 0.974 & 0.867 & 0.944 \\
+Modified residue\_Phosphothreonine & 0.980 & \textbf{0.987} & 0.896 & 0.839 \\
+Modified residue\_Phosphotyrosine & 0.976 & 0.979 & 0.922 & \textbf{0.981} \\
+\multicolumn{5}{l}{\textbf{Structural (n=4)}} \\
+Beta strand & \textbf{0.768} & 0.629 & 0.616 & 0.668 \\
+Coiled coil & \textbf{0.878} & 0.837 & 0.759 & 0.826 \\
+Helix & \textbf{0.780} & 0.618 & 0.629 & 0.700 \\
+Turn & \textbf{0.604} & 0.556 & 0.553 & 0.594 \\
+\multicolumn{5}{l}{\textbf{Topology / localization (n=3)}} \\
+Transit peptide\_Chloroplast & \textbf{0.978} & 0.975 & 0.875 & 0.959 \\
+Transit peptide\_Mitochondrion & \textbf{0.921} & 0.895 & 0.899 & 0.873 \\
+Transit peptide\_any & \textbf{0.944} & 0.929 & 0.904 & 0.907 \\
+\multicolumn{5}{l}{\textbf{Binding / catalytic (n=2)}} \\
+Active site\_Proton acceptor & 0.773 & 0.691 & 0.775 & \textbf{0.846} \\
+Active site\_any & 0.715 & 0.674 & \textbf{0.725} & 0.688 \\
+\end{longtable}
+
+\begin{table}[h]
+\centering
+\caption{Per-property test Spearman $\rho$, all 10 continuous sequence properties (24-block/500M model). Bold = best of the four representations.}
+\label{tab:app-continuous}
+\begin{tabular}{lrrrr}
+\toprule
+Property & GLP & SAE & Raw-layer & Raw-MLP \\
+\midrule
+aliphatic index & \textbf{0.660} & 0.598 & 0.621 & 0.563 \\
+aromaticity & \textbf{0.724} & 0.720 & 0.479 & 0.507 \\
+charge at ph7 & 0.577 & 0.504 & 0.362 & \textbf{0.595} \\
+gravy & \textbf{0.815} & 0.628 & 0.519 & 0.646 \\
+helix fraction & \textbf{0.612} & 0.598 & 0.290 & 0.499 \\
+instability index & 0.546 & \textbf{0.556} & 0.465 & 0.545 \\
+isoelectric point & 0.582 & 0.535 & 0.380 & \textbf{0.599} \\
+molecular weight & 0.723 & \textbf{0.754} & 0.447 & 0.461 \\
+sheet fraction & \textbf{0.769} & 0.592 & 0.632 & 0.678 \\
+turn fraction & \textbf{0.620} & 0.560 & 0.491 & 0.535 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{longtable}{p{6.2cm}p{1.6cm}rr}
+\caption{Falsification check: for every concept where a GLP meta-neuron beats every SAE feature (94/104), the held-out $R^2$ of regressing that meta-neuron's activation on the SAE's full 10{,}240-feature dictionary. Sorted ascending (lowest $R^2$ = strongest candidates for information the SAE dictionary does not linearly span). Distribution: mean 0.752, median 0.756, IQR [0.690, 0.841], 36\% above 0.8.} \label{tab:app-falsification} \\
+\toprule
+Concept & Winning meta-neuron ($u$, unit) & $R^2$ \\
+\midrule
+\endfirsthead
+\multicolumn{3}{l}{\textit{(continued)}} \\
+\toprule
+Concept & Winning meta-neuron ($u$, unit) & $R^2$ \\
+\midrule
+\endhead
+\midrule \multicolumn{3}{r}{\textit{continued on next page}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+Domain\_Sm & $u{=}0.5$, unit 20914 & 0.332 \\
+Domain\_LIM zinc-binding 2 & $u{=}0.9$, unit 23043 & 0.411 \\
+Domain\_PDZ & $u{=}0.9$, unit 23229 & 0.497 \\
+Compositional bias\_Acidic residues & $u{=}0.9$, unit 8455 & 0.514 \\
+Domain\_Ubiquitin-like & $u{=}0.9$, unit 14140 & 0.522 \\
+Helix & $u{=}0.9$, unit 3472 & 0.546 \\
+Domain\_THD & $u{=}0.9$, unit 4078 & 0.563 \\
+Domain\_Globin & $u{=}0.9$, unit 13975 & 0.575 \\
+Domain\_PB1 & $u{=}0.9$, unit 13975 & 0.575 \\
+Domain\_PPIase cyclophilin-type & $u{=}0.9$, unit 18688 & 0.588 \\
+Domain\_EF-hand 4 & $u{=}0.9$, unit 12173 & 0.596 \\
+Region\_LID & $u{=}0.9$, unit 26724 & 0.601 \\
+Domain\_t-SNARE coiled-coil homology & $u{=}0.9$, unit 16644 & 0.612 \\
+Motif\_Switch 2 & $u{=}0.5$, unit 26521 & 0.619 \\
+Zinc finger\_RING-type & $u{=}0.5$, unit 24926 & 0.622 \\
+Domain\_EGF-like & $u{=}0.9$, unit 15026 & 0.644 \\
+Domain\_G-alpha & $u{=}0.9$, unit 18912 & 0.655 \\
+Domain\_LIM zinc-binding 1 & $u{=}0.9$, unit 19181 & 0.670 \\
+Domain\_C-type lectin & $u{=}0.9$, unit 12361 & 0.687 \\
+Domain\_CTCK & $u{=}0.9$, unit 12361 & 0.687 \\
+Region\_Alpha-2 & $u{=}0.9$, unit 12361 & 0.687 \\
+Region\_Switch-II & $u{=}0.9$, unit 25714 & 0.687 \\
+Domain\_sHSP & $u{=}0.9$, unit 19309 & 0.688 \\
+Domain\_F-box & $u{=}0.9$, unit 15083 & 0.690 \\
+Compositional bias\_Basic and acidic residues & $u{=}0.9$, unit 8044 & 0.690 \\
+Motif\_Nudix box & $u{=}0.9$, unit 21801 & 0.695 \\
+Turn & $u{=}0.9$, unit 6039 & 0.695 \\
+Domain\_EF-hand 2 & $u{=}0.9$, unit 7980 & 0.702 \\
+Domain\_IGFBP N-terminal & $u{=}0.9$, unit 22611 & 0.703 \\
+Active site\_Proton acceptor & $u{=}0.5$, unit 26160 & 0.704 \\
+Domain\_C1q & $u{=}0.9$, unit 10286 & 0.706 \\
+Domain\_bHLH & $u{=}0.9$, unit 19767 & 0.718 \\
+Domain\_EF-hand 1 & $u{=}0.9$, unit 23994 & 0.720 \\
+Domain\_EF-hand 3 & $u{=}0.9$, unit 20526 & 0.729 \\
+Motif\_Switch 1 & $u{=}0.9$, unit 26867 & 0.730 \\
+Domain\_J & $u{=}0.9$, unit 27480 & 0.730 \\
+Domain\_RRM & $u{=}0.9$, unit 24887 & 0.731 \\
+Domain\_PH & $u{=}0.9$, unit 28698 & 0.733 \\
+Domain\_GST N-terminal & $u{=}0.5$, unit 30322 & 0.734 \\
+Domain\_Ig-like C2-type & $u{=}0.9$, unit 12319 & 0.737 \\
+Domain\_UBC core & $u{=}0.9$, unit 12698 & 0.739 \\
+Domain\_SH2 & $u{=}0.9$, unit 12698 & 0.739 \\
+Domain\_Thioredoxin & $u{=}0.9$, unit 29393 & 0.743 \\
+Coiled coil & $u{=}0.9$, unit 9432 & 0.750 \\
+Domain\_Nudix hydrolase & $u{=}0.9$, unit 16904 & 0.751 \\
+Region\_Helix-loop-helix motif & $u{=}0.9$, unit 21956 & 0.751 \\
+Compositional bias\_Polar residues & $u{=}0.9$, unit 590 & 0.756 \\
+Beta strand & $u{=}0.9$, unit 16205 & 0.757 \\
+Domain\_bZIP & $u{=}0.9$, unit 20128 & 0.758 \\
+Domain\_HTH myb-type 2 & $u{=}0.9$, unit 20184 & 0.762 \\
+Compositional bias\_Pro residues & $u{=}0.9$, unit 21640 & 0.762 \\
+Zinc finger\_C2H2-type 3 & $u{=}0.9$, unit 28162 & 0.765 \\
+Domain\_DHHC & $u{=}0.9$, unit 17455 & 0.765 \\
+Zinc finger\_C2H2-type 2 & $u{=}0.9$, unit 25886 & 0.773 \\
+Domain\_Ig-like C2-type 1 & $u{=}0.9$, unit 26790 & 0.777 \\
+Domain\_Tyrosine-protein phosphatase & $u{=}0.9$, unit 14390 & 0.780 \\
+Domain\_Fe2OG dioxygenase & $u{=}0.9$, unit 24008 & 0.786 \\
+Domain\_MARVEL & $u{=}0.5$, unit 27041 & 0.788 \\
+Domain\_v-SNARE coiled-coil homology & $u{=}0.9$, unit 21460 & 0.790 \\
+Domain\_HTH myb-type 1 & $u{=}0.9$, unit 14786 & 0.798 \\
+Region\_Alpha-3 & $u{=}0.9$, unit 9122 & 0.801 \\
+Domain\_RRM 2 & $u{=}0.9$, unit 25236 & 0.804 \\
+Compositional bias\_Low complexity & $u{=}0.9$, unit 30664 & 0.805 \\
+Domain\_Collagen-like & $u{=}0.9$, unit 10974 & 0.806 \\
+Domain\_Ig-like C2-type 2 & $u{=}0.9$, unit 8105 & 0.818 \\
+Transit peptide\_Mitochondrion & $u{=}0.9$, unit 13498 & 0.819 \\
+Region\_NMP & $u{=}0.9$, unit 26894 & 0.831 \\
+Region\_Disordered & $u{=}0.9$, unit 29328 & 0.831 \\
+Domain\_RRM 1 & $u{=}0.9$, unit 7843 & 0.833 \\
+Region\_Alpha-1 & $u{=}0.9$, unit 9498 & 0.837 \\
+Domain\_SH3 & $u{=}0.9$, unit 20077 & 0.843 \\
+Zinc finger\_any & $u{=}0.9$, unit 22205 & 0.850 \\
+Domain\_H15 & $u{=}0.9$, unit 23219 & 0.851 \\
+Zinc finger\_C2H2-type 1 & $u{=}0.9$, unit 27348 & 0.855 \\
+Domain\_GST C-terminal & $u{=}0.9$, unit 30479 & 0.858 \\
+Domain\_K-box & $u{=}0.9$, unit 6707 & 0.867 \\
+Region\_Leucine-zipper & $u{=}0.9$, unit 6707 & 0.867 \\
+Domain\_Peptidase S1 & $u{=}0.9$, unit 28973 & 0.870 \\
+Transit peptide\_Chloroplast & $u{=}0.9$, unit 13480 & 0.872 \\
+Transit peptide\_any & $u{=}0.9$, unit 13480 & 0.872 \\
+Compositional bias\_Gly residues & $u{=}0.9$, unit 633 & 0.875 \\
+Domain\_Ig-like V-type & $u{=}0.9$, unit 29950 & 0.879 \\
+Domain\_Ig-like & $u{=}0.9$, unit 29950 & 0.879 \\
+Domain\_Ig-like C1-type & $u{=}0.9$, unit 23547 & 0.892 \\
+Domain\_N-acetyltransferase & $u{=}0.9$, unit 19170 & 0.896 \\
+Domain\_Protein kinase & $u{=}0.9$, unit 4491 & 0.906 \\
+Lipidation & $u{=}0.9$, unit 6334 & 0.918 \\
+Compositional bias\_Basic residues & $u{=}0.9$, unit 1776 & 0.931 \\
+Domain\_MADS-box & $u{=}0.9$, unit 9776 & 0.945 \\
+Glycosylation\_any & $u{=}0.9$, unit 5872 & 0.949 \\
+Active site\_any & $u{=}0.9$, unit 4948 & 0.953 \\
+Glycosylation\_N-linked (GlcNAc\ldots{}) asparagine & $u{=}0.5$, unit 4948 & 0.956 \\
+Modified residue\_Phosphoserine & $u{=}0.9$, unit 4206 & 0.960 \\
+Disulfide bond & $u{=}0.9$, unit 10335 & 0.963 \\
+\end{longtable}
+
+\begin{longtable}{p{6.8cm}rp{2.0cm}}
+\caption{Joint SAE top-$k$ probe, all 94 falsification-check concepts: $R^2$
+(Table~\ref{tab:app-falsification}) and $k^*$, the smallest $k \in \{2,5,10,20\}$ at
+which a joint logistic probe over the SAE's own top-$k$ features reaches GLP's test AUC
+(``never'' = no $k \le 20$ does). Sorted by $k^*$ (``never'' first, the 15-concept
+discovery list), then by $R^2$ ascending within each $k^*$ group --- deliberately not
+sorted by $R^2$ alone, since Section~\ref{sec:probing-results} shows $R^2$ does not order
+this list the way the falsification-check table's ordering might suggest.}
+\label{tab:app-topk} \\
+\toprule
+Concept & $R^2$ & $k^*$ \\
+\midrule
+\endfirsthead
+\multicolumn{3}{l}{\textit{(continued)}} \\
+\toprule
+Concept & $R^2$ & $k^*$ \\
+\midrule
+\endhead
+\midrule \multicolumn{3}{r}{\textit{continued on next page}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+Domain\_Ubiquitin-like & 0.522 & never \\
+Domain\_sHSP & 0.688 & never \\
+Domain\_F-box & 0.690 & never \\
+Motif\_Nudix box & 0.695 & never \\
+Active site\_Proton acceptor & 0.704 & never \\
+Domain\_EF-hand 3 & 0.729 & never \\
+Domain\_Thioredoxin & 0.743 & never \\
+Domain\_Nudix hydrolase & 0.751 & never \\
+Beta strand & 0.757 & never \\
+Domain\_MARVEL & 0.788 & never \\
+Domain\_RRM 1 & 0.833 & never \\
+Domain\_SH3 & 0.843 & never \\
+Domain\_GST C-terminal & 0.858 & never \\
+Domain\_N-acetyltransferase & 0.896 & never \\
+Disulfide bond & 0.963 & never \\
+Compositional bias\_Acidic residues & 0.514 & 2 \\
+Domain\_EF-hand 4 & 0.596 & 2 \\
+Domain\_IGFBP N-terminal & 0.703 & 2 \\
+Domain\_J & 0.730 & 2 \\
+Domain\_DHHC & 0.765 & 2 \\
+Transit peptide\_Mitochondrion & 0.819 & 2 \\
+Region\_NMP & 0.831 & 2 \\
+Region\_Leucine-zipper & 0.867 & 2 \\
+Transit peptide\_any & 0.872 & 2 \\
+Compositional bias\_Basic residues & 0.931 & 2 \\
+Active site\_any & 0.953 & 2 \\
+Modified residue\_Phosphoserine & 0.960 & 2 \\
+Domain\_PDZ & 0.497 & 5 \\
+Domain\_THD & 0.563 & 5 \\
+Domain\_PB1 & 0.575 & 5 \\
+Domain\_t-SNARE coiled-coil homology & 0.612 & 5 \\
+Region\_Switch-II & 0.687 & 5 \\
+Domain\_bHLH & 0.718 & 5 \\
+Domain\_EF-hand 1 & 0.720 & 5 \\
+Coiled coil & 0.750 & 5 \\
+Compositional bias\_Polar residues & 0.756 & 5 \\
+Domain\_bZIP & 0.758 & 5 \\
+Compositional bias\_Pro residues & 0.762 & 5 \\
+Zinc finger\_C2H2-type 2 & 0.773 & 5 \\
+Domain\_Ig-like C2-type 1 & 0.777 & 5 \\
+Domain\_Tyrosine-protein phosphatase & 0.780 & 5 \\
+Domain\_v-SNARE coiled-coil homology & 0.790 & 5 \\
+Compositional bias\_Low complexity & 0.805 & 5 \\
+Domain\_Collagen-like & 0.806 & 5 \\
+Region\_Alpha-1 & 0.837 & 5 \\
+Zinc finger\_any & 0.850 & 5 \\
+Zinc finger\_C2H2-type 1 & 0.855 & 5 \\
+Domain\_K-box & 0.867 & 5 \\
+Domain\_Peptidase S1 & 0.870 & 5 \\
+Domain\_Ig-like V-type & 0.879 & 5 \\
+Domain\_Ig-like & 0.879 & 5 \\
+Domain\_Protein kinase & 0.906 & 5 \\
+Lipidation & 0.918 & 5 \\
+Domain\_MADS-box & 0.945 & 5 \\
+Glycosylation\_N-linked (GlcNAc\ldots{}) asparagine & 0.956 & 5 \\
+Domain\_Sm & 0.332 & 10 \\
+Helix & 0.546 & 10 \\
+Domain\_Globin & 0.575 & 10 \\
+Domain\_PPIase cyclophilin-type & 0.588 & 10 \\
+Region\_LID & 0.601 & 10 \\
+Motif\_Switch 2 & 0.619 & 10 \\
+Zinc finger\_RING-type & 0.622 & 10 \\
+Domain\_EGF-like & 0.644 & 10 \\
+Domain\_G-alpha & 0.655 & 10 \\
+Domain\_CTCK & 0.687 & 10 \\
+Compositional bias\_Basic and acidic residues & 0.690 & 10 \\
+Turn & 0.695 & 10 \\
+Domain\_EF-hand 2 & 0.702 & 10 \\
+Domain\_RRM & 0.731 & 10 \\
+Domain\_GST N-terminal & 0.734 & 10 \\
+Domain\_Ig-like C2-type & 0.737 & 10 \\
+Domain\_SH2 & 0.739 & 10 \\
+Domain\_Fe2OG dioxygenase & 0.786 & 10 \\
+Region\_Alpha-3 & 0.801 & 10 \\
+Region\_Disordered & 0.831 & 10 \\
+Domain\_H15 & 0.851 & 10 \\
+Compositional bias\_Gly residues & 0.875 & 10 \\
+Glycosylation\_any & 0.949 & 10 \\
+Domain\_LIM zinc-binding 2 & 0.411 & 20 \\
+Domain\_LIM zinc-binding 1 & 0.670 & 20 \\
+Domain\_C-type lectin & 0.687 & 20 \\
+Region\_Alpha-2 & 0.687 & 20 \\
+Domain\_C1q & 0.706 & 20 \\
+Motif\_Switch 1 & 0.730 & 20 \\
+Domain\_PH & 0.733 & 20 \\
+Domain\_UBC core & 0.739 & 20 \\
+Region\_Helix-loop-helix motif & 0.751 & 20 \\
+Domain\_HTH myb-type 2 & 0.762 & 20 \\
+Zinc finger\_C2H2-type 3 & 0.765 & 20 \\
+Domain\_HTH myb-type 1 & 0.798 & 20 \\
+Domain\_RRM 2 & 0.804 & 20 \\
+Domain\_Ig-like C2-type 2 & 0.818 & 20 \\
+Transit peptide\_Chloroplast & 0.872 & 20 \\
+Domain\_Ig-like C1-type & 0.892 & 20 \\
+\end{longtable}
 
 \section{Hook parity and the data pipeline}
 \label{app:pipeline}
