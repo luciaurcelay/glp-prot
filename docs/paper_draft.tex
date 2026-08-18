@@ -39,33 +39,23 @@
 \maketitle
 
 \begin{abstract}
-(ingore for now) The Generative Latent Prior (GLP) is a diffusion model \emph{of a frozen network's
-activations}, introduced for large language models. We port GLP to protein language
-models: we build a data pipeline that reads ESM-2 activations at the exact hook point
-InterPLM's released sparse autoencoders (SAEs) consume, train a GLP via flow matching, and characterize its generation quality and how that
-quality scales. Across a grid of model depth (3--24 transformer-style blocks) and
-training data (100M vs.\ 500M activations), GLP trains stably below the trivial-predictor
-floor, its samples lie on the real activation manifold, and Fréchet Distance (FD)
-improves monotonically with both depth and data. The diffusion loss follows a
-compute power law: all eight runs collapse onto a single loss-versus-FLOPs curve, with
-our protein-activation models sitting below the published LLM-activation reference. Using
-this substrate, we test GLP as an on-manifold prior for activation steering. Steering
-hydrophobicity bidirectionally --- the same diff-of-means vector applied in both directions
-from separate held-out sets --- GLP-correction separates the two trajectories from
-$\alpha{=}0.5$ onward (up-minus-down $+1.58$ $\Delta$GRAVY at $\alpha{=}2$,
-$p{=}2{\times}10^{-13}$), while naive steering is indistinguishable from zero until
-$\alpha{=}3$: the correction is what makes steering effective. The accompanying
-\emph{naturalness} claim does not hold. The correction carries its own concept drift
-(+1.15 $\Delta$GRAVY with no steering applied, via Leu/Val enrichment), which we subtract
-throughout; and masked-Gibbs decoding halves structural confidence on its own --- the
-natural starting proteins fold at pTM $0.37$--$0.63$, the unsteered, uncorrected arm at
-$0.28$--$0.32$ --- so both arms are equally degraded, for reasons unrelated to GLP. We also
-find that generated sequences are \emph{more} typical under GLP than real proteins are at
-half the foldability, and that the naturalness metrics commonly used here (pseudo-perplexity,
-pLDDT) score known non-proteins above our own output. An SAE-feature steering experiment on
-a structural motif (zinc-finger) has not been re-run under these corrections and no result
-is claimed for it. Using GLP's internal units for concept probing is deliberately
-left as future work and is not claimed here.
+The Generative Latent Prior (GLP) is a diffusion model \emph{of a frozen network's
+activations}, introduced for large language models. We port it to protein language models: a
+pipeline that reads ESM-2 activations at the exact hook point InterPLM's released sparse
+autoencoders consume, a GLP trained by flow matching, and a characterization of how its
+generation quality scales. Across model depth (3--24 blocks) and training data (100M vs.\
+500M activations), Fréchet Distance improves monotonically with both, and all eight runs
+collapse onto a single loss-versus-compute curve lying below the published LLM-activation
+reference. We then test GLP as an on-manifold prior for activation steering. Steering
+hydrophobicity \emph{bidirectionally} --- the same contrast vector applied in both directions
+from separate held-out sets --- GLP-correction separates the two trajectories
+($+1.58$ $\Delta$GRAVY at $\alpha{=}2$, $p{=}2{\times}10^{-13}$) where naive steering does
+not: the correction is what makes steering effective. The accompanying \emph{naturalness}
+claim fails, and we trace why: masked-Gibbs decoding removes a quarter to a half of the
+structural confidence on its own, before any steering, so both arms degrade equally for
+reasons unrelated to GLP. We further find that the naturalness metrics used in this setting
+score known non-proteins above genuine output. Concept probing of GLP's internal units is
+left as future work.
 \end{abstract}
 
 \section{Introduction}

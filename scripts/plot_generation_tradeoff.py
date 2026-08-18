@@ -173,13 +173,15 @@ def main():
     #
     # One colour, shape for mask fraction: three shades of the same hue failed the palette's
     # own adjacency check (5.3-7.6 dE), and separating the series was never the point anyway.
+    # PURPLE_MID rather than the glp orange -- this figure compares decoding settings, not
+    # naive vs GLP-corrected arms, so borrowing the arm-identity colour would misread.
     def coverage(mask: float, rounds: int) -> float:
         return 1.0 - (1.0 - mask) ** rounds
 
     ok = {k: c for k, c in cells.items() if (c.get("degenerate_rate") or 0) < 0.25}
     bad = {k: c for k, c in cells.items() if (c.get("degenerate_rate") or 0) >= 0.25}
     shapes = {m: mk for m, mk in zip(sorted({k[0] for k in cells}), ("o", "s", "^", "D"))}
-    accent = style.method_color("glp")
+    accent = style.PURPLE_MID
 
     fig, (axT, axB) = plt.subplots(2, 1, figsize=(7.4, 7.0), sharex=True,
                                    gridspec_kw={"hspace": 0.12})
