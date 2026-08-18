@@ -842,18 +842,58 @@ the mechanism predicts *no* effect and none is found. The alpha=0 confound is no
 of hydrophobicity; it is a measurable property of the SDEdit operator with a per-property
 signature that can be predicted in advance.
 
+### 14.5a The instability gain is compositional — the order test comes out negative
+
+Instability was included because it is the one target a purely compositional artifact
+cannot produce *directly* (§14.3). Running the test says the **steering** is compositional
+too, which is a different and more interesting finding than the one it was meant to guard
+against.
+
+Every sequence splits exactly into a composition-determined part and an order excess,
+using the closed form for the expected index over permutations of its own residues
+(`scripts/analyze_instability_mechanism.py`; verified against exhaustive enumeration and
+50k shuffles). Splitting the steering-attributable divergence at the top alpha:
+
+| arm | total | composition | order excess | order share |
+|---|---|---|---|---|
+| corrected | +64.93 (p=4.2e-14) | +61.27 (p=2.1e-14) | +3.65 [95% CI −1.10, +8.41] (p=0.10) | 6% [−2%, 13%] |
+| naive | +17.01 (p=5.5e-05) | +19.21 (p=8.1e-07) | −2.19 [95% CI −7.54, +3.15] (p=0.68) | — |
+
+So **at most ~13% of the effect is order-specific**, and the point estimate is 6%. This is
+a bounded null, not an underpowered one.
+
+The composition change says what actually happened. Steering up enriches R +8.7pp,
+P +7.5pp, S +7.5pp and depletes V −5.9, L −5.7, F −2.6, I −2.5; steering down mirrors it.
+The "top dipeptides" (RR, RS, SP, SS, SR, RP, PS, PP) are simply every pair formable from
+{R, S, P} — they are a readout of composition, not of targeted adjacencies. That is also
+why the concentration statistic (5 dipeptides for 50% of the positive contributions) is
+not evidence of order targeting: three enriched residues generate ~9 elevated pairs.
+
+Three consequences:
+
+1. **All three properties are steered through the same channel: composition.** That
+   explains the effect sizes — hydrophobicity and charge are *purely* compositional and
+   move 3.46 and 3.61 pool SD, while instability has a component the intervention cannot
+   reach and moves 1.59 SD.
+2. **It explains the instability -> GRAVY leak of −0.54.** Enriching R/S/P while depleting
+   V/L/I/F *is* lowering hydrophobicity; the off-diagonal is the same composition change
+   read on another scale, not a separate failure.
+3. It is a real limitation to state: a diff-of-means direction at one layer, applied only
+   at masked positions, moves amino-acid composition. Whether steering all layers and all
+   tokens (Huang et al.) reaches order-level structure is untested here and is the natural
+   follow-up.
+
 ### 14.6 Still open
 
 - **Naturalness for the two new properties is unmeasured** — the fold stage
   (pLDDT/pTM) is running; nothing about foldability is claimed for charge or
   instability yet. The decoding-loop cost (§13.6) is property-independent, so it
   is expected to carry over unchanged.
-- The instability gain has not been decomposed into dipeptides yet, so we do not
-  know whether it came from a broad shift or from stacking a few high-DIWV pairs.
-  That check is the whole reason instability was included — run
-  `analyze_steering_confound.py` on that run.
-- The two leaking off-diagonals (charge->instability +0.60, instability->gravy
-  -0.54) are unexplained.
+- Whether steering all layers and all tokens (Huang et al.) reaches the
+  order-level component our single-layer, masked-positions-only intervention does
+  not (§14.5a). This is now the most interesting open question in the experiment.
+- The charge->instability leak (+0.60) is unexplained. instability->gravy (-0.54)
+  is explained by §14.5a.
 - The natural-correlation table does not include *net* charge, so the
   counterfactual that motivates the per-residue decision ("ranking on net charge
   would have ranked on length, r=?") is asserted rather than measured. One extra

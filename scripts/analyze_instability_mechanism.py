@@ -274,10 +274,10 @@ def main():
     axA.set_ylabel("steering-attributable change\nin instability index (mean ± SEM)")
     axA.legend(fontsize=9)
     if not args.no_titles:
-        axA.set_title(f"A  Change at α={alpha:g}, split by what determines it", loc="left")
+        axA.set_title(f"A  Change at α={alpha:.3g}, split by what determines it", loc="left")
 
     top = dec[:args.top_k][::-1]
-    axB.barh(range(len(top)), [v for _, v in top], color=style.method_color("glp"), height=0.7)
+    axB.barh(range(len(top)), [v for _, v in top], color=style.PURPLE_MID, height=0.7)
     axB.axvline(0, color=style.BASELINE, linewidth=1)
     axB.set_yticks(range(len(top)))
     axB.set_yticklabels([d for d, _ in top], fontsize=9, family="monospace")

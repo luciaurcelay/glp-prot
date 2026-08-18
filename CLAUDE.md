@@ -144,11 +144,13 @@ Four things to know before running the new ones (full rationale: `docs/steering_
   perturbation sizes. Raw stays the default because every existing run used it.
 - **Check the contrast build's length-gap warning** (in pool-SD units); rebuild with
   `--match-length --restart` if it fires, or the vector encodes length.
-- **Instability is the informative one:** it's a sum over *dipeptides*, so unlike GRAVY and
-  charge a purely compositional artifact — such as the correction's own Leu/Val drift —
-  can't produce it. `analyze_steering_confound.py` decomposes per property (residues, or
-  dipeptides for instability); DIWV spans −15.9…+58.3, so check whether a gain came from a
-  broad shift or a few stacked dipeptides.
+- **Steering acts on composition — all three properties, measured.** Instability is a sum
+  over *dipeptides*, so it can carry an order-level effect that GRAVY and charge cannot.
+  `analyze_instability_mechanism.py` splits its effect exactly (closed-form expected index
+  over permutations) and finds the order-specific share is **6%, 95% CI [−2%, 13%]** — a
+  bounded null. Steering up simply enriches R/S/P and depletes V/L/I/F, which also explains
+  the instability→GRAVY off-diagonal. Don't describe the steering as reaching sequence
+  order; it doesn't, at one layer on masked positions.
 
 ### Exp B on hydrophobicity (diff-of-means × GRAVY) is measured
 Canonical run: `runs/steering_crg/steering_diffmean_hydro_bidir_n40` (bidirectional, 40
