@@ -38,7 +38,7 @@ import csv
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import _bootstrap  # noqa: F401
 import numpy as np
