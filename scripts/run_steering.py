@@ -1225,6 +1225,13 @@ def main():
                     help="[B only] pass through to the contrast builder when it has to "
                          "build: force the two contrast sets onto a shared length "
                          "distribution. Only affects a build, not an existing contrast file.")
+    ap.add_argument("--restart-contrast", action="store_true",
+                    help="[B only] rebuild the contrast file even if it exists. Separate "
+                         "from --restart (which regenerates this run's SEQUENCES) because "
+                         "rebuilding costs a full UniRef50 rescan and, more importantly, "
+                         "rebuilds with whatever flags THIS invocation carries — silently "
+                         "replacing a contrast that was built separately with e.g. "
+                         "--match-length.")
 
     ap.add_argument("--alphas", default=None,
                     help="steering strengths. Exp A default '0.5,1,2,4,8' (multiples of the "
@@ -1435,8 +1442,13 @@ def main():
         from build_property_contrast import build_property_contrast
         contrast_path = (Path(args.contrast) if args.contrast
                          else out_dir / f"{args.property}_contrast.json")
+        # NOT args.restart: --restart means "regenerate this run's sequences". Letting it
+        # also rebuild the contrast would (a) rescan 12 GB of UniRef50 and (b) silently
+        # rebuild with THIS invocation's flags — so a --restart of a run whose contrast was
+        # built separately with --match-length would quietly replace the vector with an
+        # unmatched one, and the resumed run would no longer be the run it claims to be.
         build_property_contrast(cfg, contrast_path, prop_key=args.property, seed=args.seed,
-                                restart=args.restart, device=device,
+                                restart=args.restart_contrast, device=device,
                                 match_length=args.match_length)
         gd = json.loads(contrast_path.read_text())
         # Pre-generalization files are GRAVY-only and use `gravy_*` keys; read either.
