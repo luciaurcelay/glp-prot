@@ -25,8 +25,9 @@
 \usepackage{graphicx}
 \usepackage{subcaption}
 \usepackage{longtable}
-\usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 
 \title{Generative Latent Priors for Protein Language Models}
 
@@ -157,7 +158,7 @@ and GLP models it more tightly than the SAE's own decomposition does.
 \textbf{On-manifold steering.} We test whether using GLP as an on-manifold prior lets
 activation steering reach a given concept strength at better naturalness than steering
 alone (``naive''), or equivalently more natural output at matched concept strength.
-Both experiments share: (i) a masked-Gibbs generation loop --- repeatedly re-mask a subset
+Both experiments share (Algorithm~\ref{alg:steer}): (i) a masked-Gibbs generation loop --- repeatedly re-mask a subset
 of sequence positions, steer the hooked-layer activations at those positions, optionally
 apply an on-manifold correction, resample the masked tokens; (ii) the correction step
 itself, SDEdit \cite{meng2022sdedit}: partially noise the steered activation to a chosen
@@ -709,7 +710,10 @@ E.~Villegas Garcia and A.~Ansuini.
 \newpage
 \appendix
 
-\section{Reading the compute-scaling figure (Fig.~\ref{fig:flops})}
+\section{Scaling and evaluation metrics}
+\label{app:scaling}
+
+\subsection{Reading the compute-scaling figure (Fig.~\ref{fig:flops})}
 \label{app:flops}
 
 Training a model costs \emph{compute} --- the total amount of arithmetic performed. A
@@ -739,7 +743,7 @@ lower loss at the same compute. Because our compute range is short ($\sim$1 deca
 data does not reach far enough toward the floor to estimate $E$ reliably, so we report only
 the slope and treat the fitted curve as a descriptive guide rather than a precise law.
 
-\section{Fréchet Distance and its sampler dependence}
+\subsection{Fréchet Distance and its sampler dependence}
 \label{app:fd}
 
 FD compares two point clouds (here, generated vs.\ real activations) by their mean and
@@ -752,7 +756,10 @@ report FD as a \emph{ratio} to the FD(train, val) real-vs-real lower bound, whic
 smallest FD achievable from finite samples of the true distribution; a ratio of $1$ would
 be perfect, and the ratio is comparable across models trained on the same data.
 
-\section{Hook parity and the data pipeline}
+\section{Data pipeline and reproducibility}
+\label{app:data}
+
+\subsection{Hook parity and the activation store}
 \label{app:pipeline}
 
 GLP is only a faithful model of ``what ESM-2 computes'' if it trains on exactly the tensor
@@ -764,7 +771,7 @@ standardizer (subtract mean, divide by standard deviation per feature), and all 
 variants at that scale read the same store. Standardization is applied per batch at train
 time, never materializing the whole store in float32.
 
-\section{Scaling-grid reproducibility}
+\subsection{Scaling-grid reproducibility}
 \label{app:repro}
 
 Because the activation store depends only on the data (host model, hook layer, sequences,
@@ -774,7 +781,67 @@ its full resolved configuration and a per-launch manifest (SLURM allocation, git
 submit arguments), and training is checkpoint/resumable, so any cell can be reproduced or
 continued from its recorded state.
 
-\section{Steering: what we measure and why}
+\section{On-manifold steering}
+\label{app:steering}
+
+\subsection{The steering and decoding procedure}
+\label{app:steer-algo}
+
+Algorithm~\ref{alg:steer} states the full procedure. Every generation in this paper is one
+call to it, and the naive and GLP-corrected arms differ \emph{only} in whether
+line~\ref{line:correct} executes.
+
+Three details are worth reading off the pseudocode because they are where our setup departs
+from the obvious one. First, the intervention is applied to the \emph{masked} positions
+only, at a single layer, and is re-applied from scratch every round --- it is not a
+persistent edit to the model. Second, the correction operates on the steered activation
+before it is decoded, so what the language-model head sees is always a GLP sample, never the
+raw sum $h + \alpha v$. Third, the renormalisation in line~\ref{line:steer} makes
+$\alpha{=}0$ an exact identity, which is what licenses the $\alpha{=}0$ run as the
+within-arm control used throughout Appendix~\ref{app:steer-estimand}.
+
+\begin{algorithm}[htbp]
+\caption{On-manifold steering by masked-Gibbs decoding. $M$: ESM-2-8M; $h^{(4)}$: its
+layer-4 residual stream (the tensor GLP is trained on); $u_\theta$: the GLP velocity field;
+$S$: the standardizer fitted on the activation store. Canonical Exp.~B settings:
+$\rho{=}0.10$, $R{=}30$, $T{=}1.0$, $t_0{=}0.7$, $K{=}20$. The ``down'' arm is the same
+call with $-\alpha$, started from held-out proteins at the opposite extreme of the
+property.}
+\label{alg:steer}
+\begin{algorithmic}[1]
+\Require starting sequence $x$, steering vector $v$, strength $\alpha$, mask fraction $\rho$,
+rounds $R$, temperature $T$, SDEdit level $t_0$, Euler steps $K$, flag \textsc{correct}
+\State $k \gets \max(1, \operatorname{round}(\rho\,|x|))$
+\For{$r = 1 \dots R$}
+  \State $P \gets$ $k$ positions drawn uniformly without replacement from $1\dots|x|$
+  \State $x[P] \gets \texttt{<mask>}$
+  \State $h \gets h^{(4)}(M, x)$ \Comment{forward pass on the masked sequence}
+  \State $\tilde h_P \gets \big(h_P + \alpha v\big)\cdot \dfrac{\lVert h_P \rVert}{\lVert h_P + \alpha v \rVert}$ \label{line:steer} \Comment{diff-of-means edit, norm preserved}
+  \If{\textsc{correct}}
+    \State $\tilde h_P \gets \textsc{SDEdit}(\tilde h_P;\, t_0, K)$ \label{line:correct} \Comment{project back onto the GLP manifold}
+  \EndIf
+  \State $\ell \gets M(x)$ with $h^{(4)}_P$ overridden by $\tilde h_P$ \Comment{second forward pass}
+  \State $x[P] \sim \operatorname{softmax}(\ell_P / T)$ restricted to the 20 amino acids
+\EndFor
+\State \Return $x$
+\Statex
+\Function{SDEdit}{$a;\, t_0, K$}
+  \State $z \gets S(a)$; \quad $\epsilon \sim \mathcal{N}(0, I)$
+  \State $z \gets (1-t_0)\,z + t_0\,\epsilon$ \Comment{re-noise to time $t_0$}
+  \For{$t = t_0$ down to $0$ in $K$ equal Euler steps of size $\Delta$}
+    \State $z \gets z - \Delta\, u_\theta(z, t)$
+  \EndFor
+  \State \Return $S^{-1}(z)$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+The off-manifold diagnostic of Appendix~\ref{app:steer-sdedit} is the same two operators
+without the loop: it applies line~\ref{line:steer} and then \textsc{SDEdit} to real held-out
+activations and measures GLP's diffusion loss, with no masking, no decoding and no
+iteration.
+
+\subsection{What we measure and why}
 \label{app:steer-estimand}
 
 At $\alpha{=}0$ the diff-of-means intervention is an exact identity, so the naive and
@@ -799,7 +866,7 @@ as a rate. Because that gate is applied after generation and complexity is itsel
 by the treatment, we report every headline number both gated and ungated; they agree to
 ${\le}1\%$.
 
-\section{The correction's own concept drift}
+\subsection{The correction's own concept drift}
 \label{app:steer-drift}
 
 Fig.~\ref{fig:steer-drift} shows the $\alpha{=}0$ arms by direction. Resampling alone
@@ -824,7 +891,7 @@ pushes one way regardless.}
 \label{fig:steer-drift}
 \end{figure}
 
-\section{The naturalness metrics are unreliable on these sequences}
+\subsection{The naturalness metrics are unreliable on these sequences}
 \label{app:steer-metrics}
 
 Fig.~\ref{fig:steer-gate} scores the sequences our degeneracy filter \emph{rejects} ---
@@ -864,7 +931,7 @@ Metric behaviour should be checked on rejected rows, not only on kept ones.
 \label{fig:steer-gate}
 \end{figure}
 
-\section{The correction operator works; the decoder is what fails}
+\subsection{The correction operator works; the decoder is what fails}
 \label{app:steer-sdedit}
 
 Applying a single SDEdit pass to a clamped activation with \emph{no} generation
@@ -884,7 +951,7 @@ pass applied directly to the clamped activation (no generation).}
 \label{fig:steer-sdedit}
 \end{figure}
 
-\section{The decoding protocol, and what it costs}
+\subsection{The decoding protocol, and what it costs}
 \label{app:steer-protocol}
 
 Fig.~\ref{fig:steer-dose} shows the effect rising with $\alpha$ while structural confidence
