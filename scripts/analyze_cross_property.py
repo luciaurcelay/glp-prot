@@ -301,9 +301,18 @@ def main():
         xs = np.linspace(*lim, 50)
         ax.plot(xs, a + b * xs, color=style.PURPLE_MID, linewidth=2)
         ax.scatter(nat, post, s=64, color=style.PURPLE_DARK, zorder=3)
-        for (n_, q_, lab) in pts:
-            ax.annotate(lab, (n_, q_), xytext=(6, -3), textcoords="offset points",
-                        fontsize=8, color=style.SECONDARY)
+        # Label placement: flip to the left near the right edge so nothing runs off, and
+        # nudge vertically apart when two sets sit at nearly the same x (charge's two
+        # quartiles do, and their labels overlapped exactly).
+        order = sorted(range(len(pts)), key=lambda i: pts[i][0])
+        for rank, i in enumerate(order):
+            n_, q_, lab = pts[i]
+            right = n_ > 0.5 * (lim[0] + lim[1])
+            close = any(abs(n_ - pts[j][0]) < 0.04 and j != i for j in range(len(pts)))
+            dy = (8 if rank % 2 else -12) if close else -3
+            ax.annotate(lab, (n_, q_), xytext=(-6 if right else 6, dy),
+                        textcoords="offset points", fontsize=8, color=style.SECONDARY,
+                        ha="right" if right else "left")
         ax.scatter([fixed], [fixed], marker="*", s=200, color=style.ORANGE_MID, zorder=4)
         ax.annotate(f"fixed point {fixed:.2f}", (fixed, fixed), xytext=(8, 8),
                     textcoords="offset points", fontsize=9, color=style.ORANGE_DARK)
