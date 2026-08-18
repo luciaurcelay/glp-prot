@@ -24,6 +24,8 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{subcaption}
+\usepackage{amsmath}
+\usepackage{amssymb}
 
 \title{Generative Latent Priors for Protein Language Models}
 
@@ -173,10 +175,7 @@ concept score is a strict regex match to the C2H2 spacing pattern.
 
 \section{Results}
 
-\textbf{GLP trains stably.} The flow-matching loss falls well below the
-$\approx\!2.0$ trivial-predictor floor (predicting $0$ gives
-$\mathbb{E}\|\epsilon - z_0\|^2/d \approx 2$ for standardized $z_0$), converging to
-$0.84$--$1.02$ depending on scale (Fig.~\ref{fig:train}). Generated activations occupy the
+\textbf{GLP trains stably.} The flow-matching loss falls well below the $\approx 2.0$ trivial-predictor floor (predicting $0$ gives $\mathbb{E}\|\epsilon - z_0\|^2/d \approx 2$ for standardized $z_0$), converging to $0.84$--$1.02$ depending on scale (Fig.~\ref{fig:train}). Generated activations occupy the
 real distribution's principal subspace and refine toward it as sampler steps increase
 (Fig.~\ref{fig:pca}): at one step the sampler output is a collapsed blob, and by 1000
 steps it fills the real cloud.
@@ -536,7 +535,7 @@ $7.1{\to}18.0\%$ and Val $5.1{\to}13.6\%$ (roughly twice natural abundance), tog
 accounting for 57\% of the drift, with the remainder from depletion of charged and polar
 residues.
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \includegraphics[width=0.58\textwidth]{figures/steer_fig_baseline_drift.png}
 \caption{Change in hydrophobicity with \emph{no} steering applied, by starting set. The
@@ -551,7 +550,7 @@ pushes one way regardless.}
 Fig.~\ref{fig:steer-gate} scores the sequences our degeneracy filter \emph{rejects} ---
 unambiguous non-proteins, 64\% Leu$+$Val on average --- against the sequences it keeps.
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \caption{Naturalness scores for rejected vs.\ kept sequences (Mann--Whitney).
 ``Gamed'' means the metric scores known non-proteins better than our own output.}
@@ -578,7 +577,7 @@ threshold. Second, on kept rows alone pseudo-perplexity correlates correctly wit
 bias --- the correlation is computed after the filter has removed the rows that expose it.
 Metric behaviour should be checked on rejected rows, not only on kept ones.
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \includegraphics[width=0.98\textwidth]{figures/steer_naturalness_axis_gate_check.png}
 \caption{Naturalness scores for sequences the composition filter kept versus rejected.}
@@ -597,7 +596,7 @@ apparent ``breakdown'' at $\alpha{=}5$ in earlier runs was an artifact of the SD
 level: moving $t_{\mathrm{start}}$ from $0.5$ to $0.7$ reduced degenerate output from
 $26\%$ to $7.7\%$ and made the dose-response monotone through $\alpha{=}5$.
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \includegraphics[width=0.55\textwidth]{figures/steer_off_manifold_diagnostic.png}
 \caption{GLP diffusion loss against steering strength, before and after a single correction
@@ -621,7 +620,7 @@ interval up to ${\sim}15\%$ coverage and declines beyond it, while the steering 
 throughout --- so the trade-off is not between mask and rounds, but between total rewriting
 and structure.
 
-\begin{table}[h]
+\begin{table}[htbp]
 \centering
 \caption{Two operating points, both at $n{=}40$ starting proteins per direction. pTM is
 measured on the $\alpha{=}0$ naive arm, i.e.\ the decoding loop alone.}
@@ -660,7 +659,7 @@ intervention being too weak to move the residues the host model most resists cha
 \cite{huang2025diffmean} steer every layer across all tokens. We therefore retain uniform
 random masking.
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \includegraphics[width=0.6\textwidth]{figures/steer_fig_dose_response.png}
 \caption{Effect and structural confidence against steering strength, sequences started
@@ -669,7 +668,7 @@ but from an already-degraded baseline.}
 \label{fig:steer-dose}
 \end{figure}
 
-\begin{figure}[h]
+\begin{figure}[htbp]
 \centering
 \includegraphics[width=0.72\textwidth]{figures/steer_generation_tradeoff.png}
 \caption{Steering effect (top) and foldability (bottom) against how much of the protein the
