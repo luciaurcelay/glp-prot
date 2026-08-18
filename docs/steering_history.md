@@ -625,8 +625,9 @@ analysis including the quick ones.
 ### 13.9 Still open
 
 - Exp A has never been re-run with any of the above.
-- The correction's own foldability cost is suggested by three marginal signals
-  in the same direction (p=0.076, 0.029, 0.42) but is not established.
+- ~~The correction's own foldability cost~~ — **closed** by §14.5b: -0.012 pTM
+  [95% CI -0.029, +0.005], p=0.43 over 235 paired comparisons. Not established,
+  and bounded to be small.
 - We steer one layer (hook parity with the SAE forces this) and apply the edit
   only at mutated positions; Huang et al. do both across all layers/tokens.
   That is the untested deviation, and the likely reason relatedness selection
@@ -883,12 +884,66 @@ Three consequences:
    tokens (Huang et al.) reaches order-level structure is untested here and is the natural
    follow-up.
 
+### 14.5b Naturalness across the three properties (folded 2026-08-18)
+
+3,360 generations folded with ESMFold2, 0 errors, plus each property's own 80 natural
+starting proteins (they differ per property, so the hydrophobicity baselines do not
+transfer — `scripts/export_heldout_starts.py`).
+
+**The decoding loop is a fixed point, not a penalty.** This is the headline and it
+generalizes §13.6 substantially. The six natural start sets span pTM 0.369-0.650; after
+the alpha=0 *naive* pass — no steering, no GLP — all six land between 0.227 and 0.315:
+
+| start set | natural | after the loop | lost |
+|---|---|---|---|
+| instability, stable | 0.650 | 0.294 | -55% |
+| hydrophobicity, hydrophobic | 0.629 | 0.315 | -50% |
+| charge, anionic | 0.507 | 0.256 | -50% |
+| charge, cationic | 0.438 | 0.257 | -41% |
+| hydrophobicity, hydrophilic | 0.373 | 0.274 | -27% |
+| instability, unstable | 0.369 | 0.227 | -38% |
+
+Regressing post on pre: `post = 0.171 + 0.200 x start` (r=+0.80), i.e. **only ~20% of a
+starting set's foldability advantage survives**, with a fixed point at pTM 0.214. The
+correlation between how well a set folds and how much it loses is **r=-0.98**. So
+masked-Gibbs decoding at 30 rounds / T=1.0 does not scale foldability down; it drives any
+protein toward ~0.21-0.27 regardless of where it started, and the better it started the
+more it loses. "The loop roughly halves foldability" was an artifact of the two
+hydrophobicity sets happening to sit near 0.4-0.6.
+
+**The correction's own foldability cost is now a bounded null — this open item is closed.**
+§13.9 recorded "three marginal signals in the same direction (p=0.076, 0.029, 0.42)".
+Pooling 235 paired alpha=0 comparisons across all three properties gives **-0.012 pTM
+[95% CI -0.029, +0.005], p=0.43** (per property: -0.024 p=0.145, -0.004 p=0.707, -0.009
+p=0.856). The earlier signal does not survive triple the data. Do not repeat the claim.
+
+**Steering strength is close to free, with one marginal exception.** Corrected arm,
+alpha=0 vs the top alpha, paired by starting protein:
+
+| property | ΔpTM | p | pass rate (non-degenerate AND pTM>=0.30) |
+|---|---|---|---|
+| hydrophobicity | -0.004 | 0.70 | 35% -> 28% (Fisher p=0.39) |
+| charge | -0.025 | 0.18 | 25% -> 16% (p=0.24) |
+| instability | -0.031 | **0.014** | 25% -> 16% (p=0.24) |
+
+Only instability is significant, and it is one of three tests (Holm-adjusted p=0.042 — it
+survives, barely). The hydrophobicity result "the effect is bought without further
+structural cost" replicates exactly; treat the instability decline as suggestive. No pass
+rate moves significantly.
+
+**Degeneracy stays low and the correction slightly reduces it**: naive 2.9% / 2.1% / 2.9%,
+corrected 2.5% / 1.6% / 1.2%.
+
+**The naturalness claim still fails, now for all three properties.** No cell of any run
+approaches its own natural starting set. The reason remains the decoding loop, not GLP.
+
 ### 14.6 Still open
 
-- **Naturalness for the two new properties is unmeasured** — the fold stage
-  (pLDDT/pTM) is running; nothing about foldability is claimed for charge or
-  instability yet. The decoding-loop cost (§13.6) is property-independent, so it
-  is expected to carry over unchanged.
+- Whether a lighter decoding budget moves the loop's fixed point (§14.5b) or
+  merely gets closer to it more slowly. The 5-round/T=0.5 setting reached pTM
+  0.332/0.435 from 0.373/0.629, which is above the 0.214 fixed point — so the
+  fixed point is a property of the budget, not of the method, and the natural
+  next question is where it sits as a function of coverage.
 - Whether steering all layers and all tokens (Huang et al.) reaches the
   order-level component our single-layer, masked-positions-only intervention does
   not (§14.5a). This is now the most interesting open question in the experiment.

@@ -201,11 +201,15 @@ apparent "breakdown at alpha=5", which was a t_start artefact, not a property of
 `scripts/apply_interplm_patches.sh`; re-run it after any `git submodule update` (SETUP.md
 step 0). Without it generation dies in `nnsight` with an `expand()` shape error.
 
-5. **The generation loop, not GLP, costs foldability.** The 80 natural held-out starting
-   proteins fold at pTM 0.373 (low-GRAVY set) / 0.629 (high-GRAVY set); the alpha=0 **naive**
-   arm — no steering, no GLP — comes out at 0.275 / 0.319. Masked-Gibbs roughly halves
-   foldability on its own and both arms land in the same place, so the naturalness claim
-   fails for a reason unrelated to GLP. Two defensible operating points: 30 rounds/T=1.0
+5. **The generation loop, not GLP, costs foldability — and it is a FIXED POINT, not a
+   penalty.** Measured across six natural start sets (three properties x two directions)
+   spanning pTM 0.369–0.650: after the alpha=0 **naive** pass — no steering, no GLP — all six
+   land at 0.227–0.315. `post = 0.171 + 0.200 x start` (r=+0.80), so only ~20% of a start
+   set's foldability advantage survives, fixed point 0.214; the correlation between how well
+   a set folds and how much it loses is **r=−0.98**. "Roughly halves" was an artifact of the
+   two hydrophobicity sets happening to sit near 0.4–0.6 — quote the fixed point instead.
+   Both arms land in the same place, so the naturalness claim fails for a reason unrelated
+   to GLP. Two defensible operating points: 30 rounds/T=1.0
    (divergence +3.38 at alpha=5, pTM 0.275/0.319) and 5 rounds/T=0.5 (+1.56, pTM
    0.332/0.435, 6x cheaper). **Do not raise rounds at T=0.5** — it mode-collapses, and the
    collapsed sequences score HIGH pTM, so it looks like an improvement to any analysis that
@@ -219,10 +223,10 @@ step 0). Without it generation dies in `nnsight` with an `expand()` shape error.
 **Baseline discipline:** compare foldability against the held-out set the run actually
 generates from (0.373 or 0.629), never the pooled 0.501 average.
 
-**Still open (steering):** no charge or instability run has been executed (the code is in,
-the science is planned — `docs/steering_history.md` §14); Exp A has never been re-run with
-any of the above; the
-correction's own foldability cost is suggested by three marginal signals but unestablished;
+**Still open (steering):** Exp A has never been re-run with any of the above;
+**the correction's own foldability cost is CLOSED** — pooled over 235 paired comparisons on
+three properties it is −0.012 pTM [95% CI −0.029, +0.005], p=0.43, so drop the old "three
+marginal signals" claim;
 we steer one layer / masked positions only where Huang et al. steer all layers and tokens
 (the untested deviation); neither operating point reaches natural foldability. ESMFold2
 folding is a separate stage in its own Python 3.12 venv (`submit_fold.sh`) because the
