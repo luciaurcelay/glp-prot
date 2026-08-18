@@ -710,6 +710,214 @@ report FD as a \emph{ratio} to the FD(train, val) real-vs-real lower bound, whic
 smallest FD achievable from finite samples of the true distribution; a ratio of $1$ would
 be perfect, and the ratio is comparable across models trained on the same data.
 
+\section{Hook parity and the data pipeline}
+\label{app:pipeline}
+
+GLP is only a faithful model of ``what ESM-2 computes'' if it trains on exactly the tensor
+of interest. We read \texttt{hidden\_states[4]} (the residual stream after transformer
+block 4) with cls/eos tokens dropped, which is byte-identical to what InterPLM's released
+SAE consumed; a unit test asserts equality against InterPLM's own embedder. Activations
+are extracted once per data scale into a memory-mapped \texttt{float16} store with a fitted
+standardizer (subtract mean, divide by standard deviation per feature), and all model/depth
+variants at that scale read the same store. Standardization is applied per batch at train
+time, never materializing the whole store in float32.
+
+\section{Scaling-grid reproducibility}
+\label{app:repro}
+
+Because the activation store depends only on the data (host model, hook layer, sequences,
+count) and not on the GLP architecture or batch size, the depth grid at a given scale
+shares one store; configs declare it explicitly so no cell re-extracts. Each run records
+its full resolved configuration and a per-launch manifest (SLURM allocation, git commit,
+submit arguments), and training is checkpoint/resumable, so any cell can be reproduced or
+continued from its recorded state.
+
+
+\section{Steering: what we measure and why}
+\label{app:steer-estimand}
+
+At $\alpha{=}0$ the diff-of-means intervention is an exact identity, so the naive and
+GLP-corrected arms differ \emph{only} by whether the correction ran. They do not agree
+there: the corrected arm gains $+1.15$ $\Delta$GRAVY against the naive arm's $+0.35$, which
+is 65--97\% of the corrected arm's raw effect at $\alpha \le 2$. A raw corrected-vs-naive
+comparison therefore credits the correction's own behaviour to steering.
+
+We use two derived quantities throughout. The \textbf{steering-attributable} effect
+differences each sequence against the \emph{same starting protein's} $\alpha{=}0$ run in
+the same arm and direction, removing both the correction's drift and per-protein variation.
+The \textbf{divergence} is the up-minus-down difference of that quantity. Because the two
+directions use different held-out sequences, divergence is tested unpaired
+(Mann--Whitney); the attributable effect within a direction is paired (Wilcoxon).
+
+All per-$\alpha$ statistics are computed \emph{within} a direction. Pooling the two would
+average a rising trajectory against a falling one and cancel the effect.
+
+Degenerate sequences (${\ge}30\%$ one residue, ${\le}8$ distinct amino acids, or a
+${\ge}12$-long homopolymer run) are excluded from effect estimates and reported separately
+as a rate. Because that gate is applied after generation and complexity is itself affected
+by the treatment, we report every headline number both gated and ungated; they agree to
+${\le}1\%$.
+
+\section{The correction's own concept drift}
+\label{app:steer-drift}
+
+Fig.~\ref{fig:steer-drift} shows the $\alpha{=}0$ arms by direction. Resampling alone
+reverts toward typical hydrophobicity --- the naive arm moves $+0.35$ from hydrophilic
+starts and $-0.28$ from hydrophobic ones, flipping sign with the starting point. The
+corrected arm does not flip: $+1.15$ and $+0.54$. The correction therefore carries a
+\emph{fixed} hydrophobic bias rather than regressing toward the training distribution's
+typical composition, a distinction a single-direction design cannot make.
+
+The bias is compositional. Since GRAVY is a mean over Kyte--Doolittle values, the drift
+decomposes exactly as $\Delta\mathrm{GRAVY} = \sum_a \Delta f(a)\,\mathrm{KD}(a)$: Leu rises
+$7.1{\to}18.0\%$ and Val $5.1{\to}13.6\%$ (roughly twice natural abundance), together
+accounting for 57\% of the drift, with the remainder from depletion of charged and polar
+residues.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.58\textwidth]{figures/steer_fig_baseline_drift.png}
+\caption{Change in hydrophobicity with \emph{no} steering applied, by starting set. The
+naive arm reverts toward typical (sign flips with the starting set); the corrected arm
+pushes one way regardless.}
+\label{fig:steer-drift}
+\end{figure}
+
+\section{The naturalness metrics are unreliable on these sequences}
+\label{app:steer-metrics}
+
+Fig.~\ref{fig:steer-gate} scores the sequences our degeneracy filter \emph{rejects} ---
+unambiguous non-proteins, 64\% Leu$+$Val on average --- against the sequences it keeps.
+
+\begin{table}[htbp]
+\centering
+\caption{Naturalness scores for rejected vs.\ kept sequences (Mann--Whitney).
+``Gamed'' means the metric scores known non-proteins better than our own output.}
+\label{tab:steer-gate}
+\begin{tabular}{lrrrl}
+\toprule
+axis & rejected & kept & $p$ & verdict \\
+\midrule
+ESMFold2 pLDDT & 67.3 & 54.5 & $3.4{\times}10^{-6}$ & gamed \\
+pseudo-perplexity & 7.3 & 14.8 & $7.1{\times}10^{-18}$ & gamed \\
+ESMFold2 pTM & 0.278 & 0.268 & 0.86 & indistinguishable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+On a smaller run the rejected sequences scored pLDDT $81.0$, above a natural ubiquitin
+control at $80$. Two consequences. First, a quality threshold must be used as an
+\emph{outcome} and not as a filter: selecting sequences with pLDDT ${\ge}70$ would retain
+$87\%$ of the degenerate sequences and $12\%$ of the clean ones, taking a set from $8\%$ to
+$38\%$ non-protein, and the two arms survive such a cut at different rates. We therefore
+report the fraction of \emph{all} generations that are non-degenerate \emph{and} above
+threshold. Second, on kept rows alone pseudo-perplexity correlates correctly with pLDDT
+($\rho{=}-0.48$, $p{=}4{\times}10^{-17}$), which reads as mutual validation but is shared
+bias --- the correlation is computed after the filter has removed the rows that expose it.
+Metric behaviour should be checked on rejected rows, not only on kept ones.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/steer_naturalness_axis_gate_check.png}
+\caption{Naturalness scores for sequences the composition filter kept versus rejected.}
+\label{fig:steer-gate}
+\end{figure}
+
+\section{The correction operator works; the decoder is what fails}
+\label{app:steer-sdedit}
+
+Applying a single SDEdit pass to a clamped activation with \emph{no} generation
+(Fig.~\ref{fig:steer-sdedit}) recovers 89--95\% of the excess GLP diffusion loss at
+$\alpha{=}3,4,5$ and 89\% even at $\alpha{=}20$, where clamping drives loss from $0.87$ to
+$3.18$. The operator handles heavily-clamped activations; what degrades the output is
+decoding those activations back to amino acids and iterating that. Consistently, an
+apparent ``breakdown'' at $\alpha{=}5$ in earlier runs was an artifact of the SDEdit noise
+level: moving $t_{\mathrm{start}}$ from $0.5$ to $0.7$ reduced degenerate output from
+$26\%$ to $7.7\%$ and made the dose-response monotone through $\alpha{=}5$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.55\textwidth]{figures/steer_off_manifold_diagnostic.png}
+\caption{GLP diffusion loss against steering strength, before and after a single correction
+pass applied directly to the clamped activation (no generation).}
+\label{fig:steer-sdedit}
+\end{figure}
+
+\section{The decoding protocol, and what it costs}
+\label{app:steer-protocol}
+
+Fig.~\ref{fig:steer-dose} shows the effect rising with $\alpha$ while structural confidence
+stays flat, for both arms, far below the starting proteins.
+
+The decoding budget is what governs the loss, and it is one-dimensional. Mask fraction and
+round count are interchangeable: at an expected coverage of $0.10$, the settings
+$0.02{\times}5$, $0.05{\times}2$ and $0.10{\times}1$ give pTM $0.364$, $0.364$, $0.366$ and
+effect $+0.057$, $+0.081$, $+0.078$ respectively. Fig.~\ref{fig:steer-tradeoff} therefore
+plots both objectives against $1-(1-\mathrm{mask})^{\mathrm{rounds}}$, the fraction of
+residues resampled at least once. Foldability stays within the starting proteins' own
+interval up to ${\sim}15\%$ coverage and declines beyond it, while the steering effect grows
+throughout --- so the trade-off is not between mask and rounds, but between total rewriting
+and structure.
+
+\begin{table}[htbp]
+\centering
+\caption{Two operating points, both at $n{=}40$ starting proteins per direction. pTM is
+measured on the $\alpha{=}0$ naive arm, i.e.\ the decoding loop alone.}
+\label{tab:steer-ops}
+\begin{tabular}{lrrr}
+\toprule
+setting & divergence ($\alpha{=}5$) & pTM (low/high-GRAVY starts) & degenerate \\
+\midrule
+natural starting proteins & --- & $0.373$ / $0.629$ & $0\%$ \\
+30 rounds, $T{=}1.0$ & $+3.38$ & $0.275$ / $0.319$ & $2.7\%$ \\
+5 rounds, $T{=}0.5$ & $+1.56$ & $0.332$ / $0.435$ & $3.4\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A weaker signal, reported for completeness rather than as a claim: the correction itself
+may cost a little foldability. At $\alpha{=}0$ the corrected arm scores below the naive arm
+in both directions ($0.234$ vs $0.275$; $0.305$ vs $0.319$), and in the lighter setting the
+same ordering appears ($p{=}0.08$ and $p{=}0.42$), as does a gap in the fraction of
+confidently-folded output ($19\%$ vs $6\%$, $p{=}0.03$, one of 21 such comparisons). Each is
+marginal on its own; they are consistent in direction and would need a powered test.
+
+Two cautions. Lowering the sampling temperature while keeping many rounds does \emph{not}
+help: at $T{=}0.5$ with 30 rounds the decoder mode-collapses, producing $8/15$ non-proteins,
+and because those collapsed sequences score high pTM the setting appears to be the best in
+the grid to any analysis that drops degenerate rows rather than counting them. And a
+foldability comparison must use the held-out set the run actually generates from ($0.373$ or
+$0.629$), not their pooled average.
+
+We also implemented the relatedness-ranked site selection of \cite{huang2025diffmean}
+(mutating the residues least aligned with the steering vector rather than a uniform random
+subset). At matched edit budget it preserved twice as much of the starting protein, as
+intended, but cost roughly $6{\times}$ of the steering effect ($+0.97 \to +0.17$) with no
+significant foldability gain. We attribute this to our single-layer, mutated-positions-only
+intervention being too weak to move the residues the host model most resists changing;
+\cite{huang2025diffmean} steer every layer across all tokens. We therefore retain uniform
+random masking.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/steer_fig_dose_response.png}
+\caption{Effect and structural confidence against steering strength, sequences started
+hydrophilic. The lower panel is flat: the effect is bought without further structural cost,
+but from an already-degraded baseline.}
+\label{fig:steer-dose}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.72\textwidth]{figures/steer_generation_tradeoff.png}
+\caption{Steering effect (top) and foldability (bottom) against how much of the protein the
+decoder rewrites, $T{=}0.5$. Marker shape distinguishes mask fraction; the three series fall
+on a single curve, i.e.\ mask fraction and round count act only through their product.
+Shaded band: the starting proteins' own pTM ($\pm$SEM). Grey points are settings whose
+output is mostly degenerate and are excluded from the trend.}
+\label{fig:steer-tradeoff}
+\end{figure}
+
 \section{Per-concept probing and falsification tables}
 \label{app:tables}
 
@@ -1091,214 +1299,6 @@ Domain\_Ig-like C2-type 2 & 0.818 & 20 \\
 Transit peptide\_Chloroplast & 0.872 & 20 \\
 Domain\_Ig-like C1-type & 0.892 & 20 \\
 \end{longtable}
-
-\section{Hook parity and the data pipeline}
-\label{app:pipeline}
-
-GLP is only a faithful model of ``what ESM-2 computes'' if it trains on exactly the tensor
-of interest. We read \texttt{hidden\_states[4]} (the residual stream after transformer
-block 4) with cls/eos tokens dropped, which is byte-identical to what InterPLM's released
-SAE consumed; a unit test asserts equality against InterPLM's own embedder. Activations
-are extracted once per data scale into a memory-mapped \texttt{float16} store with a fitted
-standardizer (subtract mean, divide by standard deviation per feature), and all model/depth
-variants at that scale read the same store. Standardization is applied per batch at train
-time, never materializing the whole store in float32.
-
-\section{Scaling-grid reproducibility}
-\label{app:repro}
-
-Because the activation store depends only on the data (host model, hook layer, sequences,
-count) and not on the GLP architecture or batch size, the depth grid at a given scale
-shares one store; configs declare it explicitly so no cell re-extracts. Each run records
-its full resolved configuration and a per-launch manifest (SLURM allocation, git commit,
-submit arguments), and training is checkpoint/resumable, so any cell can be reproduced or
-continued from its recorded state.
-
-
-\section{Steering: what we measure and why}
-\label{app:steer-estimand}
-
-At $\alpha{=}0$ the diff-of-means intervention is an exact identity, so the naive and
-GLP-corrected arms differ \emph{only} by whether the correction ran. They do not agree
-there: the corrected arm gains $+1.15$ $\Delta$GRAVY against the naive arm's $+0.35$, which
-is 65--97\% of the corrected arm's raw effect at $\alpha \le 2$. A raw corrected-vs-naive
-comparison therefore credits the correction's own behaviour to steering.
-
-We use two derived quantities throughout. The \textbf{steering-attributable} effect
-differences each sequence against the \emph{same starting protein's} $\alpha{=}0$ run in
-the same arm and direction, removing both the correction's drift and per-protein variation.
-The \textbf{divergence} is the up-minus-down difference of that quantity. Because the two
-directions use different held-out sequences, divergence is tested unpaired
-(Mann--Whitney); the attributable effect within a direction is paired (Wilcoxon).
-
-All per-$\alpha$ statistics are computed \emph{within} a direction. Pooling the two would
-average a rising trajectory against a falling one and cancel the effect.
-
-Degenerate sequences (${\ge}30\%$ one residue, ${\le}8$ distinct amino acids, or a
-${\ge}12$-long homopolymer run) are excluded from effect estimates and reported separately
-as a rate. Because that gate is applied after generation and complexity is itself affected
-by the treatment, we report every headline number both gated and ungated; they agree to
-${\le}1\%$.
-
-\section{The correction's own concept drift}
-\label{app:steer-drift}
-
-Fig.~\ref{fig:steer-drift} shows the $\alpha{=}0$ arms by direction. Resampling alone
-reverts toward typical hydrophobicity --- the naive arm moves $+0.35$ from hydrophilic
-starts and $-0.28$ from hydrophobic ones, flipping sign with the starting point. The
-corrected arm does not flip: $+1.15$ and $+0.54$. The correction therefore carries a
-\emph{fixed} hydrophobic bias rather than regressing toward the training distribution's
-typical composition, a distinction a single-direction design cannot make.
-
-The bias is compositional. Since GRAVY is a mean over Kyte--Doolittle values, the drift
-decomposes exactly as $\Delta\mathrm{GRAVY} = \sum_a \Delta f(a)\,\mathrm{KD}(a)$: Leu rises
-$7.1{\to}18.0\%$ and Val $5.1{\to}13.6\%$ (roughly twice natural abundance), together
-accounting for 57\% of the drift, with the remainder from depletion of charged and polar
-residues.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.58\textwidth]{figures/steer_fig_baseline_drift.png}
-\caption{Change in hydrophobicity with \emph{no} steering applied, by starting set. The
-naive arm reverts toward typical (sign flips with the starting set); the corrected arm
-pushes one way regardless.}
-\label{fig:steer-drift}
-\end{figure}
-
-\section{The naturalness metrics are unreliable on these sequences}
-\label{app:steer-metrics}
-
-Fig.~\ref{fig:steer-gate} scores the sequences our degeneracy filter \emph{rejects} ---
-unambiguous non-proteins, 64\% Leu$+$Val on average --- against the sequences it keeps.
-
-\begin{table}[htbp]
-\centering
-\caption{Naturalness scores for rejected vs.\ kept sequences (Mann--Whitney).
-``Gamed'' means the metric scores known non-proteins better than our own output.}
-\label{tab:steer-gate}
-\begin{tabular}{lrrrl}
-\toprule
-axis & rejected & kept & $p$ & verdict \\
-\midrule
-ESMFold2 pLDDT & 67.3 & 54.5 & $3.4{\times}10^{-6}$ & gamed \\
-pseudo-perplexity & 7.3 & 14.8 & $7.1{\times}10^{-18}$ & gamed \\
-ESMFold2 pTM & 0.278 & 0.268 & 0.86 & indistinguishable \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-On a smaller run the rejected sequences scored pLDDT $81.0$, above a natural ubiquitin
-control at $80$. Two consequences. First, a quality threshold must be used as an
-\emph{outcome} and not as a filter: selecting sequences with pLDDT ${\ge}70$ would retain
-$87\%$ of the degenerate sequences and $12\%$ of the clean ones, taking a set from $8\%$ to
-$38\%$ non-protein, and the two arms survive such a cut at different rates. We therefore
-report the fraction of \emph{all} generations that are non-degenerate \emph{and} above
-threshold. Second, on kept rows alone pseudo-perplexity correlates correctly with pLDDT
-($\rho{=}-0.48$, $p{=}4{\times}10^{-17}$), which reads as mutual validation but is shared
-bias --- the correlation is computed after the filter has removed the rows that expose it.
-Metric behaviour should be checked on rejected rows, not only on kept ones.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.98\textwidth]{figures/steer_naturalness_axis_gate_check.png}
-\caption{Naturalness scores for sequences the composition filter kept versus rejected.}
-\label{fig:steer-gate}
-\end{figure}
-
-\section{The correction operator works; the decoder is what fails}
-\label{app:steer-sdedit}
-
-Applying a single SDEdit pass to a clamped activation with \emph{no} generation
-(Fig.~\ref{fig:steer-sdedit}) recovers 89--95\% of the excess GLP diffusion loss at
-$\alpha{=}3,4,5$ and 89\% even at $\alpha{=}20$, where clamping drives loss from $0.87$ to
-$3.18$. The operator handles heavily-clamped activations; what degrades the output is
-decoding those activations back to amino acids and iterating that. Consistently, an
-apparent ``breakdown'' at $\alpha{=}5$ in earlier runs was an artifact of the SDEdit noise
-level: moving $t_{\mathrm{start}}$ from $0.5$ to $0.7$ reduced degenerate output from
-$26\%$ to $7.7\%$ and made the dose-response monotone through $\alpha{=}5$.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.55\textwidth]{figures/steer_off_manifold_diagnostic.png}
-\caption{GLP diffusion loss against steering strength, before and after a single correction
-pass applied directly to the clamped activation (no generation).}
-\label{fig:steer-sdedit}
-\end{figure}
-
-\section{The decoding protocol, and what it costs}
-\label{app:steer-protocol}
-
-Fig.~\ref{fig:steer-dose} shows the effect rising with $\alpha$ while structural confidence
-stays flat, for both arms, far below the starting proteins.
-
-The decoding budget is what governs the loss, and it is one-dimensional. Mask fraction and
-round count are interchangeable: at an expected coverage of $0.10$, the settings
-$0.02{\times}5$, $0.05{\times}2$ and $0.10{\times}1$ give pTM $0.364$, $0.364$, $0.366$ and
-effect $+0.057$, $+0.081$, $+0.078$ respectively. Fig.~\ref{fig:steer-tradeoff} therefore
-plots both objectives against $1-(1-\mathrm{mask})^{\mathrm{rounds}}$, the fraction of
-residues resampled at least once. Foldability stays within the starting proteins' own
-interval up to ${\sim}15\%$ coverage and declines beyond it, while the steering effect grows
-throughout --- so the trade-off is not between mask and rounds, but between total rewriting
-and structure.
-
-\begin{table}[htbp]
-\centering
-\caption{Two operating points, both at $n{=}40$ starting proteins per direction. pTM is
-measured on the $\alpha{=}0$ naive arm, i.e.\ the decoding loop alone.}
-\label{tab:steer-ops}
-\begin{tabular}{lrrr}
-\toprule
-setting & divergence ($\alpha{=}5$) & pTM (low/high-GRAVY starts) & degenerate \\
-\midrule
-natural starting proteins & --- & $0.373$ / $0.629$ & $0\%$ \\
-30 rounds, $T{=}1.0$ & $+3.38$ & $0.275$ / $0.319$ & $2.7\%$ \\
-5 rounds, $T{=}0.5$ & $+1.56$ & $0.332$ / $0.435$ & $3.4\%$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-A weaker signal, reported for completeness rather than as a claim: the correction itself
-may cost a little foldability. At $\alpha{=}0$ the corrected arm scores below the naive arm
-in both directions ($0.234$ vs $0.275$; $0.305$ vs $0.319$), and in the lighter setting the
-same ordering appears ($p{=}0.08$ and $p{=}0.42$), as does a gap in the fraction of
-confidently-folded output ($19\%$ vs $6\%$, $p{=}0.03$, one of 21 such comparisons). Each is
-marginal on its own; they are consistent in direction and would need a powered test.
-
-Two cautions. Lowering the sampling temperature while keeping many rounds does \emph{not}
-help: at $T{=}0.5$ with 30 rounds the decoder mode-collapses, producing $8/15$ non-proteins,
-and because those collapsed sequences score high pTM the setting appears to be the best in
-the grid to any analysis that drops degenerate rows rather than counting them. And a
-foldability comparison must use the held-out set the run actually generates from ($0.373$ or
-$0.629$), not their pooled average.
-
-We also implemented the relatedness-ranked site selection of \cite{huang2025diffmean}
-(mutating the residues least aligned with the steering vector rather than a uniform random
-subset). At matched edit budget it preserved twice as much of the starting protein, as
-intended, but cost roughly $6{\times}$ of the steering effect ($+0.97 \to +0.17$) with no
-significant foldability gain. We attribute this to our single-layer, mutated-positions-only
-intervention being too weak to move the residues the host model most resists changing;
-\cite{huang2025diffmean} steer every layer across all tokens. We therefore retain uniform
-random masking.
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.6\textwidth]{figures/steer_fig_dose_response.png}
-\caption{Effect and structural confidence against steering strength, sequences started
-hydrophilic. The lower panel is flat: the effect is bought without further structural cost,
-but from an already-degraded baseline.}
-\label{fig:steer-dose}
-\end{figure}
-
-\begin{figure}[htbp]
-\centering
-\includegraphics[width=0.72\textwidth]{figures/steer_generation_tradeoff.png}
-\caption{Steering effect (top) and foldability (bottom) against how much of the protein the
-decoder rewrites, $T{=}0.5$. Marker shape distinguishes mask fraction; the three series fall
-on a single curve, i.e.\ mask fraction and round count act only through their product.
-Shaded band: the starting proteins' own pTM ($\pm$SEM). Grey points are settings whose
-output is mostly degenerate and are excluded from the trend.}
-\label{fig:steer-tradeoff}
-\end{figure}
 
 \begin{thebibliography}{9}
 \small
