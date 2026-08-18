@@ -619,9 +619,17 @@ pass applied directly to the clamped activation (no generation).}
 \label{app:steer-protocol}
 
 Fig.~\ref{fig:steer-dose} shows the effect rising with $\alpha$ while structural confidence
-stays flat, for both arms, far below the starting proteins. Fig.~\ref{fig:steer-tradeoff}
-maps the achievable settings: masked-Gibbs round count and mask fraction trade steering
-effect against foldability, with degenerate output counted as a failure of the setting.
+stays flat, for both arms, far below the starting proteins.
+
+The decoding budget is what governs the loss, and it is one-dimensional. Mask fraction and
+round count are interchangeable: at an expected coverage of $0.10$, the settings
+$0.02{\times}5$, $0.05{\times}2$ and $0.10{\times}1$ give pTM $0.364$, $0.364$, $0.366$ and
+effect $+0.057$, $+0.081$, $+0.078$ respectively. Fig.~\ref{fig:steer-tradeoff} therefore
+plots both objectives against $1-(1-\mathrm{mask})^{\mathrm{rounds}}$, the fraction of
+residues resampled at least once. Foldability stays within the starting proteins' own
+interval up to ${\sim}15\%$ coverage and declines beyond it, while the steering effect grows
+throughout --- so the trade-off is not between mask and rounds, but between total rewriting
+and structure.
 
 \begin{table}[h]
 \centering
@@ -674,9 +682,11 @@ but from an already-degraded baseline.}
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.72\textwidth]{figures/steer_generation_tradeoff.png}
-\caption{Steering effect against foldability across decoding settings (mask fraction $\times$
-rounds), $T{=}0.5$. Point labels are round counts; settings whose output is mostly
-degenerate are excluded from the frontier.}
+\caption{Steering effect (top) and foldability (bottom) against how much of the protein the
+decoder rewrites, $T{=}0.5$. Marker shape distinguishes mask fraction; the three series fall
+on a single curve, i.e.\ mask fraction and round count act only through their product.
+Shaded band: the starting proteins' own pTM ($\pm$SEM). Grey points are settings whose
+output is mostly degenerate and are excluded from the trend.}
 \label{fig:steer-tradeoff}
 \end{figure}
 
