@@ -199,11 +199,34 @@ def whole_seq_mean_acts(extractor: ActivationExtractor, seqs: List[str]) -> np.n
     return np.stack([extractor.extract_single(s).mean(axis=0) for s in seqs])
 
 
+def assemble_pool(n_raw_seqs: int, min_len: int, max_len: int, seed: int, needed: int,
+                  tag: str = "contrast") -> List[Tuple[str, Dict[str, float]]]:
+    """Reservoir-sample and length-filter a pool big enough to fill both quartiles.
+
+    Split out of `build_property_contrast` so several properties can share ONE scan: the
+    pool does not depend on which property is being contrasted (every sequence is scored on
+    all of them), only the quartile split does. Three separate builds would stream 12 GB
+    three times for identical data.
+    """
+    n_raw = n_raw_seqs
+    for _ in range(4):
+        pool = sample_property_pool(n_raw, min_len, max_len, seed)
+        if len(pool) // 4 >= needed:
+            return pool
+        print(f"[{tag}] only {len(pool)} sequences survived length filter "
+              f"[{min_len},{max_len}] from {n_raw} raw draws (need >= {4 * needed} total) "
+              "— retrying with a bigger pool")
+        n_raw *= 2
+    raise RuntimeError("could not assemble a large-enough length-filtered UniRef50 pool "
+                       "after 4 retries — raise --n-raw-seqs/n_raw_seqs manually")
+
+
 def build_property_contrast(cfg, out_path: Path, prop_key: str = "gravy",
                             n_raw_seqs: int = 20000, min_len: int = 100,
                             max_len: int = 200, n_per_set: int = 100, n_heldout: int = 40,
                             seed: int = 0, restart: bool = False, device=None,
-                            n_heldout_high: int = 40, match_length: bool = False) -> Path:
+                            n_heldout_high: int = 40, match_length: bool = False,
+                            pool: Optional[List[Tuple[str, Dict[str, float]]]] = None) -> Path:
     """Core builder, callable directly (run_steering.py's Exp B path calls this to
     lazy-build `<property>_contrast.json` if missing — same auto-build-then-cache
     convention as `select_zinc_finger_features`/`compute_diffmean_vector` there) as well as
@@ -230,23 +253,11 @@ def build_property_contrast(cfg, out_path: Path, prop_key: str = "gravy",
         return out_path
 
     device = device or get_device(cfg.device)
-    n_raw = n_raw_seqs
-    pool: Optional[List[Tuple[str, Dict[str, float]]]] = None
-    n = 0
-    for attempt in range(4):
-        pool = sample_property_pool(n_raw, min_len, max_len, seed)
-        needed_low = n_per_set + n_heldout
-        needed_high = n_per_set + n_heldout_high
-        n = len(pool)
-        if n // 4 >= max(needed_low, needed_high):
-            break
-        print(f"[contrast/{prop_key}] only {n} sequences survived length filter "
-              f"[{min_len},{max_len}] from {n_raw} raw draws (need >= "
-              f"{4 * max(needed_low, needed_high)} total) — retrying with a bigger pool")
-        n_raw *= 2
-    else:
-        raise RuntimeError("could not assemble a large-enough length-filtered UniRef50 pool "
-                           "after 4 retries — raise --n-raw-seqs/n_raw_seqs manually")
+    if pool is None:
+        pool = assemble_pool(n_raw_seqs, min_len, max_len, seed,
+                             needed=n_per_set + max(n_heldout, n_heldout_high),
+                             tag=f"contrast/{prop_key}")
+    n = len(pool)
 
     corr = natural_correlations(pool)
     sets = build_contrast(pool, prop_key, n_per_set, n_heldout, seed,
@@ -366,8 +377,12 @@ def build_gravy_contrast(cfg, out_path: Path, **kw) -> Path:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/configs_lucia/esm8m_500m_4096_d24.yaml")
-    ap.add_argument("--property", default="gravy", choices=sorted(PROPERTIES),
-                    help="which whole-sequence property to build a contrast for")
+    ap.add_argument("--property", default="gravy",
+                    help="which property to build a contrast for: one of "
+                         f"{sorted(PROPERTIES)}, a comma-separated list, or 'all'. Several "
+                         "properties share ONE UniRef50 scan and therefore one pool, so "
+                         "their natural-correlation references are identical rather than "
+                         "merely equal in distribution.")
     ap.add_argument("--out-dir", help="default <output_dir>/steering_diffmean_<leaf>")
     ap.add_argument("--n-raw-seqs", type=int, default=20000,
                     help="raw UniRef50 sequences to reservoir-sample before length "
@@ -400,16 +415,53 @@ def main():
 
     cfg = load_config(args.config)
     set_seed(args.seed if args.seed is not None else cfg.seed)
-    prop = get_property(args.property)
-    out_dir = (Path(args.out_dir) if args.out_dir
-               else Path(cfg.output_dir) / f"steering_diffmean_{prop.leaf}")
-    out_path = out_dir / f"{args.property}_contrast.json"
 
-    build_property_contrast(cfg, out_path, prop_key=args.property, n_raw_seqs=args.n_raw_seqs,
-                            min_len=args.min_len, max_len=args.max_len,
-                            n_per_set=args.n_per_set, n_heldout=args.n_heldout,
-                            seed=args.seed, restart=args.restart,
-                            n_heldout_high=args.n_heldout_high, match_length=args.match_length)
+    keys = (PROPERTY_KEYS if args.property.strip() == "all"
+            else [k.strip() for k in args.property.split(",") if k.strip()])
+    unknown = [k for k in keys if k not in PROPERTIES]
+    if unknown:
+        ap.error(f"unknown propert{'y' if len(unknown) == 1 else 'ies'} {unknown}; "
+                 f"choose from {sorted(PROPERTIES)} (or 'all')")
+    if args.out_dir and len(keys) > 1:
+        ap.error("--out-dir names one directory but several properties were requested; "
+                 "each needs its own out-dir. Drop --out-dir to use the per-property "
+                 "default, or build them one at a time.")
+
+    targets = []
+    for k in keys:
+        out_dir = (Path(args.out_dir) if args.out_dir
+                   else Path(cfg.output_dir) / f"steering_diffmean_{get_property(k).leaf}")
+        targets.append((k, out_dir / f"{k}_contrast.json"))
+
+    # Only scan UniRef50 if at least one target actually needs building.
+    todo = [(k, p) for k, p in targets if args.restart or not p.exists()]
+    pool = None
+    if len(todo) > 1:
+        pool = assemble_pool(args.n_raw_seqs, args.min_len, args.max_len, args.seed,
+                             needed=args.n_per_set + max(args.n_heldout, args.n_heldout_high),
+                             tag="contrast/shared")
+        print(f"[contrast] one shared pool of {len(pool)} sequences for "
+              f"{[k for k, _ in todo]}")
+
+    for k, out_path in targets:
+        build_property_contrast(cfg, out_path, prop_key=k, n_raw_seqs=args.n_raw_seqs,
+                                min_len=args.min_len, max_len=args.max_len,
+                                n_per_set=args.n_per_set, n_heldout=args.n_heldout,
+                                seed=args.seed, restart=args.restart,
+                                n_heldout_high=args.n_heldout_high,
+                                match_length=args.match_length, pool=pool)
+
+    print("\n[contrast] alpha scale per property — --alpha-mode relative divides by this, "
+          "so pick ONE shared --alphas grid from these numbers:")
+    for k, out_path in targets:
+        if not out_path.exists():
+            continue
+        d = json.loads(out_path.read_text())
+        scale = d["mean_act_norm"] / d["vector_norm"]
+        print(f"  {k:>12}: ||v||={d['vector_norm']:.4f}  mean||h||={d['mean_act_norm']:.4f}  "
+              f"raw alpha = relative alpha x {scale:.3f}  "
+              f"(length gap {d.get('length_gap_pool_sd', float('nan')):+.2f} SD, "
+              f"contrast {d.get('prop_gap_pool_sd', float('nan')):+.2f} SD)")
 
 
 if __name__ == "__main__":
