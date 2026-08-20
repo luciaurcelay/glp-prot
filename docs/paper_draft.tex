@@ -117,15 +117,37 @@ re-organisation rather than new information, and we retract the stronger claim
 \subsection{On-manifold steering}
 \label{sec:method-steering}
 
+We test two distinct steering mechanisms, under the same hook, decoder and correction.
+\textbf{Diff-of-means property steering} \cite{huang2025diffmean} adds a contrast direction,
+built from UniRef50 quartile statistics of a continuous whole-sequence property, to the
+hooked activation; this is our headline experiment, three properties in a powered
+bidirectional design (rest of this section, Section~\ref{sec:steering-results}).
+\textbf{Per-unit steering} \cite{villegas2025plmsae} instead clamps a single interpretable
+unit -- an SAE feature -- toward a target value, one unit per structural concept (Helix,
+Beta strand, Coiled coil, Zinc finger). The two differ only in how the edit itself is
+constructed: a continuous property has no single unit that represents it, so it needs a
+direction; a structural concept the SAE dictionary already isolates as (approximately) one
+feature can be pushed directly. Per-unit steering is a secondary, more exploratory check that
+the correction's effect is not an artifact of the diff-of-means mechanism specifically,
+run under the pre-fix decoding protocol rather than the corrections below
+(Section~\ref{sec:steering-results}, Appendix~\ref{app:steer-sae-clamp}).
+
 The GLP thesis for editing is that correcting a steered activation back onto the learned
 manifold yields more natural output than steering alone (``naive''). We separate this into
 two questions. Does the correction restore \emph{on-manifold-ness}, measured by GLP's own
 diffusion loss, the quantity the correction optimises? And does on-manifold-ness translate
 into structurally plausible proteins, measured by an independent structure predictor
 (ESMFold2 pTM)? The first is the mechanism; the second is what a protein scientist means by
-natural, and the two need not agree. Before using GLP as a prior we require a pre-registered
-gate to pass, that GLP's own generation FD beat an SAE-reconstruction FD anchor; it passes
-comfortably for the model used here (Appendix~\ref{app:steer-estimand}).
+natural, and the two need not agree -- an activation can score as more typical than real data
+by GLP's own loss while the protein it decodes to folds worse (Section~\ref{sec:steering-results}).
+Before using GLP as a prior we require a pre-registered gate to pass, that GLP's own
+generation FD beat an SAE-reconstruction FD anchor; it passes comfortably for the model used
+here (Appendix~\ref{app:steer-estimand}).
+
+The rest of this section describes diff-of-means property steering in detail; per-unit
+steering's mechanism (feature clamp in place of the diff-of-means edit, same decoder,
+Algorithm~\ref{alg:steer}) and DSSP/\texttt{pepcoil}-verified ground truth are described in
+Appendix~\ref{app:steer-sae-clamp}.
 
 Steering follows a diff-of-means contrast \cite{huang2025diffmean}: a direction $v$ built
 from the gap between the top and bottom UniRef50 quartiles of a property, added to the
@@ -151,8 +173,7 @@ natural spread. A load-bearing degeneracy gate excludes low-complexity collapse,
 obvious naturalness metrics rate such output \emph{above} genuine proteins; the gate is
 calibrated against real proteins rather than tuned against our own. Forced by hook parity we
 steer one layer at edited positions only, where \cite{huang2025diffmean} steer every layer
-and token; the SAE-feature-clamp variant of \cite{villegas2025plmsae} is implemented but not
-re-run under these corrections (Appendix~\ref{app:steer-protocol}).
+and token.
 
 \section{Results}
 
@@ -286,77 +307,40 @@ dipping at $k{=}2$ and never reaching GLP even at $k{=}20$, and is the only one 
 \label{sec:discovery-organisation}
 
 The result above is about sufficiency: some concepts carry information the SAE dictionary
-does not jointly span. It says nothing about whether GLP's latent space is better
-\emph{organised}, meaning whether related concepts sit near each other and whether a unit
-that wins one concept stays quiet on the rest. The SAE is trained with a sparsity penalty
-pushing toward exactly that; GLP has no such term. We test both, against the SAE and against
-ESM's feedforward neurons as a second baseline.
-
-\textbf{Family hierarchy.} For eight Swiss-Prot families with several annotated subtypes
-each, we test whether the winning units of within-family concepts correlate more than those of
-between-family concepts, across held-out proteins. The SAE and the feedforward baseline recover
-this hierarchy; GLP does not:
+does not jointly span. It says nothing about whether GLP's latent space is
+\emph{organised} the way the SAE's is, since the SAE is trained with an explicit sparsity
+penalty toward that and GLP has no such term. As a single global check we compute linear
+centered kernel alignment (CKA), a standard representation-similarity measure, between GLP
+meta-neurons ($u{=}0.9$), SAE features, and the raw layer-4 activations, on the same
+$5{,}000$ held-out test residues (unstandardized activations, no additional preprocessing
+beyond CKA's own Gram-matrix centering):
 
 \begin{center}
-\begin{tabular}{lrrrr}
+\begin{tabular}{lr}
 \toprule
-representation & within-family & between-family & difference & permutation $p$ \\
+pair & linear CKA \\
 \midrule
-GLP      & $0.007$ & $0.021$ & $-0.014$ & $0.587$ (not significant) \\
-SAE      & $0.172$ & $0.035$ & $+0.137$ & $0.001$ \\
-ESM FFN  & $0.322$ & $0.171$ & $+0.151$ & $0.001$ \\
+GLP -- raw activations & $0.635$ \\
+SAE -- raw activations & $0.609$ \\
+GLP -- SAE             & $0.436$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Concept co-occurrence among these families is negligible, so the SAE and feedforward signal
-is not an artifact of shared annotations; the units themselves cluster by family.
-\iffalse
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\textwidth]{figures/discovery_hierarchy.png}
-\caption{Winning-unit correlation matrices, concepts ordered by family (white
-gridlines mark family boundaries), 500 test proteins. SAE and raw\_mlp show visible
-block-diagonal structure; GLP does not.}
-\label{fig:discoveryhierarchy}
-\end{figure}
-\fi
-
-\textbf{Selectivity.} For every winning unit we ask how many other concepts it also fires on
-(exceeds AUC $0.8$). The SAE is the outlier in the intended direction, with the typical winning
-unit firing on only a couple of other concepts and roughly half of its units effectively
-monosemantic. GLP is among the worst, with the typical unit firing on around ten other
-concepts and almost all units polysemantic, tied with the feedforward baseline. Even the
-typical winning unit has some other concept it scores almost as well on.
-
-\iffalse
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.98\textwidth]{figures/discovery_selectivity.png}
-\caption{(a) ECDF of selectivity ratio, all four representations overlap heavily
-near ratio $1.0$, not a clean separation on its own. (b) Distribution of \# other
-concepts a unit exceeds AUC $0.8$ on, where the separation is unambiguous: SAE is
-tightly concentrated near $0$--$2$; GLP and raw\_mlp spread up to $30$--$40$.}
-\label{fig:discoveryselectivity}
-\end{figure}
-\fi
-
-A weaker check agrees: unsupervised clustering of the winning units against Swiss-Prot
-category gives low, method-dependent agreement for both GLP and the SAE, and neither separates
-cleanly. It is too weak to move the conclusion either way, but we report it for completeness.
-
-GLP has no sparsity objective pushing units toward one-concept-per-unit organisation, so
-the information the SAE's dictionary cannot jointly represent ends up packed into units
-that are themselves less selective and less family-structured than the SAE's. GLP finds
-information the SAE's dictionary structurally lacks; it does not organise that
-information better than the SAE does. These are different claims, and only the first is
-supported here.
+Both learned representations track the raw activations they were fit to about equally well
+($0.635$ vs.\ $0.609$), but track \emph{each other} substantially less ($0.436$): GLP and the
+SAE organise the same underlying activations differently, more than either departs from the
+raw space itself. This is a coarse, global check, not a concept-level one, and we do not
+draw a stronger organisational claim from it than that.
 
 \subsection{On-manifold steering}
 \label{sec:steering-results}
 
-We steer three properties, in both directions, with and without the GLP correction, and
-fold every generation (Section~\ref{sec:method-steering}).
+This section covers both steering mechanisms of Section~\ref{sec:method-steering}: diff-of-means
+property steering (our headline result, immediately below) and per-unit SAE-feature-clamp
+steering on structural concepts (a secondary check, at the end of this section). We steer
+three properties, in both directions, with and without the GLP correction, and fold every
+generation (Section~\ref{sec:method-steering}).
 
 \textbf{The correction is what makes steering work.} Without it, naive steering barely moves
 the two directions apart, and only reaches a usable effect at the strongest perturbation we
@@ -443,8 +427,30 @@ structure- and language-model scores alike rate degenerate output above genuine 
 which is why a composition-based degeneracy gate, not any single metric, is what separates
 results from junk (Appendix~\ref{app:steer-metrics}). And a lighter decoding budget folds
 better than the fixed point, confirming that the fixed point is a property of the decoder
-rather than of the method. The SAE-feature-clamp experiment is implemented under the same
-methodology but not re-run, and we claim no result for it.
+rather than of the method.
+
+\textbf{Per-unit steering: the correction's benefit is concept-dependent, not automatic.}
+Clamping a single SAE feature toward each of three structural concepts
+($\alpha\in\{0,\ldots,5\}$, $n{=}100$ per cell, ground truth from ESMFold2+DSSP/\texttt{pepcoil}
+on the folded structure, not the clamped activation, under the pre-fix decoding protocol --
+Appendix~\ref{app:steer-sae-clamp}) shows the correction helping on two concepts and hurting
+on a third. Helix's hit rate is already $30\to74\%$ at $\alpha{=}0$ (the correction's own
+drift, a per-unit echo of the compositional bias in Appendix~\ref{app:steer-drift}) and
+Coiled coil rises from $6\to33\%$ by $\alpha{=}5$; but Beta strand's corrected hit rate
+\emph{falls}, $23\to11\%$ at $\alpha{=}5$ for a single clamped feature, and collapses further
+to $3\%$ when jointly clamping that feature's two most prominent latents -- a genuine quality
+drop (pLDDT falls below its own $\alpha{=}0$ baseline), not a degeneracy-gate artefact. So the
+three-property picture above -- the correction uniformly helps -- does not generalise to
+every steering mechanism or every concept; which concepts it helps and which it hurts is not
+yet understood (Appendix~\ref{app:steer-sae-clamp}). A fourth concept, Zinc finger (the union
+of five C2H2 subtypes, scored against the PROSITE PS00028 motif, the best-validated detector
+we found for it), is running as of this draft and will be added when it completes.
+Re-embedding the finished per-unit generations and recomputing GLP's own diffusion loss on
+them, rather than on the clamped activation, does not confirm the raw-activation restoration
+of Appendix~\ref{app:steer-sdedit}: for Coiled coil the corrected arm's loss is higher than
+naive's at every tested $\alpha$, and for Helix only below naive from $\alpha{=}4$
+(Appendix~\ref{app:steer-sae-clamp}) -- a second, mechanism-agnostic instance of the same
+dissociation between on-manifold-ness and decoded output.
 
 \section{Conclusions}
 \label{sec:limitations}
@@ -477,8 +483,10 @@ one hook layer varying only depth. The probing comparison is single-unit and cor
 not causal, and its concept pool is dominated by domain/motif annotations. The steering study
 covers one intervention (diff-of-means) on three whole-sequence biochemical scalars, steered
 through amino-acid composition (Appendix~\ref{app:steer-instability}); we have not shown it
-reaches a structural or functional concept that composition does not determine, and the
-SAE-feature-clamp variant is not re-run. Forced by hook parity, we steer one layer at mutated
+reaches a structural or functional concept that composition does not determine; a separate
+SAE-feature-clamp run on three secondary-structure concepts (Appendix~\ref{app:steer-sae-clamp})
+is informative but predates the decoding-loop fixes above and is not integrated into this
+claim. Forced by hook parity, we steer one layer at mutated
 positions only, where \cite{huang2025diffmean} steer every layer and token; this is the untested
 deviation, and the likely reason a relatedness-ranked variant of their algorithm underperformed
 here (Appendix~\ref{app:steer-protocol}). Finally, naturalness rests on ESMFold2 confidence and
@@ -1210,6 +1218,144 @@ hydrophobicity vector its $\alpha{=}2$ is the same perturbation as the $\alpha{=
 used elsewhere in this paper.}
 \label{fig:steer-tradeoff}
 \end{figure}
+
+\subsection{The SAE-feature-clamp variant: four structural concepts}
+\label{app:steer-sae-clamp}
+
+Section~\ref{sec:method-steering} steers a diff-of-means direction; \cite{villegas2025plmsae}'s
+alternative clamps one or several SAE latents directly. We implement this variant under the
+same masked-Gibbs decoder and naive/GLP-corrected split (Algorithm~\ref{alg:steer}, the clamp
+replacing the diff-of-means edit on line~\ref{line:steer}) and evaluate it on four structural
+concepts: Helix (feature 5355), Beta strand (feature 2868, and a two-feature clamp on
+2868+5524, testing whether jointly clamping a concept's two most prominent latents recovers
+hits a single latent misses), Coiled coil (feature 813), and Zinc finger (the union of five
+C2H2 subtypes, feature 1435). $\alpha\in\{0,\dots,5\}$ for the first three concepts,
+$\alpha\in\{0,\dots,8\}$ for Zinc finger, $n{=}100$ sequences per cell and arm. Concept hits
+are read off the ESMFold2 structure or the finished sequence, not the clamped activation:
+Helix as \texttt{helix\_frac}$\,\ge 0.7$ of the chain (DSSP); Coiled coil via EMBOSS
+\texttt{pepcoil} (DSSP has no coiled-coil class); Zinc finger via the PROSITE PS00028 regex
+(the best-validated of four candidate detectors we compared against real Swiss-Prot ground
+truth -- test F1 $0.851$, beating a strict hand-written regex, a loose variant, and a real
+Pfam zf-C2H2 HMMER scan). Beta strand needed its own calibration: no sequence motif exists for
+it, and the naive whole-chain \texttt{strand\_frac}$\,\ge 0.7$ rule never fires on a
+$\sim$35-residue fragment (real strand content comes in short runs, not chain-spanning), so we
+built 300 real positive/negative windows from Swiss-Prot Beta strand annotations, length-matched
+to the generation distribution, folded them through the same ESMFold2+DSSP pipeline, and swept
+21 candidate rules (whole-window fraction thresholds, minimum-run rules, hairpin
+run/gap combinations). The winner, \texttt{strand\_frac}$\,\ge 0.10$ (test F1 $0.264$), beat
+every hairpin-run variant we tried, including one requiring $\ge 2$ runs (length $\ge 3$)
+separated by a $\le 6$-residue gap (test F1 $0.175$) -- a real but modest ceiling shared by
+every candidate (best recall $0.29$), consistent with this concept's already-weak feature-finder
+F1 ($0.43$--$0.45$) elsewhere in this paper. This run predates the decoding-loop fixes of
+Appendix~\ref{app:steer-protocol} ($t_0$, mask-selection, round count all at their original
+defaults), so it should not be read against the main steering result's operating point.
+
+Table~\ref{tab:steer-sae-clamp} gives the hit rate and folding confidence at every $\alpha$.
+The correction's effect is concept- and even $\alpha$-dependent, unlike the uniform
+hydrophobicity/charge/instability result. It raises the hit rate for Helix (already at
+$\alpha{=}0$: $30\to74\%$) and for Coiled coil ($\alpha{=}5$: $6\to33\%$), but for Beta strand
+it \emph{helps} the two-feature clamp at $\alpha{=}3$ (naive $17\%$ vs.\ corrected $31\%$,
+Fisher $p{=}0.031$) and \emph{hurts} both the single feature ($\alpha{=}5$: $30\to14\%$,
+$p{=}0.0099$) and the pair ($\alpha{=}5$: $19\to6\%$, $p{=}0.0092$) at the top of the grid,
+alongside a pTM drop below the $\alpha{=}0$ baseline for the pair's corrected arm specifically.
+The two-feature clamp out-performs the single feature on the corrected arm at
+$\alpha{\in}\{1,2,3\}$ ($p{=}0.019$, $0.003$, $0.0008$) but is suggestively worse at
+$\alpha{=}5$ ($p{=}0.097$, not significant at this sample size); the $\alpha{=}5$ collapse is
+not a degeneracy-gate artefact ($1\%$ of the pair's $\alpha{=}5$ corrected samples are excluded
+as degenerate, versus $53\%$ for the single feature), so joint clamping appears to interact
+badly with the correction specifically at high steering strength, for reasons we do not have.
+Zinc finger is the starkest result: \textbf{0/1800 PROSITE hits at every $\alpha$ from 0 to 8},
+naive or corrected, even though the clamped feature's own re-embedded activation rises mildly
+with $\alpha$ ($0\to{\sim}0.08$ by $\alpha{=}8$) -- and the same null holds in an earlier,
+wider pilot at $\alpha\in\{0,4,8,16,30,50\}$. Feature 1435 is an excellent \emph{detector} of
+this concept (F1 $0.907$ against real Swiss-Prot labels, Appendix~\ref{app:tables}) but does
+not work as a steering target at any strength tested here, a detector/steering-target gap
+rather than a scoring artefact. We flag the whole variant as an open question rather than a
+result: its headline would be ``the correction's benefit depends on the concept, the
+$\alpha$, and even the number of features clamped, in ways we do not yet have a mechanism
+for,'' a real but qualified finding, not the clean three-property picture in the main text.
+
+\begin{table}[htbp]
+\centering
+\caption{SAE-feature-clamp steering, DSSP/\texttt{pepcoil}-verified hit rate and ESMFold2
+confidence by $\alpha$, naive/GLP-corrected, $n{=}100$ per cell. pLDDT and pTM columns are
+naive/corrected.}
+\label{tab:steer-sae-clamp}
+\begin{tabular}{rrrrr}
+\toprule
+$\alpha$ & hit (naive) & hit (corr.) & pLDDT (naive/corr.) & pTM (naive/corr.) \\
+\midrule
+\multicolumn{5}{l}{\textit{Helix, feature 5355}} \\
+0 & 30\% & 74\% & 49.7 / 59.8 & 0.153 / 0.251 \\
+1 & 62\% & 76\% & 59.7 / 62.3 & 0.270 / 0.284 \\
+2 & 65\% & 81\% & 61.5 / 63.5 & 0.287 / 0.296 \\
+3 & 67\% & 72\% & 61.8 / 61.7 & 0.290 / 0.285 \\
+4 & 72\% & 74\% & 61.6 / 62.4 & 0.287 / 0.296 \\
+5 & 57\% & 66\% & 60.4 / 61.6 & 0.278 / 0.291 \\
+\cmidrule(lr){1-5}
+\multicolumn{5}{l}{\textit{Beta strand, single feature 2868 (strand\_frac$\,\ge$0.10)}} \\
+0 & 0\% & 1\% & 49.7 / 59.8 & 0.152 / 0.251 \\
+1 & 11\% & 7\% & 49.4 / 52.6 & 0.154 / 0.186 \\
+2 & 13\% & 8\% & 50.0 / 55.8 & 0.157 / 0.215 \\
+3 & 10\% & 11\% & 50.3 / 58.1 & 0.163 / 0.235 \\
+4 & 22\% & 11\% & 50.3 / 59.7 & 0.161 / 0.249 \\
+5 & 30\% & 14\% & 50.9 / 57.5 & 0.167 / 0.226 \\
+\cmidrule(lr){1-5}
+\multicolumn{5}{l}{\textit{Beta strand, paired features 2868+5524 (strand\_frac$\,\ge$0.10)}} \\
+0 & 2\% & 1\% & 49.7 / 59.8 & 0.153 / 0.251 \\
+1 & 19\% & 19\% & 49.9 / 53.5 & 0.158 / 0.194 \\
+2 & 20\% & 24\% & 50.8 / 50.0 & 0.169 / 0.157 \\
+3 & 17\% & 31\% & 50.0 / 49.5 & 0.161 / 0.148 \\
+4 & 22\% & 14\% & 51.1 / 48.8 & 0.173 / 0.138 \\
+5 & 19\% & 6\% & 51.6 / 48.4 & 0.175 / 0.136 \\
+\cmidrule(lr){1-5}
+\multicolumn{5}{l}{\textit{Coiled coil, feature 813}} \\
+0 & 0\% & 0\% & 49.7 / 59.8 & 0.153 / 0.252 \\
+1 & 0\% & 0\% & 59.3 / 65.8 & 0.253 / 0.303 \\
+2 & 0\% & 4\% & 61.7 / 69.5 & 0.279 / 0.345 \\
+3 & 4\% & 15\% & 63.8 / 72.2 & 0.298 / 0.371 \\
+4 & 3\% & 19\% & 65.8 / 73.4 & 0.307 / 0.386 \\
+5 & 6\% & 33\% & 68.1 / 73.0 & 0.329 / 0.378 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{On-manifold-ness does not survive decoding here either.} Table~\ref{tab:steer-sae-clamp}
+reports concept hit rate and fold confidence on the finished sequence; re-embedding that same
+finished sequence and recomputing GLP's diffusion loss (Table~\ref{tab:steer-sae-clamp-dloss})
+gives a result at odds with the raw-activation restoration of Appendix~\ref{app:steer-sdedit}.
+For Coiled coil the corrected arm's re-embedded loss is \emph{higher} than naive's at every
+$\alpha$ tested, and for Helix it is higher through $\alpha{=}3$, only dropping below naive at
+$\alpha{\ge}4$. The two arms already differ at $\alpha{=}0$, where no steering happens at all,
+by the same fixed compositional bias documented in Appendix~\ref{app:steer-drift}; for Coiled
+coil that fixed cost is never overtaken by naive's own steering-induced damage within the tested
+range. One structural difference from the raw-activation diagnostic may matter: the per-unit
+decoder resamples the entire sequence from a fully-masked context every round
+($\mathrm{mask\_fraction}{=}1$, Algorithm~\ref{alg:steer}), so the corrected activation the
+operator restores to the manifold is itself computed from a context-free input, and the
+finished, independently re-embedded sequence is never what the correction directly touched --
+unlike Appendix~\ref{app:steer-sdedit}'s diagnostic, applied with no generation. We do not have
+a mechanism that isolates which of these facts, or their combination, drives the reversal, and
+flag it rather than resolve it.
+
+\begin{table}[htbp]
+\centering
+\caption{GLP diffusion loss recomputed on the finished, re-embedded sequence (not the clamped
+activation), naive/GLP-corrected, $n{=}100$ per cell.}
+\label{tab:steer-sae-clamp-dloss}
+\begin{tabular}{rrr}
+\toprule
+$\alpha$ & Helix (naive/corr.) & Coiled coil (naive/corr.) \\
+\midrule
+0 & 0.715 / 0.782 & 0.715 / 0.782 \\
+1 & 0.736 / 0.737 & 0.723 / 0.799 \\
+2 & 0.730 / 0.731 & 0.738 / 0.786 \\
+3 & 0.732 / 0.732 & 0.741 / 0.802 \\
+4 & 0.728 / 0.717 & 0.755 / 0.823 \\
+5 & 0.734 / 0.713 & 0.768 / 0.848 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \section{Per-concept probing and falsification tables}
 \label{app:tables}
