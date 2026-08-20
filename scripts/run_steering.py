@@ -35,11 +35,18 @@ and Part 3 analysis (Pareto plot, three-regime breakdown, rescue sanity check). 
 directly (not assumed absent): its `interpretability/` scripts only correlate SAE
 activations with Swiss-Prot annotation spans (no sequence generation, no
 masking/refinement loop, no C2H2 or any other pattern detector — structural or
-otherwise). Its own steering pseudocode's "C2H2 pattern" is exactly the sequence regex
-below, not a folded-structure geometric check; folding here supplies pLDDT (naturalness),
-not concept detection. It also ships its own SAE (`evillegasgarcia/sae_esm2_6_l3`,
-same hook layer, different architecture/training run) — not used here; this experiment
-clamps InterPLM's SAE, per the spec's own Setup section.
+otherwise). The PAPER (arXiv:2502.09135 §4.2, not in the released code) verifies
+zinc-finger hits with an external tool -- Sathyaseelan, Patro & Rathinavelan (2023,
+Pattern Recognition 135:109134), a sequence-pattern-+-HMM-profile predictor, not a
+hand-written regex and not a folded-structure geometric check. We don't have that tool
+(MN5 is offline); `C2H2_RE` below is our own regex approximation of the C-x-C...H-x-H
+spacing villegas describes in prose, not a reproduction of their actual detector --
+treat any "villegas" comparison in this codebase as that approximation, and the Pfam
+zf-C2H2 HMMER scan mentioned below as the closest already-benchmarked stand-in for
+their HMM-profile-based method. Folding here supplies pLDDT (naturalness), not concept
+detection. It also ships its own SAE (`evillegasgarcia/sae_esm2_6_l3`, same hook layer,
+different architecture/training run) — not used here; this experiment clamps
+InterPLM's SAE, per the spec's own Setup section.
 """
 from __future__ import annotations
 
@@ -94,7 +101,10 @@ C2H2_RE_LOOSE = re.compile(r"C.{1,6}C.{9,15}H.{1,7}H")
 #   PROSITE_RE (this one)             0.766   0.851      78.3%        75.0%
 #   C2H2_RE (strict, above)           0.712   0.750      91.3%        58.3%
 #   real Pfam zf-C2H2 HMM (PF00096.33, via pyhmmer hmmsearch -- the literal profile
-#     model Villegas-Garcia & Ansuini's "Pfam family match" step is built on)
+#     model behind the "Pfam family match" HALF of Villegas-Garcia & Ansuini's actual
+#     verification step (arXiv:2502.09135 §4.2: Sathyaseelan et al. 2023's tool, which
+#     checks known zinc-finger motifs AND Pfam family matches -- we only reproduce the
+#     Pfam half; see the module docstring above)
 #                                      0.683   0.524      60.9%        77.8%
 #   C2H2_RE_LOOSE (above)             0.145   0.135      91.3%         7.9%
 # PROSITE_RE wins on both splits, including against the literal HMM-based method --
