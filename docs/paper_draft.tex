@@ -446,11 +446,12 @@ yet understood (Appendix~\ref{app:steer-sae-clamp}). A fourth concept, Zinc fing
 of five C2H2 subtypes, scored against the PROSITE PS00028 motif, the best-validated detector
 we found for it), is running as of this draft and will be added when it completes.
 Re-embedding the finished per-unit generations and recomputing GLP's own diffusion loss on
-them, rather than on the clamped activation, does not confirm the raw-activation restoration
-of Appendix~\ref{app:steer-sdedit}: for Coiled coil the corrected arm's loss is higher than
-naive's at every tested $\alpha$, and for Helix only below naive from $\alpha{=}4$
-(Appendix~\ref{app:steer-sae-clamp}) -- a second, mechanism-agnostic instance of the same
-dissociation between on-manifold-ness and decoded output.
+them, rather than on the clamped activation, does not confirm the raw-activation restoration of
+Appendix~\ref{app:steer-sdedit}: for Coiled coil the corrected arm's loss is higher than
+naive's at every tested $\alpha$, and for Helix only below naive from $\alpha{=}4$ -- exactly
+the range where corrected is simultaneously ahead on hit rate and fold confidence
+(Appendix~\ref{app:steer-sae-clamp}). GLP's self-assessed typicality tracks sample quality in
+neither direction here.
 
 \section{Conclusions}
 \label{sec:limitations}
@@ -1320,23 +1321,29 @@ $\alpha$ & hit (naive) & hit (corr.) & pLDDT (naive/corr.) & pTM (naive/corr.) \
 \end{tabular}
 \end{table}
 
-\paragraph{On-manifold-ness does not survive decoding here either.} Table~\ref{tab:steer-sae-clamp}
-reports concept hit rate and fold confidence on the finished sequence; re-embedding that same
-finished sequence and recomputing GLP's diffusion loss (Table~\ref{tab:steer-sae-clamp-dloss})
-gives a result at odds with the raw-activation restoration of Appendix~\ref{app:steer-sdedit}.
-For Coiled coil the corrected arm's re-embedded loss is \emph{higher} than naive's at every
-$\alpha$ tested, and for Helix it is higher through $\alpha{=}3$, only dropping below naive at
-$\alpha{\ge}4$. The two arms already differ at $\alpha{=}0$, where no steering happens at all,
-by the same fixed compositional bias documented in Appendix~\ref{app:steer-drift}; for Coiled
-coil that fixed cost is never overtaken by naive's own steering-induced damage within the tested
-range. One structural difference from the raw-activation diagnostic may matter: the per-unit
-decoder resamples the entire sequence from a fully-masked context every round
+\paragraph{Higher re-embedded diffusion loss coincides with the better sequences, not the worse
+ones.} Table~\ref{tab:steer-sae-clamp} already shows the corrected arm winning both concept hit
+rate and fold confidence at every $\alpha$ for both concepts. Re-embedding the same finished
+sequences and recomputing GLP's diffusion loss on them (Table~\ref{tab:steer-sae-clamp-dloss})
+does not track that: for Coiled coil the corrected arm's re-embedded loss is \emph{higher} than
+naive's at every $\alpha$ tested, and for Helix it is higher through $\alpha{=}3$, exactly the
+range where corrected is simultaneously winning on two independent structural signals (DSSP/
+\texttt{pepcoil} hit rate, ESMFold2 pLDDT/pTM). This is the same dissociation between GLP's
+self-assessed typicality and actual sample quality argued in
+Section~\ref{sec:steering-results} (``on-manifold, yes; folded, no''), but running the other
+way: there, lower diffusion loss did not buy better folding; here, higher diffusion loss
+coincides with better folding and a higher hit rate, on the very sequences the correction
+produced. Either way, GLP's own loss is not a trustworthy stand-in for sample quality. The two
+arms already differ at $\alpha{=}0$, where no steering happens at all, by the same fixed
+compositional bias documented in Appendix~\ref{app:steer-drift}. One structural difference from
+the raw-activation diagnostic may be relevant to why the loss itself moves this way: the
+per-unit decoder resamples the entire sequence from a fully-masked context every round
 ($\mathrm{mask\_fraction}{=}1$, Algorithm~\ref{alg:steer}), so the corrected activation the
 operator restores to the manifold is itself computed from a context-free input, and the
 finished, independently re-embedded sequence is never what the correction directly touched --
 unlike Appendix~\ref{app:steer-sdedit}'s diagnostic, applied with no generation. We do not have
-a mechanism that isolates which of these facts, or their combination, drives the reversal, and
-flag it rather than resolve it.
+a mechanism that isolates which of these facts, or their combination, explains the loss
+movement, and flag it rather than resolve it.
 
 \begin{table}[htbp]
 \centering
