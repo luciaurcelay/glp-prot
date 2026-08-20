@@ -1975,7 +1975,14 @@ def main():
                                 args.temperature, g, device, diag_fn=diag_fn, select_fn=select_fn,
                                 log_fn=log_fn, selection=args.mask_selection,
                                 n_mutations=args.n_mutations,
-                                score_vec=None if is_a else diffmean_vec)
+                                # sign-adjust so relatedness masks positions opposed to THIS
+                                # direction's target: for 'down' (sign=-1) the residues most
+                                # opposed to lowering the property are the ones most aligned
+                                # with +v (highest property), so the vector must flip too —
+                                # cosine is scale-invariant, so the alpha_scale on diffmean_vec
+                                # is irrelevant here and only the sign matters. Inert for
+                                # random/confidence (they ignore score_vec).
+                                score_vec=None if is_a else sign * diffmean_vec)
 
                             pppl = pseudo_perplexity(steerer, seq, device, batch_size=args.pppl_batch_size)
                             acts_final = torch.from_numpy(extractor.extract_single(seq)).float()
