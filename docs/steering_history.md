@@ -997,7 +997,11 @@ direction.
   counterfactual that motivates the per-residue decision ("ranking on net charge
   would have ranked on length, r=?") is asserted rather than measured. One extra
   4-minute pool scan would settle it.
-- Exp A has still never been re-run.
+- Exp A has still never been re-run **on the property-steering fixes above**
+  (§14's decoding-loop/gate/rounds findings are all Exp B). It *was* re-run on
+  three secondary-structure concepts on 2026-08-20, independently — see §15 —
+  but that run predates and does not incorporate §14's fixed-point/gate findings
+  (t_start, decoding budget, etc. all at their old defaults there too).
 
 ### 14.7 Where the paper's numbers come from
 
@@ -1016,3 +1020,224 @@ The three runs predate `contrast_path` being recorded in `summary.json`, so they
 `--contrasts gravy=<path>,charge=<path>,instability=<path>` pointing at
 `runs/steering_crg/steering_diffmean_{hydro,charge,instability}/*_contrast.json`. Runs
 started after that change are self-describing and need no override.
+
+## §15 — Exp A re-run on secondary structure (2026-08-20)
+
+First Exp A re-run since §13/§14 (property steering, Exp B) — three SS concepts,
+via `configs/configs_lucia/esm8m_500m_4096_d24.yaml`, `--zinc-finger-feature`
+despite not being zinc: Helix (SAE feature 5355, thr 0.15), Beta strand (feature
+2868, thr 0.15), Coiled coil (feature 813, thr 0.5). All `--concept-detector
+feature_activation` (see §15.1 for why that flag matters), alpha 0-5, 100
+sequences/cell, both naive and GLP-corrected arms, folded (ESMFold2 + DSSP) via
+`submit_fold.sh`. Runs: `steering_sae_zinc_{helix_5355,betastrand_2868,coiledcoil_813}`
+under `runs/uniref50_500m_4096_d24_steering`.
+
+### §15.1 A live bug found and fixed mid-run: the motif detector doesn't generalize
+
+Exp A's concept-hit check was hardcoded to the C2H2 zinc-finger PROSITE regex
+(`c2h2_concept_score`) — meaningless for a concept like Coiled coil (real coiled
+coils don't contain C2H2 motifs). `steering_sae_zinc_coiledcoil_813` is the run
+that surfaced this: 0/1200 motif hits at every alpha including the baseline.
+Fixed going forward via `--concept-detector feature_activation` (re-embed the
+finished sequence through ESM+SAE, check the target feature's own F1-calibrated
+threshold from `compare_feature_methods.py` — §16 below); `scripts/rescore_exp_a_concept.py`
+retroactively rescores an already-generated CSV the same way. **`steering_sae_zinc_union1435`
+(zinc-finger feature 1435, launched the same night) was NOT given this flag and
+still needs rescoring** — its C2H2-regex detector never fires (0/1200 hits at every
+alpha 4-50 despite the underlying feature activation scaling correctly), so its
+concept-efficacy numbers are currently uninterpretable. Rescore with
+`--threshold 0.4846 --sign 1` (own, F1 0.85) or `--threshold 0.8` (interplm_exact,
+F1 0.91), then fold. **Still open.**
+
+### §15.2 DSSP ground truth: two more invented-metric mistakes, both fixed
+
+First attempt at a structural (not just SAE-activation) efficacy check used
+`ss_hit = (helix_frac or strand_frac) >= 0.7` of the WHOLE chain (`fold_steering_outputs.py`).
+This is fine for Helix but is a **bad metric for Beta strand**: real strand
+content comes in short runs bounded by turns, so no real hairpin embedded in a
+~35-residue chain (with flanking coil) ever reaches 70% pure-E content — the
+metric read 0% at every alpha, naive or corrected, steered or not, which looked
+like "steering doesn't work" but was actually a threshold artifact. Fix: define
+success as "contains >=2 strand runs (len>=3) joined by a <=6-residue turn" (a
+real hairpin signature), computed directly from the `ss_string` DSSP already
+writes to `fold_confidence.csv` — no re-fold needed. Recovers a real, alpha-
+dependent, concept-specific signal: 0% (baseline) -> 23% naive / 11% corrected by
+alpha=5, staying at noise floor (0-2%) in the helix and coiled-coil runs (so it's
+specific, not a generic "weird sequence" artifact). Correction is again ~2x
+weaker than naive here, consistent with the efficacy-vs-naturalness tradeoff in
+§14.
+
+**Coiled coil has no DSSP ground truth at all** — DSSP has no coiled-coil class
+(H/G/I only distinguishes helix type, not supercoiling), so `ss_hit` for this
+run was really just "did this fold into a plain long helix," useless for
+verifying the specific concept. Fixed by swapping in **EMBOSS `pepcoil`**
+(`module load emboss/6.6.0` on MN5) — the standard McLachlan-Stewart/Lupas
+heptad-repeat predictor, not a homebrew reimplementation (an earlier from-scratch
+physicochemical heptad scorer, `glp_plm/eval/coiled_coil.py`, is kept for
+reference only — its calibrated F1 was 0.38 vs pepcoil's own-operating-point 0.15
+against real Swiss-Prot labels, and it's superseded; use `scripts/run_pepcoil.py`
+/ `scripts/calibrate_pepcoil.py` going forward). pepcoil correctly rejects a
+globular control and a poly-Leu homopolymer while confidently calling GCN4's
+leucine zipper coiled (prob 1.0).
+
+Calibrated against real Swiss-Prot Coiled-coil labels, protein-level (own
+verdict, no invented threshold): precision 0.08-0.10, recall-per-domain
+**0.99**, F1 0.15-0.18. Low precision is a documented property of COILS-family
+predictors, not a bug here — checked directly: the "false positives" on real
+proteins are cysteine-rich zinc-binding motifs and charged/disordered stretches,
+known confusable classes for heptad scanners, not unannotated real coiled coils.
+
+Applied to `steering_sae_zinc_coiledcoil_813`: 0% (naive and corrected) at
+alpha=0, rising to naive 41%/corrected 27% by alpha=50, with corrected ahead
+through alpha=8 (peak 40% at alpha=8) and naive overtaking from alpha=16 on —
+matching a pTM crossover at the same alpha (§table below). **But the alpha>=16
+hits don't survive inspection**: composition-checked, low-alpha hits (`MEYQLLLTKKQHNQALVMLQNLEKKLQTVLINNQNMPIRI`)
+look like genuine diverse leucine/glutamine-rich amphipathic sequences; alpha>=30
+hits (`ADAAAQANRGAAEAEDKAAREARNVSDEAEARLAATKEN`) are dominated by 5-6 residue
+types (A/E/R/D/Q/N) — compositionally narrow enough to plausibly be tripping
+pepcoil's known false-positive mode rather than forming a real coiled coil. This
+survives the existing `is_degenerate_sequence` gate (tuned for homopolymer
+collapse, not this kind of charge/hydrophobicity skew — a different failure mode
+the gate was never built to catch). **Decision: only alpha 0-5 is trusted for
+this concept** (also matches the alpha range already used for Helix/Beta strand,
+making the three runs directly comparable). Do not quote the alpha>=8 numbers
+without a real structural check (fold + inspect, or a proper low-complexity
+filter tuned for this pattern) first.
+
+### §15.3 Per-alpha numbers (alpha 0-5 only, per §15.2's decision)
+
+DSSP fraction / pLDDT, naive vs corrected (pTM is a poor choice for these short
+30-40-residue single-element chains — it's a global/multi-domain-packing metric,
+not well-defined for one element; pLDDT is the local per-residue confidence and
+is the one to lead with):
+
+| alpha | Helix helix-frac (naive/corr) | Helix pLDDT (naive/corr) | Beta strand strand-frac (naive/corr) | Beta strand pLDDT (naive/corr) |
+|---|---|---|---|---|
+| 0 | 0.54 / 0.77 | 49.7 / 59.8 | 0.001 / 0.002 | 49.7 / 59.8 |
+| 1 | 0.73 / 0.78 | 59.7 / 62.3 | 0.029 / 0.018 | 49.4 / 52.6 |
+| 2 | 0.74 / 0.80 | 61.5 / 63.5 | 0.039 / 0.028 | 50.0 / 55.8 |
+| 3 | 0.76 / 0.77 | 61.8 / 61.7 | 0.033 / 0.045 | 50.3 / 58.1 |
+| 4 | 0.76 / 0.78 | 61.6 / 62.4 | 0.065 / 0.044 | 50.3 / 59.7 |
+| 5 | 0.72 / 0.75 | 60.4 / 61.6 | 0.110 / 0.060 | 50.9 / 57.5 |
+
+Helix content roughly jumps at alpha=1 and holds; beta-strand content stays an
+order of magnitude smaller throughout and correction doesn't clearly help there
+(below naive at alpha=2,4,5). Coiled coil's alpha 0-5 pepcoil-hit-rate: 0%, 0/0%,
+0/4%, 4/15%, 3/19%, 6/33% (naive/corrected) — rising cleanly, corrected ahead
+throughout this trusted range (§15.2).
+
+Degenerate-sequence exclusion (naive/corrected) at alpha=5: Helix 0%/2% (clean),
+Beta strand 43%/53%, Coiled coil 4%/45% — Beta strand and Coiled coil's corrected
+arm degenerates much faster than Helix's.
+
+### §15.4 Two-feature steering: does combining SAE features help, the way UNION(1-5) helped detection?
+
+The zinc-finger UNION(1-5) *detection* result (§16.3: F1 0.907 vs <=0.34 for any
+single numbered subtype) motivated testing whether *steering* on two SAE features
+jointly (not just detecting on a union label) does better than one. Beta
+strand's second-best own-method feature is #5524 (F1 0.399 solo, vs #2868's
+0.446) — `run_steering.py --zinc-finger-feature 2868,5524` already supports this
+(comma list, no code change). First launch (job 44851388) failed instantly on a
+positional-argument bug in the sbatch call (duplicated experiment letter shifted
+every arg over by one — `submit_steering.sh`'s order is `<A|B> <NAME> [config]
+[alphas] [n_sequences]`, easy to get wrong copying from a direct
+`run_steering.py` invocation); fixed and relaunched as job 44852197
+(`steering_sae_zinc_betastrand_2868_5524_pair`, alpha 0-5, otherwise identical to
+the single-feature run). **Result pending** — fold + DSSP strand-frac/pLDDT
+comparison against §15.3's single-feature numbers not yet run.
+
+### §15.5 Cross-checking against independent probing (does everyone pick the same unit?)
+
+Two more independent selection procedures exist for the same units: the
+feature-finder benchmark (`compare_feature_methods.py`, §16 below: own /
+InterPLM-exact / Villegas-Garcia, F1-optimized) and the original 1-D
+logistic-regression probing (`probing_1d.py`, the 104-concept headline number —
+AUC-optimized, different protocol entirely). Cross-checked feature indices
+directly: of 11 concepts x {SAE, GLP} = 22 probes, only 5 match a feature-finder
+top-1 pick (own or interplm_exact) — Coiled coil (both SAE #813 and GLP #9432),
+Beta strand (both SAE #2868 and GLP #16205 -- wait, GLP mismatches on closer
+check, see below), and Zinc finger C2H2 instance 2 (SAE #7033 only). Helix, Turn,
+HLH motif, and every other zinc-finger type: no match on either representation.
+
+Two follow-up corrections, both important: (1) Beta strand's cross-method
+agreement does NOT mean a strong signal — its F1 (0.428-0.446) is meaningfully
+weaker than Coiled coil's (0.673-0.75), and even the agreement is partial: SAE's
+`own` and `interplm_exact` both land on #2868, but GLP's `own` (#2146) and
+`interplm_exact` (#16205) disagree with each other, so "clean" was the wrong
+word for this concept — a lesson in not conflating cross-method feature
+agreement with signal strength. (2) Zinc-finger UNION(1-5) — the easiest
+zinc-finger target by every method (§16.3) — was 1-D-probed separately
+(`scripts/probe_union.py`, since `run_probing.py` only iterates native Swiss-Prot
+columns, not synthetic unions; runs in ~90s on the login node, no GPU/SLURM
+needed, subsampled like any other probe): SAE AUC 0.880 (feature #7033, which
+*is* `own`'s second-ranked feature there, #1435 is first), GLP AUC 0.957
+(meta-neuron #14191, which matches neither method's top-2 at all). So even the
+single highest-scoring concept in the whole zinc-finger group shows only partial
+unit agreement across independent selection procedures — treat any single
+reported "the" feature for a concept as *a* good detector, not *the* canonical
+one, except for Coiled coil where three separate procedures (own, interplm_exact,
+1-D probing) all land on the same SAE #813 / GLP #9432 pair.
+
+### §15.6 Still open
+
+- Union1435 rescore + fold (§15.1).
+- Two-feature beta-strand steering fold/compare (§15.4).
+- Coiled coil alpha>=8 needs a real structural check before it's trustworthy
+  (§15.2) — currently only alpha 0-5 is used.
+- None of §14's decoding-loop/gate/rounds fixes have been applied to this Exp A
+  re-run (t_start, mask-selection, decoding budget all at old defaults) — the
+  §14.5b fixed-point argument (post-naive-decode foldability collapses to ~0.21
+  regardless of start quality) has not been checked against these SS runs
+  specifically.
+- A dedicated Beta strand DSSP threshold/hairpin-detector calibration against
+  real Swiss-Prot-annotated segments (the way pepcoil's F1 was calibrated) has
+  not been done — the ">=2 runs, <=6-residue gap" rule (§15.2) is a reasonable
+  construction, not empirically calibrated.
+
+## §16 — Feature-finder benchmark: which unit best predicts each concept
+
+`scripts/compare_feature_methods.py` (2026-08-20): three feature-selection
+methods (`own` — this project's AUC-shortlist-then-F1-select; `interplm_exact` —
+InterPLM's own literal exhaustive-grid criterion; `villegas_garcia` — Villegas-
+Garcia & Ansuini's precision-or-recall>0.80 associated-latent rule, not F1-
+optimized) x two representations (SAE 10,240 features, GLP 30,720 meta-neurons,
+two-sided) x every SS concept (Helix, Beta strand, Coiled coil, Turn) and every
+zinc-finger concept (base label, 5 numbered C2H2 instances, UNION(1-5)). Full
+results published as an artifact (link in session; regenerate the underlying
+data from `compare_feature_methods_{ss,zinc}_partial.jsonl` under
+`runs/uniref50_500m_4096_d24_probing/metrics/` if the link is gone).
+
+### §16.1 Villegas-Garcia breaks down on GLP's dense representation
+
+Its rule ("activation > 0 covers >=80% of positives, or >=80% of what it fires
+on is positive") is a real, selective filter on the SAE's sparse ReLU features
+(255-631 of ~20,480 two-sided candidates qualify per concept, ~1-3%). On GLP's
+dense signed meta-neurons it's nearly vacuous: ~30,000-30,500 of ~30,720
+candidates qualify (~99%) for every SS concept, because "activation > 0" already
+covers roughly half of all residues for any dense feature regardless of concept
+relevance. Villegas-Garcia "finding" a GLP feature is not evidence that feature
+means anything — own/interplm_exact remain the meaningful GLP methods.
+
+### §16.2 Headline
+
+GLP wins the F1-optimized methods (own/interplm_exact) on Helix, Beta strand,
+Coiled coil, and zinc-finger UNION(1-5); SAE wins on the individual numbered
+C2H2 instances and the base C2H2 label. Turn is weak everywhere (F1 <0.12, both
+representations). Beta strand's F1 (0.41-0.45) is much weaker than Coiled coil's
+(0.67-0.75) despite superficially similar top-2 feature structure — don't read
+"a feature was found" as "the concept is well-represented" (§15.5 makes the same
+point from the probing-agreement side).
+
+### §16.3 UNION(1-5): a label union, not a feature union
+
+`build_union_labels` merges the five numbered C2H2 domain-instance columns'
+*ground-truth annotations* into one "any C2H2 instance" label (each column's
+domain-instance ids offset first so they stay distinct when merged — the
+exclusivity check confirms 0 residues land in more than one numbered column).
+No feature activations are combined; only the label being predicted changes.
+Result: SAE interplm_exact reaches F1 0.907 (feature #1435) on the union vs
+<=0.34 for any single numbered subtype — merging the label, not the features,
+is what unlocks the big F1 jump. (Separately, `run_steering.py
+--zinc-finger-feature 2868,5524` genuinely *does* jointly clamp two features'
+activations during generation — a real feature union, used for the Beta strand
+pair experiment in §15.4 — a different kind of "union" from this one.)

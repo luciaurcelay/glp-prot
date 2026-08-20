@@ -11,7 +11,11 @@ mechanically identical:
     maximizes the clamped feature's own activation (`z_k`) EXCEPT the no-clamp
     anchor arm, which keeps the last round (selection caveat, spec Part 2A).
     Concept score: binary C2H2-pattern hit, aggregated to a hit rate per alpha.
-    Needs ESMFold (pLDDT, secondary naturalness metric).
+    Needs ESMFold (pLDDT, secondary naturalness metric). The pattern is PROSITE PS00028
+    (`C2H2_RE_PROSITE`, below) as of 2026-08-19 — benchmarked against real Swiss-Prot
+    ground truth as the best-recovering option among the spec's own regex, a looser
+    variant, and a real Pfam zf-C2H2 HMMER scan (see that constant's docstring and
+    `docs/steering_history.md` §14 for the full comparison).
 
   Exp B (`--experiment B`, default out-dir `steering_diffmean_hydro`): DiffMean /
     contrast-vector steering on hydrophobicity (GRAVY), following Huang et al.
@@ -75,8 +79,31 @@ AA20 = "ACDEFGHIKLMNPQRSTVWY"
 C2H2_RE = re.compile(r"C.{2,4}C.{12}H.{3,5}H")
 # Looser variant (wider spacer tolerances) to check whether the strict spec pattern is
 # undercounting real zinc-finger-like structure the strict regex just misses by a residue
-# or two, vs. the motif genuinely not being there.
+# or two, vs. the motif genuinely not being there. `⚠ CALIBRATION` (2026-08-19): benchmarked
+# against real ground truth below -- this one is NOT a safe stand-in for C2H2_RE, keep for
+# continuity only, never quote its hit rate as evidence on its own.
 C2H2_RE_LOOSE = re.compile(r"C.{1,6}C.{9,15}H.{1,7}H")
+# PROSITE PS00028 -- the real, independently curated C2H2 zinc-finger signature
+# (ExPASy/PROSITE database; https://prosite.expasy.org/PS00028), not something derived
+# from this project. Adds a conserved hydrophobic/aromatic residue C2H2_RE doesn't check.
+# `⚠ CALIBRATION` (2026-08-19): benchmarked on real Swiss-Prot whole-protein sequences
+# (positive = has >=1 `Zinc finger_C2H2-type` domain instance, negative = no zinc-finger
+# annotation of any kind, scanning the FULL sequence not the known span -- same protocol
+# `c2h2_concept_score` uses on generated sequences):
+#   detector                         val F1  test F1  val recall  val precision
+#   PROSITE_RE (this one)             0.766   0.851      78.3%        75.0%
+#   C2H2_RE (strict, above)           0.712   0.750      91.3%        58.3%
+#   real Pfam zf-C2H2 HMM (PF00096.33, via pyhmmer hmmsearch -- the literal profile
+#     model Villegas-Garcia & Ansuini's "Pfam family match" step is built on)
+#                                      0.683   0.524      60.9%        77.8%
+#   C2H2_RE_LOOSE (above)             0.145   0.135      91.3%         7.9%
+# PROSITE_RE wins on both splits, including against the literal HMM-based method --
+# a single 23-residue finger embedded in a full-length protein often doesn't clear
+# HMMER's default significance threshold in isolation, so the profile-HMM route is
+# NOT strictly the more lenient/faithful option it might seem. This is the primary
+# concept detector from here on; C2H2_RE is kept only for continuity with earlier
+# results in docs/steering_history.md.
+C2H2_RE_PROSITE = re.compile(r"C.{2,4}C.{3}[LIVMFYWC].{8}H.{3,5}H")
 
 
 # --------------------------------------------------------------------------- #
@@ -162,10 +189,30 @@ def select_zinc_finger_features(sae, processed: Path, layer: int, concept: str,
     arXiv:2502.09135 §4.1 measures a single clamped latent finding the C2H2 motif in
     only 3/180 generations (1.7%) vs. 24/180 (13%) when clamping its two most
     prominent zinc-finger latents together — `top_n=2` is there to close that gap,
-    not just a knob."""
-    acts_val, labels_val, names = sl.load_split(processed, "valid", layer, n_shards=n_shards)
+    not just a knob.
+
+    `⚠ BUGFIX` (2026-08-19): must load with `binarize=False` -- `pf.run_concept_f1`
+    needs the raw domain-instance-index integers to compute `recall_per_domain` for
+    a domain-level concept (`is_aa_level_concept("Zinc finger_C2H2-type") == False`).
+    This function used to omit it, silently taking `sl.load_split`'s default
+    `binarize=True`, which collapses every domain instance to the same value (1) --
+    `n_domains` then degenerates to 1 regardless of how many the split actually has
+    (9 in valid for this concept, confirmed), so recall becomes a trivial "did this
+    feature fire on ANY positive residue at all" instead of "what fraction of the 9
+    real occurrences did it detect." That rewards narrow, lucky, single-instance
+    features over ones that actually generalize -- exactly the failure mode already
+    caught independently in feature 7033 (a linker-composition proxy, not a motif
+    detector, see above) and 6311 (AUC 0.52 on this concept's own balanced subsample,
+    i.e. near chance). `compare_zinc_finger_methods.py` (InterPLM-exact, Villegas-
+    Garcia) and `run_probing.py` (`binz = args.metric == "auc"`) already got this
+    right; only this function's own picks (6158, 4421) were selected under the
+    degenerate recall. Re-run feature selection after this fix before trusting any
+    F1 number this function reports for a domain-level concept."""
+    acts_val, labels_val, names = sl.load_split(processed, "valid", layer, n_shards=n_shards,
+                                                binarize=False)
     assert concept in names, f"{concept!r} not in eval store concepts (have e.g. {names[:5]}...)"
-    acts_test, labels_test, _ = sl.load_split(processed, "test", layer, n_shards=n_shards)
+    acts_test, labels_test, _ = sl.load_split(processed, "test", layer, n_shards=n_shards,
+                                              binarize=False)
     y_val_full = labels_val[concept].to_numpy().astype(int)
     y_test_full = labels_test[concept].to_numpy().astype(int)
 
@@ -1346,6 +1393,30 @@ def main():
     ap.add_argument("--zinc-finger-feature",
                     help="[A only] override/skip auto-selection; comma-separated for multiple "
                          "simultaneous features (e.g. '7033,4210')")
+    ap.add_argument("--concept-detector", choices=["motif", "feature_activation"], default="motif",
+                    help="[A only] how a generation counts as a concept hit. 'motif' (default): "
+                         "the C2H2_RE_PROSITE regex on the raw sequence -- an independent, "
+                         "sequence-only ground-truth check that only exists for zinc-finger's "
+                         "PROSITE-curated pattern. It is NOT a general secondary-structure "
+                         "detector and silently reports near-zero hits for any other concept "
+                         "(e.g. --zinc-finger-concept 'Coiled coil'), since real proteins don't "
+                         "contain C2H2 motifs there. 'feature_activation': re-embed the FINISHED "
+                         "discrete sequence through ESM+SAE fresh (already computed as "
+                         "target_feature_activation_max, independent of the internal clamped "
+                         "activation used during generation) and call a hit when "
+                         "--concept-sign * that value clears --concept-threshold -- the same "
+                         "per-residue F1-calibrated criterion compare_feature_methods.py already "
+                         "validated against real Swiss-Prot ground truth for that feature/concept. "
+                         "Use this for any non-zinc-finger concept.")
+    ap.add_argument("--concept-threshold", type=float, default=None,
+                    help="[A, feature_activation only] required. The per-residue activation "
+                         "threshold for a concept hit -- take it from compare_feature_methods.py's "
+                         "own/interplm_exact 'threshold' output for the feature(s) passed via "
+                         "--zinc-finger-feature (same concept, same representation).")
+    ap.add_argument("--concept-sign", type=int, default=1, choices=[1, -1],
+                    help="[A, feature_activation only] sign convention matching "
+                         "compare_feature_methods.py's own 'sign' output for this feature -- "
+                         "-1 means the feature encodes the concept negatively.")
     ap.add_argument("--top-n-features", type=int, default=1,
                     help="[A only] auto-select this many top features by domain-adjusted F1 "
                          "when --zinc-finger-feature is not given (arXiv:2502.09135 finds "
@@ -1556,6 +1627,16 @@ def main():
 
     is_a = args.experiment == "A"
     method = "sae" if is_a else "diffmean"
+
+    if is_a and args.concept_detector == "feature_activation":
+        if args.concept_threshold is None:
+            raise SystemExit("--concept-detector feature_activation requires --concept-threshold "
+                              "(from compare_feature_methods.py's own/interplm_exact output for "
+                              "this feature/concept).")
+        if not args.zinc_finger_feature:
+            raise SystemExit("--concept-detector feature_activation requires an explicit "
+                              "--zinc-finger-feature -- auto-selection (select_zinc_finger_features) "
+                              "is C2H2-specific and would pick the wrong feature for this concept.")
 
     cfg = load_config(args.config)
     set_seed(args.seed if args.seed is not None else cfg.seed)
@@ -1968,6 +2049,13 @@ def main():
         if csv_path.exists() and not args.restart:
             with open(csv_path) as f:
                 existing = list(csv.DictReader(f))
+        if is_a and existing and "concept_count_strict" not in existing[0]:
+            raise SystemExit(
+                f"{csv_path} predates the PROSITE-primary `motif_hit`/`concept_count` change "
+                "(2026-08-19) -- its rows were scored with C2H2_RE (strict), not "
+                "C2H2_RE_PROSITE. Resuming would silently mix the two detectors' semantics "
+                "in one file/column. Use --restart (rescoring everything under PROSITE) or a "
+                "new --exp-name (keeping the old CSV as-is for historical comparison).")
         done_counts = {}
         for r in existing:
             # legacy CSVs (pre-bidirectional) have no direction column -> they are all "up"
@@ -1975,8 +2063,10 @@ def main():
             done_counts[key] = done_counts.get(key, 0) + 1
 
         if is_a:
-            fieldnames = ["sample_id", "alpha", "corrected", "length", "motif_hit",
-                         "concept_count", "concept_count_loose", "naturalness_score",
+            fieldnames = ["sample_id", "alpha", "corrected", "length", "concept_detector",
+                         "motif_hit",
+                         "concept_count", "concept_count_strict", "concept_count_loose",
+                         "naturalness_score",
                          "diffusion_loss", "max_homopolymer_run", "unique_aa_count",
                          "composition_distance",
                          "target_feature_activation_mean", "target_feature_activation_max",
@@ -2161,18 +2251,39 @@ def main():
                                                          device=device, generator=g_dev).mean())
 
                             if is_a:
-                                concept_count = c2h2_concept_score(seq)
-                                concept_count_loose = c2h2_concept_score(seq, C2H2_RE_LOOSE)
-                                motif_hit = concept_count > 0
                                 feat_act_mean, feat_act_max = target_signal(method, acts_final, device,
                                                                             sae=sae, feat_idxs=feat_idxs)
                                 peak_pos = target_peak_position(method, acts_final, device, sae=sae,
                                                                 feat_idxs=feat_idxs)
                                 peak_residue = seq[peak_pos] if 0 <= peak_pos < len(seq) else None
                                 plddt, ptm = fold_confidence(seq, device) if args.fold else (None, None)
+                                if args.concept_detector == "motif":
+                                    # PROSITE PS00028 is the primary detector (best-validated on real
+                                    # Swiss-Prot ground truth, see C2H2_RE_PROSITE's docstring above);
+                                    # C2H2_RE (strict) is kept alongside for continuity with earlier
+                                    # results, C2H2_RE_LOOSE for continuity only (not safe on its
+                                    # own). Zinc-finger only -- this regex has no meaning for any
+                                    # other concept (see --concept-detector's help).
+                                    concept_count = c2h2_concept_score(seq, C2H2_RE_PROSITE)
+                                    concept_count_strict = c2h2_concept_score(seq)
+                                    concept_count_loose = c2h2_concept_score(seq, C2H2_RE_LOOSE)
+                                    motif_hit = concept_count > 0
+                                else:
+                                    # Generalizes to any concept: re-embed the FINISHED discrete
+                                    # sequence through ESM+SAE fresh (feat_act_max, above -- this is
+                                    # NOT the clamped internal activation used during generation) and
+                                    # apply the same per-residue F1-calibrated sign/threshold
+                                    # compare_feature_methods.py validated against real Swiss-Prot
+                                    # ground truth for this feature/concept.
+                                    signed_val = args.concept_sign * feat_act_max
+                                    motif_hit = signed_val >= args.concept_threshold
+                                    concept_count = float(motif_hit)
+                                    concept_count_strict = concept_count_loose = concept_count
                                 row = {"sample_id": sample_id, "alpha": alpha, "corrected": corrected,
-                                      "length": length, "motif_hit": motif_hit,
-                                      "concept_count": concept_count, "concept_count_loose": concept_count_loose,
+                                      "length": length, "concept_detector": args.concept_detector,
+                                      "motif_hit": motif_hit,
+                                      "concept_count": concept_count, "concept_count_strict": concept_count_strict,
+                                      "concept_count_loose": concept_count_loose,
                                       "naturalness_score": pppl, "diffusion_loss": dloss,
                                       "max_homopolymer_run": max_homopolymer_run(seq),
                                       "unique_aa_count": len(set(seq)),
@@ -2183,7 +2294,9 @@ def main():
                                       "plddt": plddt, "ptm": ptm, "sequence": seq}
                                 concept_score = float(motif_hit)
                                 log_line = (f"[exp-a] alpha={alpha} corrected={corrected} sample={i} "
-                                           f"motif_hit={motif_hit} count={concept_count}/{concept_count_loose} "
+                                           f"detector={args.concept_detector} motif_hit={motif_hit} "
+                                           f"count(prosite/strict/loose)="
+                                           f"{concept_count}/{concept_count_strict}/{concept_count_loose} "
                                            f"pppl={pppl:.2f} dloss={dloss:.4f} plddt={plddt} ptm={ptm}")
                             else:
                                 prop_final = prop.score(seq)

@@ -1,0 +1,56 @@
+# Discovery §2 (hierarchy test) — Swiss-Prot concept family groupings.
+#
+# STATUS: drafted by an agent from the concept list in the Discovery section spec,
+# matched against the exact concept-name strings this run's probing.json actually
+# uses (runs/uniref50_500m_4096_d24_steering). NOT YET reviewed by a domain expert
+# (the protein-design collaborator) — the spec explicitly calls for that review
+# before the permutation test result is treated as final. Treat discovery_hierarchy
+# outputs as a draft pending that sign-off, not a settled result.
+#
+# Design choice worth reviewing: generic "parent"/"_any" concepts that are a logical
+# UNION of their own listed subtypes (e.g. "Zinc finger_any" is true whenever ANY
+# zinc-finger subtype is true; "Domain_Ig-like"/"Domain_RRM" likewise cover their own
+# lettered/numbered subtypes) are deliberately EXCLUDED from every family below —
+# including them would make a family's within-group correlation partly circular
+# (a unit that wins the parent concept is trivially correlated with units that win
+# its own subtypes, by construction of the label, not by anything biological). Flag
+# if that reasoning is wrong for a specific family.
+#
+# Each family's members are exact `concept` strings as they appear in probing.json
+# (`Domain_X`/`Zinc finger_X`/`Transit peptide_X` prefixes matter — these are NOT
+# free-text, they're the frozen concept identifiers scripts/discovery_hierarchy.py
+# looks up against probing.json's winning units).
+
+families:
+  ef_hand:
+    - "Domain_EF-hand 1"
+    - "Domain_EF-hand 2"
+    - "Domain_EF-hand 3"
+    - "Domain_EF-hand 4"
+  ig_like:
+    - "Domain_Ig-like C1-type"
+    - "Domain_Ig-like C2-type"
+    - "Domain_Ig-like C2-type 1"
+    - "Domain_Ig-like C2-type 2"
+    - "Domain_Ig-like V-type"
+  rrm:
+    - "Domain_RRM 1"
+    - "Domain_RRM 2"
+  zinc_finger:
+    - "Zinc finger_C2H2-type 1"
+    - "Zinc finger_C2H2-type 2"
+    - "Zinc finger_C2H2-type 3"
+    - "Zinc finger_C4-type"
+    - "Zinc finger_RING-type"
+  hth_myb:
+    - "Domain_HTH myb-type 1"
+    - "Domain_HTH myb-type 2"
+  gst:
+    - "Domain_GST C-terminal"
+    - "Domain_GST N-terminal"
+  snare:
+    - "Domain_t-SNARE coiled-coil homology"
+    - "Domain_v-SNARE coiled-coil homology"
+  transit_peptide:
+    - "Transit peptide_Chloroplast"
+    - "Transit peptide_Mitochondrion"
