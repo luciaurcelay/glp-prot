@@ -1044,11 +1044,31 @@ finished sequence through ESM+SAE, check the target feature's own F1-calibrated
 threshold from `compare_feature_methods.py` — §16 below); `scripts/rescore_exp_a_concept.py`
 retroactively rescores an already-generated CSV the same way. **`steering_sae_zinc_union1435`
 (zinc-finger feature 1435, launched the same night) was NOT given this flag and
-still needs rescoring** — its C2H2-regex detector never fires (0/1200 hits at every
+still needed rescoring** — its C2H2-regex detector never fires (0/1200 hits at every
 alpha 4-50 despite the underlying feature activation scaling correctly), so its
-concept-efficacy numbers are currently uninterpretable. Rescore with
-`--threshold 0.4846 --sign 1` (own, F1 0.85) or `--threshold 0.8` (interplm_exact,
-F1 0.91), then fold. **Still open.**
+concept-efficacy numbers were uninterpretable as generated.
+
+**2026-08-20 follow-up: `feature_activation` rescoring was tried and is the
+wrong detector for this concept.** Rescored the archived alpha-{0,4,8,16,30,50}
+run with both candidate thresholds — `--threshold 0.8` (interplm_exact, F1 0.91)
+and `--threshold 0.4846` (own, F1 0.85) — and got **0/1200 hits at both, at
+every alpha up to 50**. Not a bug: `target_feature_activation_max` tops out at
+~0.28 even at alpha=50, well under half of either threshold. Both thresholds
+were calibrated by `compare_feature_methods.py` against real, full-length
+Swiss-Prot proteins; they evidently do not transfer to ~33-residue generated
+fragments. (That archived run is kept at
+`steering_sae_zinc_union1435_alpha0to50_n100_archived` rather than deleted —
+the negative result is real data.) The right fix is not a different
+threshold, it's the right detector: `run_steering.py --concept-detector`'s own
+docstring already says the PROSITE `motif` detector (default, `C2H2_RE_PROSITE`
+— see the calibration table in that docstring, F1 0.851 test, beating even a
+real Pfam zf-C2H2 HMMER scan) is the one meant for zinc-finger concepts
+specifically; `feature_activation` is for concepts with no sequence-motif
+ground truth (Coiled coil, Beta strand). Relaunched properly: job 44858667
+(alpha 0-8, n=100/cell, default `motif` detector, no threshold/sign needed)
+timed out at 2h with 1350/1800 rows done (resumable — `run_steering.py` skips
+completed alpha×arm cells from the existing CSV); resumed as job 44863183 on
+`acc_debug` once it freed up. **Still open** — awaiting completion, then fold.
 
 ### §15.2 DSSP ground truth: two more invented-metric mistakes, both fixed
 
@@ -1058,15 +1078,41 @@ This is fine for Helix but is a **bad metric for Beta strand**: real strand
 content comes in short runs bounded by turns, so no real hairpin embedded in a
 ~35-residue chain (with flanking coil) ever reaches 70% pure-E content — the
 metric read 0% at every alpha, naive or corrected, steered or not, which looked
-like "steering doesn't work" but was actually a threshold artifact. Fix: define
-success as "contains >=2 strand runs (len>=3) joined by a <=6-residue turn" (a
-real hairpin signature), computed directly from the `ss_string` DSSP already
-writes to `fold_confidence.csv` — no re-fold needed. Recovers a real, alpha-
-dependent, concept-specific signal: 0% (baseline) -> 23% naive / 11% corrected by
-alpha=5, staying at noise floor (0-2%) in the helix and coiled-coil runs (so it's
-specific, not a generic "weird sequence" artifact). Correction is again ~2x
-weaker than naive here, consistent with the efficacy-vs-naturalness tradeoff in
-§14.
+like "steering doesn't work" but was actually a threshold artifact. First fix
+(now superseded, see below): define success as "contains >=2 strand runs
+(len>=3) joined by a <=6-residue turn" (a hand-picked hairpin signature, never
+empirically checked against real ground truth), computed directly from the
+`ss_string` DSSP already writes to `fold_confidence.csv`.
+
+**2026-08-20 follow-up: that hairpin rule was never calibrated, and a real
+calibration beats it.** `scripts/calibrate_beta_strand.py` builds 150
+positive + 150 negative windows per split from real Swiss-Prot Beta strand
+annotations (positive: centered on a real annotated run, grouped *within* one
+protein's own residue slice — the raw per-residue "domain-instance index" is
+**not globally unique across a split**, it collides across far-apart proteins,
+confirmed by inspection; grouping within one protein's slice sidesteps that),
+length-matched to the 25-40 residue window `run_steering.py` actually
+generates, folds them through the identical ESMFold2+DSSP pipeline used on
+generated sequences, then sweeps 21 candidate rules (whole-window
+`strand_frac` thresholds 0.10-0.70, "any strand run of length >= N" for
+N=2..5, and hairpin variants over run-length x gap). Winner by validation F1,
+reported on held-out test: **`strand_frac >= 0.10`**, val F1 0.433 / test F1
+0.264 (precision 0.75, recall 0.16 on test) — beating every hairpin variant,
+including the exact rule above (`hairpin(run>=3,gap<=6)`: val F1 0.390 / test
+F1 0.175) and the simplest alternative, "any run >= 2" (val F1 0.433 / test F1
+0.273, statistically indistinguishable from the winner at this sample size).
+Full ranked table: `calibration_results.json` in the calibration run dir. This
+is now the default (`fold_steering_outputs.py --target-ss strand`, per-target
+default threshold 0.10 for strand vs 0.7 for helix — helix's naive threshold
+was never shown to be a problem, so it is untouched). **The §15.3/§15.4 numbers
+below have been recomputed under the calibrated rule; they differ from the
+first hairpin-rule pass, sometimes in which alpha is significant, though the
+qualitative story — correction helps Helix/Coiled coil, hurts Beta strand at
+high alpha — is unchanged.** Recall is low (0.16-0.29) for every candidate
+tried, including the winner: Beta strand's DSSP-based detection ceiling on
+short generated fragments is real, not a rule-picking problem, consistent with
+this concept's already-weak F1 in the feature-finder benchmark (§16, own/SAE
+F1 0.428-0.446).
 
 **Coiled coil has no DSSP ground truth at all** — DSSP has no coiled-coil class
 (H/G/I only distinguishes helix type, not supercoiling), so `ss_hit` for this
@@ -1144,8 +1190,53 @@ every arg over by one — `submit_steering.sh`'s order is `<A|B> <NAME> [config]
 [alphas] [n_sequences]`, easy to get wrong copying from a direct
 `run_steering.py` invocation); fixed and relaunched as job 44852197
 (`steering_sae_zinc_betastrand_2868_5524_pair`, alpha 0-5, otherwise identical to
-the single-feature run). **Result pending** — fold + DSSP strand-frac/pLDDT
-comparison against §15.3's single-feature numbers not yet run.
+the single-feature run). Folded + DSSP'd 2026-08-20 (job 44862822, `--target-ss
+strand`, resubmitted onto `acc_debug` after `acc_bsccs` sat pending ~2h on
+Priority — `acc_bsccs` congestion is real and not job-specific, see the MN5
+time-budget guidance).
+
+**Result (recomputed 2026-08-20 under the calibrated `strand_frac>=0.10` rule,
+§15.2 — supersedes the first hairpin-rule pass below): the pair beats the
+single feature at low/mid alpha, and the correction reverses direction (helps,
+then hurts) as alpha rises, more visibly for the pair than the single
+feature.** Hit rate (naive/corrected), n=100/cell:
+
+| alpha | single naive | single corr | pair naive | pair corr |
+|---|---|---|---|---|
+| 0 | 0% | 1% | 2% | 1% |
+| 1 | 11% | 7% | 19% | 19% |
+| 2 | 13% | 8% | 20% | 24% |
+| 3 | 10% | 11% | 17% | **31%** |
+| 4 | 22% | 11% | 22% | 14% |
+| 5 | 30% | 14% | 19% | **6%** |
+
+Single feature: correction never significantly helps, and significantly hurts
+by alpha=5 (naive 30% vs corrected 14%, Fisher $p{=}0.0099$; alpha=4 is a
+near-miss, $p{=}0.0556$). Pair: correction *helps* at alpha=3 (naive 17% vs
+corrected 31%, $p{=}0.0307$) — a genuinely new finding versus the uncalibrated
+rule, which had shown no significant effect anywhere except the alpha=5
+collapse — then *hurts* at alpha=5 (naive 19% vs corrected 6%, $p{=}0.0092$),
+with pLDDT (48.4) again below both its own alpha=0 baseline (59.8) and the
+untouched naive baseline (49.7), so the collapse itself is not a rule
+artefact, just its size/significance shifted slightly ($p{=}0.0092$ vs the
+uncalibrated rule's $p{=}0.005$). Pair beats single on the corrected arm at
+alpha=1,2,3 (Fisher $p{=}0.019$, $0.003$, $0.0008$) but *loses* to it at
+alpha=5 ($p{=}0.097$, weaker than the uncalibrated rule's $p{=}0.049$ — treat
+as suggestive, not significant, under the calibrated detector). Degeneracy
+gate exclusion at alpha=5: 1% (pair, corrected) vs 53% (single, corrected) —
+unchanged from the first pass, so the collapse is still not a gate artefact.
+`scripts/calibrate_beta_strand.py`'s pure-Python scoring functions
+(`strand_frac_of`, `hairpin_hit`, etc.) are the promoted, reusable version of
+what used to be inlined analysis; `fold_steering_outputs.py --target-ss
+strand` now defaults its own `ss_hit` column to the calibrated threshold. This
+result (with the above caveats) is now also in the paper draft,
+`docs/paper_draft.tex` §app:steer-sae-clamp — added as a caveated appendix
+table, since it directly contradicts three sentences the main text used to
+carry ("SAE-feature-clamp variant is not re-run, we claim no result for it");
+those three sentences were rewritten to point at the new appendix instead of
+disclaiming the experiment. **Numbers in the appendix table need updating to
+match this recomputation** (they currently carry the pre-calibration hairpin
+numbers) — still open, see §15.6.
 
 ### §15.5 Cross-checking against independent probing (does everyone pick the same unit?)
 
@@ -1181,19 +1272,145 @@ one, except for Coiled coil where three separate procedures (own, interplm_exact
 
 ### §15.6 Still open
 
-- Union1435 rescore + fold (§15.1).
-- Two-feature beta-strand steering fold/compare (§15.4).
+- ~~Union1435 regeneration with the correct (`motif`/PROSITE) detector.~~
+  **Done 2026-08-20** (job 44863183, resumed from 44858667's timeout, alpha
+  0-8, n=100/cell) — real negative result: **0/1800 hits at every alpha**,
+  naive or corrected, despite the feature's own re-embedded activation rising
+  mildly with alpha (0 -> ~0.08 by alpha=8). Cross-checked against the archived
+  alpha 0-50 run (also PROSITE-scored at generation time): still 0/1200 at
+  alpha 4, 8, 16, 30, 50. So feature 1435 does not work as a *steering* target
+  at any tested strength, even though it is an excellent *detector* of the
+  concept (own-method F1 0.907, §16.3) — a detector/steering-target gap, not a
+  scoring bug. **Fold complete** (job 44864320): pLDDT/pTM naive/corrected by
+  alpha —
+
+  | alpha | naive pLDDT/pTM | corr pLDDT/pTM |
+  |---|---|---|
+  | 0 | 49.7 / 0.153 | 59.8 / 0.251 |
+  | 1 | 49.3 / 0.148 | 54.8 / 0.206 |
+  | 2 | 51.4 / 0.165 | 56.9 / 0.224 |
+  | 3 | 50.4 / 0.155 | 51.7 / 0.169 |
+  | 4 | 51.1 / 0.161 | 48.4 / 0.136 |
+  | 5 | 51.6 / 0.167 | 47.5 / 0.123 |
+  | 6 | 53.9 / 0.186 | 48.1 / 0.129 |
+  | 7 | 57.3 / 0.218 | 47.9 / 0.128 |
+  | 8 | 59.7 / 0.237 | 48.1 / 0.130 |
+
+  Same pattern as Beta strand's paired-feature run: corrected arm gets the
+  usual alpha=0 drift boost (+10 pLDDT), then *declines monotonically* from
+  alpha=3 on, ending up below both its own baseline and the naive arm by
+  alpha=8 — while naive climbs steadily. So the correction's quality cost at
+  high alpha isn't Beta-strand-pair-specific; it recurs here too, on a
+  completely different concept and feature set. Worth folding into a
+  cross-concept pattern once the SAE-feature-clamp appendix section is next
+  revised. **Needs writing into the paper's per-unit-steering paragraph and
+  appendix table (`app:steer-sae-clamp`) as the fourth concept** — still open.
+- ~~Two-feature beta-strand steering fold/compare (§15.4).~~ **Done
+  2026-08-20**, recomputed under the calibrated detector (see next item) —
+  pair beats single at alpha 1-3, correction helps the pair at alpha=3 and
+  hurts it at alpha=5 (§15.4). In the paper draft too (`app:steer-sae-clamp`),
+  caveated — **but the appendix table there still carries the
+  pre-calibration numbers and needs updating to match §15.4's recomputation.**
+- ~~A dedicated Beta strand DSSP threshold/hairpin-detector calibration
+  against real Swiss-Prot-annotated segments.~~ **Done 2026-08-20**
+  (`scripts/calibrate_beta_strand.py`, §15.2 follow-up) — winner
+  `strand_frac>=0.10`, test F1 0.264, beating the hand-picked hairpin rule
+  (test F1 0.175). Now the default in `fold_steering_outputs.py --target-ss
+  strand`.
+- Why the paired-feature clamp's corrected arm collapses specifically at
+  alpha=5 (§15.4) is unexplained — flagged as an open question, not
+  investigated further yet.
 - Coiled coil alpha>=8 needs a real structural check before it's trustworthy
-  (§15.2) — currently only alpha 0-5 is used.
+  (§15.2) — currently only alpha 0-5 is used (also the range now in the paper
+  draft). Also unchecked: whether pepcoil's own hit-rate would move under a
+  from-scratch calibration the way Beta strand's did — not attempted, pepcoil
+  was already calibrated against real Swiss-Prot labels (§15.2) so this is
+  lower priority than Beta strand was.
 - None of §14's decoding-loop/gate/rounds fixes have been applied to this Exp A
   re-run (t_start, mask-selection, decoding budget all at old defaults) — the
   §14.5b fixed-point argument (post-naive-decode foldability collapses to ~0.21
   regardless of start quality) has not been checked against these SS runs
-  specifically.
-- A dedicated Beta strand DSSP threshold/hairpin-detector calibration against
-  real Swiss-Prot-annotated segments (the way pepcoil's F1 was calibrated) has
-  not been done — the ">=2 runs, <=6-residue gap" rule (§15.2) is a reasonable
-  construction, not empirically calibrated.
+  specifically. The paper appendix flags this explicitly rather than silently
+  comparing against the main steering result's operating point.
+
+### §15.7 Zinc-finger UNION(1-5) steering: still 0 hits, session checkpoint (2026-08-20)
+
+Union1435 (single feature 1435, PROSITE detector, alpha 0-8, n=100/cell, job
+44863183): **0/1800 hits at every alpha**, naive or corrected. Cross-checked
+against the archived alpha-0..50 pilot (also PROSITE-scored): still 0/1200 at
+alpha 4,8,16,30,50. Verified this is not a scoring bug: feature 1435's sign is
+`+1` in both `own` and `interplm_exact` (`compare_feature_methods_zinc.json`),
+and its solo test F1 really is 0.907 (initially misread the JSON as a
+two-feature combo — it is `[top-1, top-2]` candidates each with their OWN
+individual F1, not a joint score). The off-manifold diagnostic confirms the
+clamp mechanism itself works (GLP diffusion loss on the clamped activation:
+baseline 0.869 -> 17.3 at alpha=8, clean and monotonic), but decoded-sequence
+cysteine content barely moves (0.36% -> 1.14% at alpha=8 corrected) — a real
+detector/steering-target dissociation, not a bug. Also confirmed: Exp A
+already does Villegas-Garcia's z_k-argmax best-of-`n_rounds` selection
+(`run_steering.py:504-508`, `use_select = is_a and alpha != neutral_alpha`,
+active for every alpha != 0, `n_rounds` default 100 for Exp A) — so the null
+is not an artefact of only keeping the last round; it already reflects the
+best of 100 independent attempts per sample.
+
+**Follow-ups launched, all with the same protocol (motif/PROSITE detector,
+`--no-fold`), status as of this checkpoint:**
+- Job 44864320: fold (pLDDT/pTM) for the union1435 single-feature run —
+  pending on `acc_bsccs`.
+- Job 44864608 (`zincsix_min`): 6-feature joint clamp — the `interplm_exact`
+  top-1 per numbered subtype (687, 4995, 2672, 6311, 7786) plus 6158 (`own`'s
+  pick for the *base*, unnumbered `Zinc finger_C2H2-type` concept), alpha in
+  {2,4,8} only (a minimal pilot, not the full 0-8 grid) — running on
+  `acc_debug`. Caveat already flagged before results land: feature 6311 was
+  separately noted elsewhere in this file as "AUC 0.52 on this concept's own
+  balanced subsample, i.e. near chance" — if the 6-feature clamp doesn't help,
+  that's consistent with prior evidence, not a surprise.
+- Job 44864649 (`union_top2`): the UNION(1-5) concept's own top-2
+  `interplm_exact` features, 1435 (test F1 0.907) + 5696 (test F1 0.898),
+  alpha in {2,4,8}, same protocol — pending on `acc_bsccs` (watcher migrates
+  it to `acc_debug` once 44864608 frees that slot, same pattern as the
+  beta-strand fold migration earlier this session).
+- An earlier 5-feature run (`zincfive`, alpha 0-8, job 44864434) was
+  cancelled ~3 minutes in, superseded by `zincsix_min`'s narrower alpha grid;
+  its partial (101-row) CSV is harmless leftover, not used for any reported
+  number.
+
+**Correction (caught by a user question, checked against the code): Exp A does NOT do
+masked-subset resampling.** `args.mask_fraction = 1.0 if is_a else 0.10`
+(`run_steering.py:1813-1814`) — every one of Exp A's 100 rounds resamples
+*all* interior positions, not a small masked subset the way Exp B's 10% does.
+The single-*layer* limitation (only the layer-4 hook gets the clamp, forced by
+hook parity) is still real and still a genuine deviation from Villegas-Garcia,
+but "masked-positions-only [is] a much weaker intervention" below was wrong on
+the token-coverage claim specifically — retracted, corrected candidate list
+follows.
+
+**If these also land at 0/N, candidates ranked by expected relevance**
+(none tried yet): (1) **`mask_fraction=1.0` may be actively self-defeating for
+a rigid multi-residue motif, not just under-powered.** With every position
+resampled every round, nothing freezes a good partial C-x-C...H-x-H fragment
+that happens to form in round $k$ before round $k{+}1$ overwrites it; the
+best-of-100-rounds argmax only rescues the single best *snapshot*, never lets
+one *refine*. `--mask-selection confidence` (confidence-frozen remasking,
+added this session for Exp B's fold-collapse problem — freezes residues the
+model already endorses, remasks only the surprising ones) directly targets
+this and has never been tried on Exp A; the natural pairing is a
+`--mask-fraction` well below 1.0 (e.g.\ Exp B's 0.10, or a grid) alongside it,
+which nothing in the SS/zinc-finger runs has tried either — every run so far
+used the Exp A default. (2) the single-layer-hook limitation (still real,
+unlike the retracted token-coverage claim) — Villegas-Garcia likely clamps
+more of the network; untested here, same caveat as diff-of-means steering
+elsewhere in this project. (3) their own reported hit rates are already low
+(3/180=1.7% one latent, 24/180=13% their best two-latent combo) — 0/1800+ here
+is below even their weak single-latent number, so sample size alone doesn't
+fully explain it, but "try much larger n" is still a real, cheap lever. (4)
+`--decoder beam` (already implemented, `steered_beam_search_generate`)
+instead of masked-Gibbs. (5) `--sae-intervention scale_shift` instead of the
+default hard clamp. Next concrete step if needed: **(1) first** — Exp A,
+alpha=8, the 5-feature set, `--mask-selection confidence --mask-fraction 0.10`
+(or a small grid), n=200 — cheaper to test than beam search and targets the
+mechanism the code change actually revealed, rather than a hypothesis about
+layer/token coverage that turned out to be wrong.
 
 ## §16 — Feature-finder benchmark: which unit best predicts each concept
 

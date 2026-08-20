@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Fold a steering run's generated sequences with ESMFold2 -> pLDDT / pTM sidecar CSV.
+"""Fold a steering run's generated sequences with ESMFold2 -> pLDDT / pTM / DSSP sidecar CSV.
 
 Why this is a SEPARATE stage rather than a call inside run_steering.py's generation loop:
 
@@ -30,6 +30,22 @@ Scales (measured, not assumed — see scripts/cluster/submit_fold.sh's notes):
 is only comparable against others at the same step count (same discipline as quoting FD with
 its sampler step count).
 
+Also runs the real DSSP binary (module dssp/4.5.3, /apps/ACC/DSSP/4.5.3/GCC/bin/mkdssp --
+confirmed present on MN5, not the pydssp approximation also installed in this venv) on
+each fold's own PDB (`model.output_to_pdb(out)` -- reuses the same forward pass, no extra
+inference) to get per-residue secondary structure. Exp A's zinc-finger concept score is a
+sequence motif (C2H2 regex); no such sequence-only oracle exists for a structural concept
+like "Coiled coil" (see run_steering.py's `--concept-detector` docstring), and a coiled
+coil IS a structural feature (a continuous, extended alpha helix), so its ground-truth
+check has to look at the folded backbone, not the sequence. `helix_frac`/`max_helix_run`
+are computed from DSSP's H/G/I classes (E/B for strand_frac/max_strand_run); `ss_hit`
+(--target-ss's frac >= threshold, default
+0.7) is a single-chain proxy -- a real coiled coil is defined by inter-helix packing
+(register, heptad a/d core) between >=2 chains, which a monomer fold cannot show. What
+this DOES show: whether steering produced a sequence that folds into one long helix, the
+necessary (not sufficient) structural precondition. State it as that, not as "forms a
+coiled coil".
+
 Usage (on MN5, via the launcher which sets up the 3.12 module stack):
   sbatch scripts/cluster/submit_fold.sh <steering-out-dir> [extra args...]
 Directly:
@@ -40,9 +56,54 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+DEFAULT_DSSP_BIN = "/apps/ACC/DSSP/4.5.3/GCC/bin/mkdssp"
+HELIX_CODES = {"H", "G", "I"}  # alpha / 3-10 / pi helix -- DSSP's helical classes
+STRAND_CODES = {"E", "B"}      # extended beta strand / isolated beta bridge
+
+
+def run_dssp(pdb_text: str, dssp_bin: str) -> str:
+    """mkdssp needs real files, not stdin/stdout -- round-trip through a temp dir.
+    Returns the per-residue SS string (one char/residue, chain-break '!' rows dropped,
+    ' ' meaning DSSP's own coil/loop call, in original PDB order)."""
+    with tempfile.TemporaryDirectory() as td:
+        pdb_path = Path(td) / "model.pdb"
+        dssp_path = Path(td) / "model.dssp"
+        pdb_path.write_text(pdb_text)
+        subprocess.run([dssp_bin, "--output-format", "dssp", str(pdb_path), str(dssp_path)],
+                       check=True, capture_output=True, text=True, timeout=60)
+        lines = dssp_path.read_text().splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith("  #  RESIDUE")), None)
+    if start is None:
+        raise RuntimeError("mkdssp output has no '  #  RESIDUE' header — unexpected format")
+    ss = []
+    for l in lines[start + 1:]:
+        if len(l) < 17 or l[13] == "!":  # chain break placeholder row
+            continue
+        ss.append(l[16] if l[16] != " " else "-")
+    return "".join(ss)
+
+
+def _max_run(ss: str, codes: set) -> int:
+    best = cur = 0
+    for c in ss:
+        cur = cur + 1 if c in codes else 0
+        best = max(best, cur)
+    return best
+
+
+def dssp_summary(ss: str) -> dict:
+    if not ss:
+        return {"helix_frac": None, "max_helix_run": 0, "strand_frac": None, "max_strand_run": 0}
+    return {"helix_frac": sum(c in HELIX_CODES for c in ss) / len(ss),
+            "max_helix_run": _max_run(ss, HELIX_CODES),
+            "strand_frac": sum(c in STRAND_CODES for c in ss) / len(ss),
+            "max_strand_run": _max_run(ss, STRAND_CODES)}
 
 # Any steered property: expB_diffmean_{gravy,charge,instability}.csv. Globbed
 # rather than imported from glp_plm.eval.steering_properties because this stage
@@ -51,8 +112,9 @@ CSV_GLOB = "expB_diffmean_*.csv"
 CSV_CANDIDATES = ("expA_sae_zincfinger.csv",)
 SIDECAR = "fold_confidence.csv"
 FIELDS = ["sample_id", "direction", "alpha", "corrected", "length", "plddt", "plddt_ca",
-          "ptm", "iptm", "pae_mean", "num_sampling_steps", "num_loops", "model_id",
-          "seq_sha1", "fold_error"]
+          "ptm", "iptm", "pae_mean", "ss_string", "helix_frac", "max_helix_run",
+          "strand_frac", "max_strand_run", "ss_hit", "num_sampling_steps", "num_loops",
+          "model_id", "seq_sha1", "fold_error", "dssp_error"]
 
 
 def sha1(s: str) -> str:
@@ -98,7 +160,38 @@ def main():
                          "Exp B run is only ~12 min at 20 steps)")
     ap.add_argument("--restart", action="store_true",
                     help="ignore an existing sidecar instead of resuming from it")
+    ap.add_argument("--dssp-bin", default=DEFAULT_DSSP_BIN,
+                    help="mkdssp binary (module dssp/4.5.3 on MN5); pass '' to skip DSSP "
+                         "entirely and only get plddt/ptm as before")
+    ap.add_argument("--target-ss", choices=["helix", "strand"], default="helix",
+                    help="which DSSP class 'ss_hit' reflects: 'helix' (H/G/I -- Coiled coil "
+                         "and Helix both want this) or 'strand' (E/B -- Beta strand). "
+                         "helix_frac/strand_frac/max_*_run are always both recorded "
+                         "regardless of this choice.")
+    ap.add_argument("--ss-frac-threshold", type=float, default=None,
+                    help="ss_hit = (helix_frac or strand_frac, per --target-ss) >= this. "
+                         "Default is per-target: 0.7 for helix (a long helix can span most "
+                         "of a short chain, so the naive whole-chain threshold works), 0.10 "
+                         "for strand -- calibrated against 300 real Swiss-Prot Beta strand "
+                         "windows (scripts/calibrate_beta_strand.py, 2026-08-20): 0.7 never "
+                         "fires on a fragment this short (real strand content comes in short "
+                         "runs, not chain-spanning), and 0.10 beat every hairpin-run variant "
+                         "tried, including a hand-picked >=2-runs/<=6-residue-gap rule (test "
+                         "F1 0.264 vs 0.175) -- see that script's docstring for the full "
+                         "candidate table.")
+    ap.add_argument("--save-pdb-dir",
+                    help="write each fold's PDB to <dir>/<sample_id>_a<alpha>_<naive|corr>.pdb. "
+                         "Off by default (PDBs are large; every prior fold pass here discarded "
+                         "them after DSSP). ESMFold has to be RE-RUN to get a PDB for a row "
+                         "that was already folded without this flag -- there's no cached "
+                         "structure to reuse -- so pair this with --restart when adding PDBs "
+                         "to an existing fold_confidence.csv.")
     args = ap.parse_args()
+    if args.ss_frac_threshold is None:
+        args.ss_frac_threshold = 0.7 if args.target_ss == "helix" else 0.10
+    if args.save_pdb_dir:
+        args.save_pdb_dir = Path(args.save_pdb_dir)
+        args.save_pdb_dir.mkdir(parents=True, exist_ok=True)
 
     run_dir = Path(args.run_dir)
     in_path = find_input(run_dir, args.input)
@@ -180,7 +273,7 @@ def main():
                    "alpha": r["alpha"], "corrected": r["corrected"], "length": len(seq),
                    "num_sampling_steps": args.num_sampling_steps,
                    "num_loops": args.num_loops, "model_id": args.model_id,
-                   "seq_sha1": sha1(seq), "fold_error": ""}
+                   "seq_sha1": sha1(seq), "fold_error": "", "dssp_error": ""}
             try:
                 with torch.no_grad():
                     out = model.infer_protein(seq, num_loops=args.num_loops,
@@ -191,6 +284,28 @@ def main():
                            ptm=scalar(out, "ptm"), iptm=scalar(out, "iptm"),
                            pae_mean=scalar(out, "pae"))
                 n_ok += 1
+                pdb_text = None
+                if args.dssp_bin or args.save_pdb_dir:
+                    pdb_text = model.output_to_pdb(out)
+                if args.save_pdb_dir:
+                    pdb_name = (f"{rec['sample_id']}_a{rec['alpha']}_"
+                               f"{'corr' if rec['corrected'] in ('True', True) else 'naive'}.pdb")
+                    (args.save_pdb_dir / pdb_name).write_text(pdb_text)
+                if args.dssp_bin:
+                    try:
+                        ss = run_dssp(pdb_text, args.dssp_bin)
+                        summ = dssp_summary(ss)
+                        target_frac = summ["helix_frac"] if args.target_ss == "helix" else summ["strand_frac"]
+                        rec.update(ss_string=ss, helix_frac=summ["helix_frac"],
+                                   max_helix_run=summ["max_helix_run"],
+                                   strand_frac=summ["strand_frac"],
+                                   max_strand_run=summ["max_strand_run"],
+                                   ss_hit=(target_frac is not None and
+                                           target_frac >= args.ss_frac_threshold))
+                    except Exception as e:
+                        rec["dssp_error"] = f"{type(e).__name__}: {e}"[:200]
+                        print(f"[fold] WARNING dssp sample_id={rec['sample_id']} failed: "
+                              f"{rec['dssp_error']}", flush=True)
             except Exception as e:  # keep going; the row is retried on the next pass
                 rec["fold_error"] = f"{type(e).__name__}: {e}"[:200]
                 n_err += 1
