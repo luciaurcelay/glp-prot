@@ -478,7 +478,10 @@ def masked_gibbs_generate(steerer: ESMSteerer, init_tokens: torch.Tensor,
         best_seq = decode()
         best_score = select_fn(-1, best_seq)
 
-    k = n_mutations if (selection == "relatedness" and n_mutations) else max(1, round(mask_fraction * L))
+    # relatedness and confidence both rank positions and take a fixed edit budget; honor
+    # --n-mutations if set, else default to the same round(mask_fraction * L) the random loop
+    # uses so the modes are compared at an identical number of edits per round.
+    k = n_mutations if (selection in ("relatedness", "confidence") and n_mutations) else max(1, round(mask_fraction * L))
     k = min(max(1, k), L)
     for round_idx in range(n_rounds):
         if selection == "relatedness" and score_vec is not None:
@@ -499,6 +502,29 @@ def masked_gibbs_generate(steerer: ESMSteerer, init_tokens: torch.Tensor,
             sims = F.cosine_similarity(reps, score_vec.to(reps.device).float().expand_as(reps),
                                        dim=-1)
             perm = torch.argsort(sims)[:k].cpu()
+        elif selection == "confidence":
+            # Confidence-frozen remasking (MaskGIT / LLaDA / Dream mask-predict rule, applied
+            # here to refinement): freeze the residues the MLM already endorses and remask only
+            # the k it finds most surprising. Confidence at a position is the model's probability
+            # of the CURRENT residue given its context, p(x_i | x_context), computed on the
+            # unmasked sequence — a low value means "given the neighbours, this residue looks
+            # wrong", exactly the residues worth resampling; a high value means the residue is
+            # well-determined and rewriting it only risks the fold. Same edit budget k as random,
+            # so this is a controlled swap of WHICH positions move, not how many. Unlike
+            # relatedness this needs no steering vector, so it is defined at alpha=0 too — which
+            # is the arm where the random loop's foldability collapse was measured (pTM
+            # 0.501 -> 0.256 in five rounds with no steering). Deterministic bottom-k for v1;
+            # running-max persistence and stochastic (Gumbel) selection are the noted v2 knobs.
+            with torch.no_grad():
+                logits_clean, _ = steerer.forward(tokens, attn, override=None)
+            lg = logits_clean[0, 1:L + 1, :].float()
+            valid = steerer.valid_aa_ids.to(lg.device)
+            masked_lg = torch.full_like(lg, float("-inf"))
+            masked_lg[:, valid] = lg[:, valid]
+            probs = torch.softmax(masked_lg, dim=-1)
+            cur = tokens[0, 1:L + 1].to(probs.device)
+            conf = probs.gather(1, cur.unsqueeze(1)).squeeze(1)
+            perm = torch.argsort(conf)[:k].cpu()
         else:
             perm = torch.randperm(L, generator=generator)[:k]
         pos = (perm + 1).to(device)
@@ -1279,16 +1305,21 @@ def main():
                     help="[--generation-pilot] sampling temperatures to sweep. Repeatedly "
                          "sampling at T=1.0 from an 8M model is the suspected drift source: "
                          "30 rounds at 10%% masking resample each position ~3x")
-    ap.add_argument("--mask-selection", choices=["random", "relatedness"], default="random",
+    ap.add_argument("--mask-selection", choices=["random", "relatedness", "confidence"],
+                    default="random",
                     help="[B] how each round picks positions to mutate. 'random': a uniform "
                          "mask_fraction subset (what this repo has always done). "
                          "'relatedness': Huang et al. Algorithm 1 lines 5-6 — score every "
                          "token by cosine similarity to the steering vector (their Eq. 4) and "
                          "mutate the --n-mutations LOWEST, i.e. the residues most opposed to "
-                         "the target property. Random masking rewrites every position ~3x over "
-                         "30 rounds and destroys the fold (starting proteins pTM 0.501 -> 0.256 "
-                         "after five rounds, with no steering at all); relatedness ranking "
-                         "leaves already-correct residues alone.")
+                         "the target property. 'confidence': MaskGIT/LLaDA confidence-frozen "
+                         "remasking — remask the k residues with the LOWEST model endorsement "
+                         "p(x_i|context) and freeze the rest; needs no steering vector so it is "
+                         "defined at alpha=0, the arm where the fold collapse was measured. "
+                         "Random masking rewrites every position ~3x over 30 rounds and destroys "
+                         "the fold (starting proteins pTM 0.501 -> 0.256 after five rounds, with "
+                         "no steering at all); relatedness and confidence both leave "
+                         "already-good residues alone.")
     ap.add_argument("--n-mutations", type=int,
                     help="[--mask-selection relatedness] mutation sites per round (Huang et "
                          "al.'s T). Defaults to round(mask_fraction * L) so the edit budget "
@@ -1501,6 +1532,7 @@ def main():
         # need out of it — otherwise a downstream script that only sees the run dir cannot
         # standardize its numbers or subtract the natural coupling.
         run.log_summary(steered_property=args.property, alpha_mode=args.alpha_mode,
+                        mask_selection=args.mask_selection,
                         alpha_scale=alpha_scale, vector_norm=float(gd["vector_norm"]),
                         contrast_path=str(contrast_path.resolve()),
                         contrast_length_gap_pool_sd=gd.get("length_gap_pool_sd"),
