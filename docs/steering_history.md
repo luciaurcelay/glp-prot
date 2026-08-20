@@ -1021,6 +1021,7 @@ The three runs predate `contrast_path` being recorded in `summary.json`, so they
 `runs/steering_crg/steering_diffmean_{hydro,charge,instability}/*_contrast.json`. Runs
 started after that change are self-describing and need no override.
 
+
 ## §15 — Exp A re-run on secondary structure (2026-08-20)
 
 First Exp A re-run since §13/§14 (property steering, Exp B) — three SS concepts,
@@ -1241,3 +1242,215 @@ is what unlocks the big F1 jump. (Separately, `run_steering.py
 --zinc-finger-feature 2868,5524` genuinely *does* jointly clamp two features'
 activations during generation — a real feature union, used for the Beta strand
 pair experiment in §15.4 — a different kind of "union" from this one.)
+
+
+## §17 Fixing the decode loop that destroys foldability (2026-08-20)
+
+Finding 5 of the CLAUDE.md steering block established that the masked-Gibbs **decode
+loop**, not GLP and not steering, is what costs foldability: after the alpha=0 *naive*
+pass (no steering, no correction) every start set collapses to a fixed point around
+pTM 0.21-0.31, and `post = 0.171 + 0.200*start`. This section records a systematic attempt
+to fix it — a literature survey, two failed position-selection methods, and one working
+alternative decoder (beam search) — and the frontier that resulted. All runs are
+hydrophobicity, ESM2-8M / d24 GLP, n=40 held-out starts per direction, folded with ESMFold2.
+
+### 17.0 The problem, restated as a controlled experiment
+
+The loop (`masked_gibbs_generate` in `scripts/run_steering.py`) runs 30 rounds; each round
+masks a uniform-random 10% of positions, forwards, steers+GLP-corrects those positions'
+layer-4 activations, and resamples. The code comment already diagnosed the killer: uniform
+random masking touches every position ~3x over 30 rounds, so it **rewrites residues that
+were already correct**. Five rounds of random remasking alone drop the starting proteins'
+pTM 0.501 -> 0.256 with no steering involved. External support: ESM2 free-Gibbs generation
+is only ~5.5% foldable, essentially the random-sequence rate of 6.1%, versus 32.7% for an
+autoregressive PLM (Pretrained PLMs choose between sequence novelty and structural
+completeness, bioRxiv 2025.10.01.679905).
+
+### 17.1 Literature survey — four families of fix
+
+A 2026-08-20 search found the problem is well characterised, and solutions cluster into four
+families, ordered by fit to our hard constraint (stay in ESM2-8M layer-4 activation space
+for the SAE/GLP — hook parity):
+
+- **A. Stop remasking already-correct residues.** Confidence-based remasking: freeze the
+  positions the model endorses, remask only the uncertain ones. This is MaskGIT's rule
+  (Chang et al., *MaskGIT*, CVPR 2022), refined for diffusion LMs by Path Planning for Masked
+  Diffusion Models (ICLR 2025), *Don't Settle Too Early: Self-Reflective Remasking*
+  (arXiv:2509.23653), *Remask, Don't Replace* (arXiv:2604.18738), and *Re-evaluating
+  Confidence Remasking* (arXiv:2606.12232). The repo already had a property-directed variant,
+  `--mask-selection relatedness` (Huang et al. Algorithm 1).
+- **B. Replace Gibbs with stochastic beam search over pseudo-log-likelihood** (the
+  temperature-annealed method of "How to make the most of your masked language model for
+  protein engineering", arXiv:2603.10302), which beat Gibbs in vitro on antibody campaigns.
+  Keeps ESM-2; a decoder swap.
+- **C. A discrete-diffusion PLM** (DPLM/DPLM-2, EvoDiff, Discrete Walk-Jump, arXiv:2306.12360).
+  Foldable-by-design but abandons ESM2 layer-4 as the substrate — breaks hook parity. Not
+  pursued.
+- **D. Temperature/rounds** (the existing 5-rounds/T=0.5 operating point of §13.7 is this
+  family). Cheap, partial.
+
+We tested A and B. C and D were out of scope (C breaks hook parity; D is already §13.7).
+
+### 17.2 Family A, confidence-frozen remasking — mode collapse (negative)
+
+Added `--mask-selection confidence` (commit ee6d686): each round, remask the k lowest-
+endorsement positions, where confidence is the model's probability of the *current* residue
+given context, p(x_i | x_context), read from one clean forward on the unmasked sequence; the
+rest are frozen. Same edit budget k as random, so it is a controlled swap of *which*
+positions move. Guarded by `tests/test_masked_gibbs_selection.py`.
+
+**Result (folded): it mode-collapses to homopolymers.** 92.7% degenerate vs random's 8.5%;
+unique-AA mean 6.7 (min 1); max-homopolymer-run mean 22.9 (max 191). A representative
+alpha=0-naive sequence was 54-70% proline. The higher pTM it posts (0.41 vs random 0.29,
+Welch t=3.7) is ESMFold confidently folding a rigid poly-proline — junk gaming the metric,
+caught only because we **count** degenerate rows rather than filter them (a filter-then-
+compare analysis would have shipped a false +0.10 pTM "win").
+
+**Why the transplant fails:** ESM-2 is *most confident about repetition* (a poly-X is
+trivially predictable), so freezing high-confidence residues entrenches a growing homopolymer
+run-away. Thirty rounds of it on a real start collapses to poly-P with no steering involved —
+selection alone is the cause. MaskGIT freezes confident predictions along a single
+denoise-from-all-masked trajectory; applied to iterative refinement of an already-full
+sequence, "confidence in the current residue" is maximised by low complexity. The
+copy-bias caveat (unmasked p(x_i) over-trusts visible residues) is moot — a poly-P is
+high-confidence under a masked-marginal signal too; the freeze rule itself is the problem.
+
+### 17.3 Family A, relatedness masking — avoids collapse, kills efficacy (negative)
+
+`--mask-selection relatedness` (Huang et al. Algorithm 1) masks the k positions whose
+representation is *least* cosine-similar to the steering vector — the residues most opposed
+to the target — and leaves the rest. A latent bug was fixed first (commit 4149ed3):
+`score_vec` was passed unsigned, so on the *down* direction it masked the already-low-
+property residues instead of the high-property ones. Bidirectional relatedness had never
+been folded, so this had not surfaced.
+
+**Result (folded): not a win.** It does not collapse like confidence (37.9% degenerate vs
+92.7%) but degrades complexity far more than random (37.9% vs 8.5%) *and* loses ~4x of the
+steering: clean-row attributable divergence at alpha=1 is +0.96 vs random's +3.93, for only
+a marginal clean-row decode-pTM gain (0.327 vs 0.293). Masking property-opposed positions and
+refilling them toward the target enriches hydrophobic residues, drifting toward low
+complexity while touching too few distinct positions to move the property much.
+
+**Family A conclusion: position selection does not fix the loop.** Smarter masking only
+changes the *flavour* of degeneracy, not the fixed point. Random remains the best decode in
+the Gibbs regime; the existing 5-rounds/T=0.5 operating point (§13.7) already beats both
+masking tricks. The lever is not *which* positions you touch.
+
+### 17.4 Family B, stochastic beam search over steered PLL (the working alternative)
+
+Implemented `--decoder beam` (commit 324cf5b), following arXiv:2603.10302, integrated to keep
+BOTH activation steering and GLP correction (the chosen design):
+
+- Build the per-position conditional log-prob matrix `A` (L x 20) for a template by masking
+  each position in turn, forwarding, and reading its distribution over the 20 canonical AAs.
+  Crucially, steering + GLP correction are applied to each masked position's activation, so
+  `A` is the **steered, on-manifold** marginal — the property enters exactly as in Gibbs.
+  `A` is built with **two batched forwards** (all L single-position-masked variants at once,
+  `_steered_marginal_matrix`), not 2L sequential passes.
+- Every single-substitution neighbour's PLL is then read off `A` for free:
+  `PLL(x') = PLL(x) - A[k,x_k] + A[k,x'_k]`.
+- Stochastic beam search: keep `--beam-width` sequences, expand each to its 20L neighbours,
+  add Gumbel noise to `PLL/temperature` (temperature scales the likelihood term, not the
+  Gumbel term), keep the global top-B, repeat for `--n-edits` edits. Return the highest-PLL
+  leaf.
+
+The point of the method: it makes only `n_edits` single-residue edits from the real seed,
+each chosen to maximise the steered pseudo-likelihood — few, natural, property-shifted edits
+instead of a ~3x blind rewrite. Guarded by `tests/test_masked_gibbs_selection.py` (marginal
+matrix, the free-neighbour PLL identity vs brute force, and the N-edits behaviour).
+
+The nnsight batched intervention was de-risked with a smoke run before the pilots.
+
+### 17.5 The edit-budget frontier and the alpha saturation result
+
+Beam preserves foldability and does not collapse — at every edit budget and even under a 20x
+steering push, degeneracy stays at the 2.5-4.6% real-protein floor and pTM stays near
+natural. Efficacy is the attributable up-minus-down GRAVY divergence at alpha=1, corrected
+arm, differenced against each arm's own alpha=0 (pool GRAVY sd = 0.456).
+
+**Edit-count frontier (the lever that works):**
+
+| decoder | edits | degenerate | alpha=0 pTM | divergence @alpha=1 | pool SD |
+|---|---|---|---|---|---|
+| beam | 5  | 2.5% | 0.486 | +0.073 | 0.16 |
+| beam | 10 | 2.5% | 0.473 | +0.083 | 0.18 |
+| beam | 25 | 3.5% | 0.438 | +0.274 | 0.60 |
+| beam | 50 | 4.6% | 0.409 | +0.505 | 1.11 |
+| gibbs (30 rounds) | ~390 | 8.5% | 0.293 | +3.990 | 8.7 |
+
+Smooth and monotonic: each doubling of the edit budget roughly doubles the steering at a
+small, graceful foldability cost and no collapse.
+
+**Alpha is NOT the lever (E=10, alpha sweep, folded):**
+
+| alpha | degenerate | alpha-naive pTM | alpha-corr pTM | attributable divergence |
+|---|---|---|---|---|
+| 0  | 2.5% | 0.482 | 0.484 | +0.000 |
+| 1  | 3.1% | 0.474 | 0.487 | +0.110 |
+| 3  | 2.5% | 0.466 | 0.479 | +0.143 |
+| 8  | 2.5% | 0.448 | 0.472 | +0.140 |
+| 20 | 2.5% | 0.444 | 0.485 | +0.166 |
+
+Divergence saturates by alpha~3; a 20x push barely moves it. Past alpha~3 the steered
+marginal already makes the target residue the top choice at the most-steerable positions, so
+more push cannot add edits beyond E. The initial hypothesis that weak per-edit bias was the
+bottleneck was tested directly and rejected.
+
+### 17.6 Conclusions and what it means for the paper
+
+1. **The decode loop, not steering or GLP, owns foldability — now proven, not inferred.** At
+   alpha=0 (steering off, so the arms differ only by decoder) the same natural starts fold at
+   pTM **0.48 through beam vs 0.29 through gibbs**. This upgrades finding 5 from correlational
+   to a direct controlled dissociation.
+2. **Position-selection tricks do not help** (§17.2-17.3): confidence collapses to junk,
+   relatedness trades efficacy for nothing.
+3. **Beam and gibbs are the SAME efficacy/naturalness curve, parameterised by edit count.**
+   Gibbs does ~390 resample events (30 rounds x 10% x ~130 residues); extrapolating the beam
+   frontier to that many edits lands where gibbs sits. Few edits = natural + weak steering
+   (beam's corner); many edits = strong steering + junk (gibbs's corner). GLP and the vector
+   are identical throughout; the decoder's edit budget is the entire lever on foldability.
+4. **No free lunch, but a promising asymmetry.** Beam is cleaner *per edit* than gibbs (E=50:
+   4.6% junk vs gibbs's 8.5%), because its PLL objective resists degeneracy that gibbs's free
+   sampling does not — so beam may *dominate* gibbs on the shared curve. Untested at high E.
+
+For the paper: the strong-steering-*and*-foldable claim is **not deliverable** — no decoder
+gives both large concept shift and foldability. The honest, defensible findings are the
+decoder-controlled dissociation (#1) and the mapped frontier, which strengthen the "the loop
+costs foldability" story rather than overclaiming a fix.
+
+**Caveats:** hydrophobicity only; ESM2-8M / one GLP scale; n=40/cell; beam-at-high-E and
+charge/instability generalisation untested.
+
+### 17.7 Reproduction
+
+Code: `--decoder {gibbs,beam}` with `--beam-width`/`--n-edits`/`--beam-temperature`, and
+`--mask-selection {random,relatedness,confidence}`, all in `scripts/run_steering.py`;
+`decoder`/`mask_selection`/beam params recorded in `summary.json`. Commits: ee6d686
+(confidence), 4149ed3 (relatedness sign fix), 324cf5b (beam decoder).
+
+Runs (all under `runs/steering_crg/`, folded with `scripts/cluster/submit_fold.sh`):
+
+```
+steering_diffmean_hydro_confpilot_random_n10   # gibbs random baseline
+steering_diffmean_hydro_confpilot_conf_n10     # Family A confidence
+steering_diffmean_hydro_confpilot_related_n10  # Family A relatedness
+steering_diffmean_hydro_beam_e5_n10  / _e10_ / _e25_ / _e50_   # beam edit-budget frontier
+steering_diffmean_hydro_beam_e10_asweep        # beam alpha sweep {0,1,3,8,20} at E=10
+```
+
+Launch pattern (matched setup, one shared canonical contrast so only the decoder/edits vary):
+
+```bash
+sbatch --account=ehpc394 --qos=acc_ehpc scripts/cluster/submit_steering.sh \
+  B <NAME> configs/configs_lucia/esm8m_500m_4096_d24_steering_crg.yaml "0,0.257,1" 10 \
+  --property gravy --alpha-mode relative \
+  --ckpt .../uniref50_500m_4096_d24/checkpoints/glp_final.pt \
+  --scaler .../uniref50_500m_4096_d24/checkpoints/rep_statistics.pt \
+  --contrast .../steering_crg/steering_diffmean_hydro/gravy_contrast.json \
+  --decoder beam --n-edits <E> --beam-width 5
+```
+
+Operational notes: E>=50 exceeds the 2h `acc_ehpc` wall — run_steering resumes from the
+partial CSV (skips done cells) if resubmitted. Always read effects **gated and ungated** and
+count degenerate rows; the confidence result is the cautionary case where filtering instead
+of counting would have manufactured a false win.
