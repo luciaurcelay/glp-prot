@@ -562,6 +562,146 @@ def masked_gibbs_generate(steerer: ESMSteerer, init_tokens: torch.Tensor,
     return best_seq if select_fn is not None else decode()
 
 
+def _steered_marginal_matrix(steerer: ESMSteerer, tokens: torch.Tensor,
+                             steer_fn: Callable[[torch.Tensor], torch.Tensor],
+                             correct_fn: Callable[[torch.Tensor], torch.Tensor],
+                             device: str) -> torch.Tensor:
+    """Build the per-position conditional log-prob matrix A (L, 20) for `tokens`, under
+    the SAME per-position steering + GLP correction masked_gibbs uses. A[i,:] is the
+    model's log-distribution over the 20 canonical AAs at position i when position i is
+    masked and its layer-4 activation is steered+corrected — i.e. the true (masked-marginal)
+    pseudo-likelihood term for that position, made steering-aware.
+
+    All L single-position-masked variants are forwarded as ONE batch of L, so the whole
+    matrix costs two batched forwards (one clean to read each masked position's activation,
+    one with the steered+corrected override to read its logits) rather than 2L sequential
+    passes. This is what makes the beam search's "all single-substitution neighbour PLLs come
+    free from A" trick (arXiv:2603.10302) cheap here."""
+    L = tokens.shape[1] - 2
+    rows = torch.arange(L, device=device)
+    cols = rows + 1                                   # interior token positions 1..L
+    batch = tokens.to(device).repeat(L, 1)            # (L, L+2)
+    batch[rows, cols] = steerer.tokenizer.mask_token_id   # variant i masks position i
+    attn = torch.ones_like(batch)
+
+    _, hidden = steerer.forward(batch, attn, override=None)     # (L, L+2, d)
+    acts = hidden[rows, cols, :].to(device)                     # (L, d) masked-pos activations
+    corrected = correct_fn(steer_fn(acts).to(hidden.dtype).to(device)).to(hidden.dtype).to(device)
+    override = hidden.clone()
+    override[rows, cols, :] = corrected
+    logits, _ = steerer.forward(batch, attn, override=override)  # (L, L+2, vocab)
+
+    valid = steerer.valid_aa_ids.to(device)
+    diag = logits[rows, cols][:, valid].float()                 # (L, 20) over canonical AAs
+    return F.log_softmax(diag, dim=-1)
+
+
+def steered_beam_search_generate(steerer: ESMSteerer, init_tokens: torch.Tensor,
+                                 steer_fn: Callable[[torch.Tensor], torch.Tensor],
+                                 correct_fn: Callable[[torch.Tensor], torch.Tensor],
+                                 beam_width: int, n_edits: int, temperature: float,
+                                 generator: torch.Generator, device: str,
+                                 select_fn: Optional[Callable[[int, str], float]] = None,
+                                 log_fn: Optional[Callable[[int, str], None]] = None) -> str:
+    """Temperature-annealed stochastic beam search over pseudo-log-likelihood (Ruffolo-style,
+    arXiv:2603.10302), used here as an alternative decoder to masked_gibbs_generate. Instead
+    of many rounds of blind masked-Gibbs resampling (which rewrites already-correct residues
+    and collapses the fold to a fixed point), it makes only `n_edits` single-residue edits
+    from the real seed, each chosen to maximise the sequence's steered pseudo-likelihood — few,
+    natural, property-shifted edits.
+
+    Steering enters exactly as in masked_gibbs: the marginal matrix A is built with
+    `steer_fn`+`correct_fn` applied to each masked position's activation, so the whole PLL
+    landscape is tilted toward the target property and kept on GLP's manifold. The property
+    moves because A is steered; naturalness is preserved because beam search prefers high-PLL
+    edits and makes few of them.
+
+    Beam step: for each of the `beam_width` sequences, build A, read off every single-
+    substitution neighbour's PLL for free (PLL(x') = PLL(x) - A[k,x_k] + A[k,x'_k]), add
+    Gumbel noise to PLL/temperature (higher temperature = more diversity, per the paper's note
+    that the softmax temperature scales the likelihood term but not the Gumbel term), and keep
+    the global top-`beam_width`. Returns the highest-PLL sequence found (or, if `select_fn` is
+    given, the highest-scoring one under it)."""
+    tok = steerer.tokenizer
+    L = init_tokens.shape[1] - 2
+    valid_ids = steerer.valid_aa_ids.tolist()
+    id_to_idx = {tid: j for j, tid in enumerate(valid_ids)}  # vocab id -> 0..19
+
+    def decode(tokens: torch.Tensor) -> str:
+        ids = tokens[0, 1:L + 1].tolist()
+        return "".join(tok.convert_ids_to_tokens(i) for i in ids)
+
+    def cur_idx(tokens: torch.Tensor) -> torch.Tensor:
+        # 0..19 index of each interior residue; a non-canonical residue maps to -1 and is
+        # treated as "always improvable" (its PLL term is dropped, so any AA substitution
+        # there is a pure gain — the beam will replace it, which is the desired cleanup).
+        return torch.tensor([id_to_idx.get(t, -1) for t in tokens[0, 1:L + 1].tolist()])
+
+    best_seq, best_score = None, float("-inf")
+
+    def consider(tokens: torch.Tensor, round_idx: int):
+        nonlocal best_seq, best_score
+        seq = decode(tokens)
+        if log_fn is not None:
+            log_fn(round_idx, seq)
+        score = select_fn(round_idx, seq) if select_fn is not None else None
+        return seq, score
+
+    # beam holds (tokens, pll); pll of the seed is filled on its first expansion
+    beam = [(init_tokens.clone().to(device), None)]
+    seed_seq, seed_score = consider(init_tokens, -1)
+    if select_fn is not None:
+        best_seq, best_score = seed_seq, seed_score
+
+    for edit in range(n_edits):
+        cands = []   # (noisy_score, raw_pll, new_tokens)
+        for tokens, _ in beam:
+            A = _steered_marginal_matrix(steerer, tokens, steer_fn, correct_fn, device).cpu()  # (L,20)
+            ci = cur_idx(tokens)                                # (L,)
+            # current-token log-prob per position (0 where non-canonical, so those positions'
+            # neighbours are scored as a pure A[k,a] gain rather than a delta)
+            cur_lp = torch.zeros(L)
+            has = ci >= 0
+            cur_lp[has] = A[has, ci[has].clamp(min=0)]
+            base_pll = float(cur_lp.sum())
+            delta = A - cur_lp.unsqueeze(1)                     # (L,20) PLL change per substitution
+            # forbid the no-op (substituting a position's current residue for itself)
+            for k in range(L):
+                if ci[k] >= 0:
+                    delta[k, ci[k]] = float("-inf")
+            neigh_pll = base_pll + delta                        # (L,20)
+            gumbel = -torch.log(-torch.log(torch.rand(L, 20, generator=generator).clamp_min(1e-12)))
+            noisy = neigh_pll / max(temperature, 1e-6) + gumbel
+            noisy[~torch.isfinite(neigh_pll)] = float("-inf")
+            flat = noisy.flatten()
+            kk = min(beam_width, int(torch.isfinite(flat).sum()))
+            if kk == 0:
+                continue
+            # keep this beam's best-few to bound work; the real prune is the GLOBAL top-B below
+            for t in torch.topk(flat, kk).indices.tolist():
+                k, a = divmod(t, 20)
+                nt = tokens.clone()
+                nt[0, k + 1] = valid_ids[a]
+                cands.append((float(flat[t]), float(neigh_pll[k, a]), nt))
+        if not cands:
+            break
+        # global stochastic top-beam_width by the NOISY score (Gumbel-top-k = sampling B
+        # without replacement from the PLL distribution at `temperature`)
+        cands.sort(key=lambda x: x[0], reverse=True)
+        beam = [(nt, pll) for _, pll, nt in cands[:beam_width]]
+        for tokens, pll in beam:
+            seq, score = consider(tokens, edit)
+            if select_fn is not None:
+                if score > best_score:
+                    best_seq, best_score = seq, score
+            elif pll > best_score:
+                best_seq, best_score = seq, pll
+
+    if best_seq is None:
+        best_seq = decode(beam[0][0]) if beam else seed_seq
+    return best_seq
+
+
 # --------------------------------------------------------------------------- #
 #  Evaluation primitives
 # --------------------------------------------------------------------------- #
@@ -1324,6 +1464,24 @@ def main():
                     help="[--mask-selection relatedness] mutation sites per round (Huang et "
                          "al.'s T). Defaults to round(mask_fraction * L) so the edit budget "
                          "matches the random baseline unless set.")
+    ap.add_argument("--decoder", choices=["gibbs", "beam"], default="gibbs",
+                    help="[B] sequence decoder. 'gibbs' (default): the masked-Gibbs refinement "
+                         "loop (--n-rounds x --mask-fraction resampling). 'beam': temperature-"
+                         "annealed stochastic beam search over steered pseudo-log-likelihood "
+                         "(arXiv:2603.10302) — makes only --n-edits single-residue edits from "
+                         "the real seed, each maximising the steered/GLP-corrected PLL, instead "
+                         "of many rounds of blind resampling. Steering and GLP enter identically "
+                         "(they tilt the PLL matrix A); the property moves via the steered "
+                         "marginals and naturalness is preserved by making few high-PLL edits.")
+    ap.add_argument("--beam-width", type=int, default=5,
+                    help="[--decoder beam] beam size B (paper: 5 unguided, 20 guided)")
+    ap.add_argument("--n-edits", type=int, default=5,
+                    help="[--decoder beam] number of single-residue edits from the seed "
+                         "(paper: 3-5). This is the whole edit budget, vs gibbs' ~3x rewrite.")
+    ap.add_argument("--beam-temperature", type=float, default=1.5,
+                    help="[--decoder beam] stochastic-beam-search temperature (paper: 1.5); "
+                         "scales the PLL term relative to the Gumbel noise, so higher = more "
+                         "diverse leaves.")
     ap.add_argument("--sample-mode", choices=["sample", "argmax"], default="sample")
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--pppl-batch-size", type=int, default=32)
@@ -1532,7 +1690,9 @@ def main():
         # need out of it — otherwise a downstream script that only sees the run dir cannot
         # standardize its numbers or subtract the natural coupling.
         run.log_summary(steered_property=args.property, alpha_mode=args.alpha_mode,
-                        mask_selection=args.mask_selection,
+                        mask_selection=args.mask_selection, decoder=args.decoder,
+                        beam_width=args.beam_width, n_edits=args.n_edits,
+                        beam_temperature=args.beam_temperature,
                         alpha_scale=alpha_scale, vector_norm=float(gd["vector_norm"]),
                         contrast_path=str(contrast_path.resolve()),
                         contrast_length_gap_pool_sd=gd.get("length_gap_pool_sd"),
@@ -1969,20 +2129,31 @@ def main():
                                         "prop_current": prop.score(cur_seq)})
                                     roundlog_file.flush()
 
-                            seq = masked_gibbs_generate(
-                                steerer, init_tokens, steer_fn, correct_fn, args.mask_fraction,
-                                args.n_rounds, args.stabilize_tol, args.sample_mode,
-                                args.temperature, g, device, diag_fn=diag_fn, select_fn=select_fn,
-                                log_fn=log_fn, selection=args.mask_selection,
-                                n_mutations=args.n_mutations,
-                                # sign-adjust so relatedness masks positions opposed to THIS
-                                # direction's target: for 'down' (sign=-1) the residues most
-                                # opposed to lowering the property are the ones most aligned
-                                # with +v (highest property), so the vector must flip too —
-                                # cosine is scale-invariant, so the alpha_scale on diffmean_vec
-                                # is irrelevant here and only the sign matters. Inert for
-                                # random/confidence (they ignore score_vec).
-                                score_vec=None if is_a else sign * diffmean_vec)
+                            if args.decoder == "beam":
+                                # beam search shares steer_fn/correct_fn (steering + GLP enter
+                                # through the PLL matrix A) but is Exp B only; select_fn/log_fn
+                                # are threaded so Exp A's z_k-selection and the round-property
+                                # log keep working, though Exp B uses neither.
+                                seq = steered_beam_search_generate(
+                                    steerer, init_tokens, steer_fn, correct_fn,
+                                    beam_width=args.beam_width, n_edits=args.n_edits,
+                                    temperature=args.beam_temperature, generator=g, device=device,
+                                    select_fn=select_fn, log_fn=log_fn)
+                            else:
+                                seq = masked_gibbs_generate(
+                                    steerer, init_tokens, steer_fn, correct_fn, args.mask_fraction,
+                                    args.n_rounds, args.stabilize_tol, args.sample_mode,
+                                    args.temperature, g, device, diag_fn=diag_fn, select_fn=select_fn,
+                                    log_fn=log_fn, selection=args.mask_selection,
+                                    n_mutations=args.n_mutations,
+                                    # sign-adjust so relatedness masks positions opposed to THIS
+                                    # direction's target: for 'down' (sign=-1) the residues most
+                                    # opposed to lowering the property are the ones most aligned
+                                    # with +v (highest property), so the vector must flip too —
+                                    # cosine is scale-invariant, so the alpha_scale on diffmean_vec
+                                    # is irrelevant here and only the sign matters. Inert for
+                                    # random/confidence (they ignore score_vec).
+                                    score_vec=None if is_a else sign * diffmean_vec)
 
                             pppl = pseudo_perplexity(steerer, seq, device, batch_size=args.pppl_batch_size)
                             acts_final = torch.from_numpy(extractor.extract_single(seq)).float()
