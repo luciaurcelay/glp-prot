@@ -553,6 +553,16 @@ E.~Villegas Garcia and A.~Ansuini.
 C.~Sathyaseelan, L.~P.~P.~Patro, and T.~Rathinavelan.
 \newblock Sequence patterns and HMM profiles to predict proteome wide zinc finger motifs.
 \newblock \emph{Pattern Recognition}, 135:109134, 2023.
+
+\bibitem{chang2022maskgit}
+H.~Chang et~al.
+\newblock MaskGIT: Masked generative image transformer.
+\newblock \emph{CVPR}, 2022.
+
+\bibitem{beamsearch2026plm}
+Anonymous.
+\newblock How to make the most of your masked language model for protein engineering.
+\newblock \emph{arXiv:2603.10302}, 2026.
 \end{thebibliography}
 
 \newpage
@@ -1224,6 +1234,69 @@ hydrophobicity vector its $\alpha{=}2$ is the same perturbation as the $\alpha{=
 used elsewhere in this paper.}
 \label{fig:steer-tradeoff}
 \end{figure}
+
+\subsection{Can a better decoder escape the fixed point?}
+\label{app:steer-decoders}
+
+The fixed point of Appendix~\ref{app:steer-protocol} raises whether the foldability loss is
+specific to uniform-random masked-Gibbs decoding or intrinsic to decoding steered
+activations at all. We tested two alternatives, both leaving the residues the host model is
+already confident about untouched, and both using the identical steering vector and
+correction operator; only the decoder changes.
+
+\paragraph{Confidence-frozen remasking mode-collapses.} Following the confidence-ordered
+unmasking of masked generative transformers \cite{chang2022maskgit}, we remask each round
+only the positions the host model least endorses (lowest $p(x_i \mid \text{context})$) and
+freeze the rest. This collapses: $92.7\%$ of outputs are degenerate (against $8.5\%$ for
+uniform random masking), typically homopolymers, with a representative sequence $54$--$70\%$
+proline. Because ESM-2 is most confident about repetition, freezing its confident residues
+entrenches a growing repeat. The collapsed sequences score \emph{higher} pTM ($0.39$ vs.\
+$0.29$) than the uniform-random decoder, but this is a folded poly-proline helix rather than
+a protein, and is caught only by counting degenerate outputs rather than filtering them.
+
+\paragraph{Beam search over the steered pseudo-likelihood is the opposite failure mode.} We
+replace the resampling loop with the stochastic beam search of \cite{beamsearch2026plm},
+adapted so the per-position marginals are the steered, GLP-corrected ones: from the real
+starting protein we make only $E$ single-residue edits, each chosen to maximise the
+sequence's steered pseudo-log-likelihood (every single-substitution neighbour is scored for
+free from one masked-marginal pass). It never collapses --- degeneracy stays at the
+natural-protein rate ($2.5$--$4.6\%$) even under a $20\times$ steering push --- and it keeps
+foldability near natural (pTM $0.44$--$0.49$ at $E\!\le\!10$), but it steers only weakly.
+
+\paragraph{Two levers, one curve.} Increasing the steering strength $\alpha$ saturates
+almost immediately: at $E{=}10$ the divergence is $+0.11$ at $\alpha{=}1$ and only $+0.17$ at
+$\alpha{=}20$. The edit budget $E$ is the lever that works (Table~\ref{tab:steer-frontier}):
+the effect grows with $E$ while foldability declines gracefully and degeneracy stays low. But
+the two decoders are then the \emph{same} efficacy/naturalness curve parameterised by edit
+count --- uniform-random masked-Gibbs performs ${\approx}390$ resampling events ($30$ rounds
+$\times\,10\%\times{\sim}130$ residues), and extrapolating the beam-search curve to that
+budget reproduces the masked-Gibbs corner. Few edits are natural but weak; many edits are
+strong but degrade. The clearest statement is at $\alpha{=}0$, where the arms differ only by
+decoder: the same starting proteins fold at pTM $0.48$ through beam search and $0.29$ through
+masked-Gibbs. The decoder, not the correction or the steering, sets the foldability. No
+decoder we tried escapes the trade-off, though beam search is cleaner per edit ($4.6\%$
+degenerate at $E{=}50$ vs.\ $8.5\%$ for masked-Gibbs) and may dominate it at matched effect
+--- a direction we leave open.
+
+\begin{table}[htbp]
+\centering
+\caption{Beam search over the steered pseudo-likelihood, as a function of the edit budget
+$E$, against uniform-random masked-Gibbs. pTM is the $\alpha{=}0$ naive arm (the decoder
+alone); divergence is the attributable up-minus-down effect at the top of the grid; both at
+$n{=}40$ starting proteins per direction, hydrophobicity.}
+\label{tab:steer-frontier}
+\begin{tabular}{lrrr}
+\toprule
+decoder & degenerate & pTM ($\alpha{=}0$) & divergence \\
+\midrule
+beam, $E{=}5$   & $2.5\%$ & $0.486$ & $+0.07$ \\
+beam, $E{=}10$  & $2.5\%$ & $0.473$ & $+0.08$ \\
+beam, $E{=}25$  & $3.5\%$ & $0.438$ & $+0.27$ \\
+beam, $E{=}50$  & $4.6\%$ & $0.409$ & $+0.51$ \\
+masked-Gibbs, $30$ rounds & $8.5\%$ & $0.293$ & $+3.99$ \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{The SAE-feature-clamp variant: four structural concepts}
 \label{app:steer-sae-clamp}
