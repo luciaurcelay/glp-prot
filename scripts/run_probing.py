@@ -94,11 +94,14 @@ def main():
     assert len(protein_id_tr) == A_tr.shape[0] and len(protein_id_te) == A_te.shape[0], \
         "protein_id/activation row mismatch (docs/INTERPLM_MAP.md alignment contract)"
 
-    from glp_plm.diffusion.scaler import Scaler
-    scaler = Scaler.load(args.scaler or ckpt_dir / "rep_statistics.pt")
-
+    # The scaler + GLP checkpoint are only needed for the "glp" method; load them lazily
+    # so raw_layer/raw_mlp/sae-only runs work before any GLP is trained (e.g. the 650M
+    # layer pilot, docs/plan_650m_scaling.md stage 1).
     model = None
+    scaler = None
     if "glp" in methods:
+        from glp_plm.diffusion.scaler import Scaler
+        scaler = Scaler.load(args.scaler or ckpt_dir / "rep_statistics.pt")
         model = GLPDenoiser(cfg.model).to(device).eval()
         model.load_state_dict(torch.load(args.ckpt or ckpt_dir / "glp_final.pt", map_location=device))
     sae = None
