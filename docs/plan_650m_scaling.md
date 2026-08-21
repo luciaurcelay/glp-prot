@@ -56,13 +56,39 @@ in its own main results. Two metrics, in priority order:
   Parametrize it for the chosen 650M layer and run it *before* the 256 GB extraction — this
   is the "hook parity is sacred" invariant and is expensive to get wrong.
 
-### Stage 1 — layer pilot (~GPU-minutes, decides the layer)
-The ESM forward computes all `hidden_states` in one pass, so `hidden_states[18]` and
-`hidden_states[24]` are free from a single extraction. Extract a small Swiss-Prot eval set
-(~1–2k proteins) at **both** layers, run the 1-D **raw-layer** probe on the pre-registered
-concepts, and commit the 256 GB train store to whichever layer makes concepts more linearly
-accessible. The raw-layer probe is a baseline we need anyway, so it is not wasted work.
-Default if we skip the pilot: **layer 24** (depth-parity with 8M layer-4).
+### Stage 1 — layer pilot (decides the layer)
+Extract the Swiss-Prot eval set at **layers 18 and 24** (two builds), run the 1-D
+**raw-layer** probe on the qualifying concepts, and commit the 256 GB train store to
+whichever layer makes concepts more linearly accessible. Labels are layer-independent so
+the qualifying concept set is identical across the two builds — the comparison is paired
+and needs no frozen-concept file. The layer-N eval store is also reusable for metric B.
+Default if the pilot is inconclusive: **layer 24** (depth-parity with 8M layer-4).
+
+**Operational facts (verified 2026-08-21):**
+- **Use `N_PROT=20000`** — the only cached annotation TSV is
+  `$GLP_DATA_ROOT/swissprot/swissprot_annotated_eval_20000.tsv`, and
+  `fetch_uniprot_annotated_tsv` is a no-op when it exists (offline-safe on compute nodes).
+  Any other n-prot would trigger a UniProt REST fetch that fails offline.
+- **Account/QOS:** `--account=ehpc394 --qos=acc_ehpc` (crg562661; CLI overrides the
+  scripts' `bsc70`/`acc_bsccs` directives). Available QOS: acc_ehpc, acc_debug, acc_interactive.
+- **ESM-650M weights** live at `$HF_HOME/hub/models--facebook--esm2_t33_650M_UR50D`
+  (scp'd from local; HF_HUB_OFFLINE=1 reads them). Hook-parity test passes for layers 18/24.
+- **Cost:** each build re-runs the full ESM-650M forward over the 20k-protein eval set
+  (~15–30 min GPU); two builds. (One-pass dual-layer extraction is possible but not worth
+  the code change for a one-off pilot.)
+
+**Launch (from the MN5 repo root, once weights are in place):**
+```bash
+cd /home/crg/crg562661/projects/glp-prot
+for L in 18 24; do
+  B=$(sbatch --account=ehpc394 --qos=acc_ehpc --time=04:00:00 \
+        scripts/cluster/submit_build_swissprot_eval.sh configs/esm650m_pilot_l${L}.yaml 20000 30 \
+      | awk '{print $NF}')
+  sbatch --account=ehpc394 --qos=acc_ehpc --time=02:00:00 --export=ALL,METHODS=raw_layer \
+        --dependency=afterok:$B scripts/cluster/submit_run_probing.sh configs/esm650m_pilot_l${L}.yaml
+done
+```
+Decide by mean raw-layer AUC across qualifying concepts (paired over concepts), l18 vs l24.
 
 ### Stage 2 — extract 100M/650M train store at chosen layer (~few GPU-hr, 256 GB)
 Standard extractor; `--exclude-from <eval tsv>` is not required for the *train* store
