@@ -23,9 +23,9 @@ in its own main results. Two metrics, in priority order:
 |---|---|---|
 | Metric order | **A first, B if time** | A is the cheaper, self-contained scaling curve; B is the headline but needs the SAE + eval extraction |
 | Activation scale | **100M** (not 500M) | 100M store = ~256 GB vs 1.28 TB; 5× cheaper train; disk-safe |
-| Hooked layer | **Pilot 18 (55%) vs 24 (73%), pick empirically** | 8M anchor = layer 4/6 = 67%. Parity favors 24; head-specialization risk favors 18; decide with a cheap raw-layer probe (§4, stage 1) |
+| Hooked layer | **18** (decided by pilot 2026-08-21) | Raw-layer probe on 166 concepts: L18 mean test AUC 0.8509 vs L24 0.8438, wins 107–59, paired Wilcoxon p=3e-4. See §4 stage 1. |
 | Steering (Exp B whole-sequence) | **OUT of scope** | Separate claim with its own folding/contrast machinery; too big a lift |
-| Training precision | **bf16** | PLAN stretch row; halves memory/time vs fp32 for the ~1B-param d24 cell. Store stays fp16 |
+| Training precision | **fp32** | Matches the 8M `configs_lucia` grid exactly (cleanest same-protocol comparison); store stays fp16. ~1B-param d24 still fits an 80 GB H100 in fp32. (Revisit to bf16 only if d24 training time becomes the bottleneck.) |
 
 ## 3. Fixed parameters
 
