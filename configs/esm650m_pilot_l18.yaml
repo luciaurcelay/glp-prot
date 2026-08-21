@@ -1,0 +1,53 @@
+# ESM-2-650M layer pilot — candidate layer 18 (55% depth).
+# Purpose: decide the hooked layer for the 650M scaling experiment (docs/plan_650m_scaling.md,
+# stage 1) by comparing raw-layer 1-D probe AUC at layers 18 vs 24 on the same Swiss-Prot
+# eval set. Labels are layer-independent, so the two builds qualify the same concepts and the
+# only difference is the embedded activations. Cheap: ~2k proteins, one ESM-650M pass, no GLP.
+#
+# Run (MN5): submit_build_swissprot_eval.sh <this cfg>, then
+#            submit_run_probing.sh <this cfg> with --methods raw_layer.
+
+device: cuda
+precision: fp32
+seed: 0
+output_dir: runs/esm650m_pilot_l18
+
+model:
+  activation_dim: 1280      # ESM-2-650M d; -> d_model 2560, d_mlp 5120
+  d_model: null
+  d_mlp: null
+  n_blocks: 6               # unused by the raw-layer probe, but must be a valid model cfg
+
+data:
+  model_name: facebook/esm2_t33_650M_UR50D
+  layer: 18
+  store_mode: precache
+  activation_dtype: float16
+  n_shards: 8
+  valid_shard_range: [0, 3]
+  test_shard_range: [4, 7]
+  min_aa_per_concept: 1500
+  min_domains_per_concept: 25
+
+diffusion:
+  num_train_timesteps: 1000
+
+sampler:
+  num_steps: 20
+  fd_num_steps: 1000
+  t_start: 1.0
+
+train:
+  lr: 5.0e-5
+  batch_size: 4096
+  num_epochs: 1
+  warmup_ratio: 0.01
+  lr_initial_factor: 0.01
+  lr_final_factor: 0.1
+  grad_clip: 1.0
+  log_every_n_steps: 50
+
+probing:
+  u_grid: [0.1, 0.5, 0.9]
+  topk: 512
+  seed: 42

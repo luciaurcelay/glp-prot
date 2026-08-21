@@ -48,5 +48,10 @@ EVAL_ARGS=()
 CKPT_ARGS=()
 [ -n "$CKPT" ] && CKPT_ARGS=(--ckpt "$CKPT")
 [ -n "$SCALER" ] && CKPT_ARGS+=(--scaler "$SCALER")
+# METHODS env-var restricts the probed methods (default: all of bl.METHODS). Set e.g.
+# METHODS=raw_layer for the 650M layer pilot, which has no GLP checkpoint or SAE yet
+# (docs/plan_650m_scaling.md stage 1).
+METHOD_ARGS=()
+[ -n "${METHODS:-}" ] && METHOD_ARGS=(--methods "$METHODS")
 python scripts/run_probing.py --config "$CONFIG" --metric "$METRIC" "${SHARD_ARGS[@]}" \
-  "${EVAL_ARGS[@]}" "${CKPT_ARGS[@]}"
+  "${EVAL_ARGS[@]}" "${CKPT_ARGS[@]}" "${METHOD_ARGS[@]}"

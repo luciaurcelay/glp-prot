@@ -1,0 +1,130 @@
+# ESM-2-650M scaling experiment — plan
+
+Status: **design frozen 2026-08-21**; not yet launched. Stretch / non-MVP (PLAN §D3),
+hard-gated behind "W1–W3 clean". Scope confirmed with Lucia this session.
+
+## 1. Objective
+
+Test whether the GLP result ports from the toy PLM (ESM-2-8M, d=320) to a real-scale
+PLM (ESM-2-650M, d=1280) — a **160× larger** model that is also the one InterPLM features
+in its own main results. Two metrics, in priority order:
+
+- **A — FD depth scan (PRIMARY, do first).** Replicate the `configs_lucia/` grid
+  (`n_blocks` 3/6/12/24 over one fixed activation store, compared by Fréchet Distance) at
+  650M. Echoes the GLP paper's own "loss/FD predicts utility" protocol. Deliverable: two
+  FD-vs-`n_blocks` curves at a matched 100M-activation scale — 8M and 650M.
+- **B — probing scaling point (if time before submission).** Meta-neuron 1-D probing AUC
+  vs InterPLM SAE features at 650M, i.e. does *our* claim 1 survive at scale. Uses the
+  released `Elana/InterPLM-esm2-650m` SAE at the same hooked layer.
+
+## 2. Decisions (locked this session)
+
+| Decision | Value | Rationale |
+|---|---|---|
+| Metric order | **A first, B if time** | A is the cheaper, self-contained scaling curve; B is the headline but needs the SAE + eval extraction |
+| Activation scale | **100M** (not 500M) | 100M store = ~256 GB vs 1.28 TB; 5× cheaper train; disk-safe |
+| Hooked layer | **Pilot 18 (55%) vs 24 (73%), pick empirically** | 8M anchor = layer 4/6 = 67%. Parity favors 24; head-specialization risk favors 18; decide with a cheap raw-layer probe (§4, stage 1) |
+| Steering (Exp B whole-sequence) | **OUT of scope** | Separate claim with its own folding/contrast machinery; too big a lift |
+| Training precision | **bf16** | PLAN stretch row; halves memory/time vs fp32 for the ~1B-param d24 cell. Store stays fp16 |
+
+## 3. Fixed parameters
+
+- **PLM:** `facebook/esm2_t33_650M_UR50D` (canonical `EsmForMaskedLM`, **never** `nv_esm`),
+  d=1280, 33 layers. Released SAE layers: {1, 9, 18, 24, 30, 33}.
+- **GLP (per depth cell):** d=1280, width=2560, MLP inner=5120.
+
+  | n_blocks | ≈ params | meta-neurons (n_blocks·5120) |
+  |---|---|---|
+  | 3  | ~120M | 15,360 |
+  | 6  | ~250M | 30,720 |
+  | 12 | ~500M | 61,440 |
+  | 24 | ~1B   | 122,880 |
+
+  (Param counts approximate — the training script prints the true count; do not trust the
+  estimate, per PLAN §6.2.)
+- **Data:** UniRef50, 100M activations, batch 4096, 1 epoch, fp16 store.
+- **Store size:** 100M × 1280 × 2 B ≈ **256 GB** (validated: the 8M/100M store is 60 GB at
+  d=320; ×4 for d=1280).
+
+## 4. Stages
+
+### Stage 0 — inputs (local download → scp; all < 3 GB, MN5 has no internet)
+- ESM-2-650M weights (~2.5 GB) — needed for all extraction.
+- InterPLM-650m SAEs, layers **18 and 24** (~0.4 GB each) — only needed for metric B /
+  pilot probing-vs-SAE; the raw-layer pilot (below) needs only ESM.
+- **650M hook-parity test.** `tests/test_hook_parity.py` guards 8M/layer-4 only.
+  Parametrize it for the chosen 650M layer and run it *before* the 256 GB extraction — this
+  is the "hook parity is sacred" invariant and is expensive to get wrong.
+
+### Stage 1 — layer pilot (~GPU-minutes, decides the layer)
+The ESM forward computes all `hidden_states` in one pass, so `hidden_states[18]` and
+`hidden_states[24]` are free from a single extraction. Extract a small Swiss-Prot eval set
+(~1–2k proteins) at **both** layers, run the 1-D **raw-layer** probe on the pre-registered
+concepts, and commit the 256 GB train store to whichever layer makes concepts more linearly
+accessible. The raw-layer probe is a baseline we need anyway, so it is not wasted work.
+Default if we skip the pilot: **layer 24** (depth-parity with 8M layer-4).
+
+### Stage 2 — extract 100M/650M train store at chosen layer (~few GPU-hr, 256 GB)
+Standard extractor; `--exclude-from <eval tsv>` is not required for the *train* store
+(that guardrail is for eval-protein leakage into probing — relevant to metric B's eval
+store, stage 5).
+
+### Stage 3 — depth scan (metric A): train d3/d6/d12/d24, FD/PCA each
+Reuse the one store across all four cells (activations depend only on data/model/layer/seed,
+not `n_blocks`). Per-cell: train → `submit_eval_generation` (FD, `fd_num_steps=1000`; PCA
+overlap). **Not** `submit_pipeline.sh` (which would also probe). Watch-items in §6.
+
+### Stage 4 — compare (metric A deliverable)
+Plot FD (and lower-bound ratio) vs `n_blocks` at fixed 1000 sampler steps, 650M curve
+overlaid on the **already-complete 8M/100M curve**
+(`uniref50_100m_4096_b{3,6,12,24}/metrics/fd_vs_steps.json`). `compare_runs.py` currently
+keys its x-axis on `n_activations`; needs a small tweak to key on `n_blocks`.
+
+### Stage 5 — probing (metric B, only if time)
+Eval extraction with `--exclude-from <eval tsv>` (**never train on eval proteins**), the
+650M eval store (4× bigger, still small absolute), download SAE at the hooked layer, then
+1-D probing: GLP meta-neurons vs SAE features vs raw-layer/raw-MLP baselines. Control the
+selection-pool confound (§6.5).
+
+## 5. Resources & storage
+
+| Item | Estimate |
+|---|---|
+| Train store (100M/650M) | **256 GB** on `$GLP_DATA_ROOT` (bsc70 scratch, ~35 TB free — GO) |
+| Extraction | ~1–3 GPU-hr (H100, bf16) — soft estimate, throughput unmeasured at 650M |
+| Train per cell | ~½–1 GPU-day (d6→d24 heavier) |
+| Full depth scan (4 cells) | ~**1–1.5 GPU-days** compute at 100M + extraction |
+| Downloads | ESM-650M ~2.5 GB + 1–2 SAEs ~0.8 GB (local→scp) |
+
+Paths (shared with Dani `bsc070332`, per memory):
+`GLP_DATA_ROOT=/gpfs/scratch/bsc70/bsc070332/glp-prot-data`,
+`GLP_RUNS_ROOT=/gpfs/projects/bsc70/bsc070332/glp-prot-runs`. Use **distinct** output_dirs
+(e.g. `runs/esm650m_100m_4096_d{3,6,12,24}`) — never reuse an existing run's leaf.
+
+## 6. Watch-items (carry over from the 8M grid; worse at 650M)
+
+1. **Hook parity** — verify the 650M layer parity test before extracting (Stage 0).
+2. **FD stability at d=1280.** Fréchet needs a covariance over 1280 dims → rank-deficient
+   unless eval generations ≫ 1280 (want ≥ 10–50k). Non-issue at d=320; a real sampling
+   requirement here.
+3. **Under-training.** The 24-block/~1B cell may not converge in one epoch — check its loss
+   curve is flat before reading a weak FD as "depth doesn't help."
+4. **GLP hyperparameter re-tune.** lr/batch are d=320/d=2048 heuristics (PLAN §6.2). Budget
+   a quick lr sanity check at d=1280.
+5. **Selection-pool confound (metric B).** Pool grows 15,360→122,880 across depths (and
+   vs 7,680 at 8M); top-512 selection wins partly on pool size. Subsample to a common pool
+   before any cross-depth or cross-scale probing comparison.
+6. **VRAM.** ESM-650M (~2.5 GB) + GLP up to ~1B params on one 80 GB H100 — fits for
+   extraction and bf16 training; confirm the d24 optimizer state fits.
+
+## 7. Value & framing (honest)
+
+Upside: generality of claim 1 at a real-size PLM, on InterPLM's home turf. Cost: it is
+explicitly stretch/non-MVP and can pull focus off the core paper. The 8M scale-matched
+baseline for metric A is **already complete**, which is what makes A cheap enough to be
+worth doing first.
+
+## 8. Still-open items
+
+- Run the layer pilot vs commit to layer 24 outright.
+- Confirm timeline slack against the workshop deadline before committing GPU-days.
