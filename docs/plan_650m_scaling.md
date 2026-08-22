@@ -90,10 +90,19 @@ done
 ```
 Decide by mean raw-layer AUC across qualifying concepts (paired over concepts), l18 vs l24.
 
-### Stage 2 — extract 100M/650M train store at chosen layer (~few GPU-hr, 256 GB)
-Standard extractor; `--exclude-from <eval tsv>` is not required for the *train* store
-(that guardrail is for eval-protein leakage into probing — relevant to metric B's eval
-store, stage 5).
+### Stage 2 — extract 100M/650M train store at chosen layer (~4.5 GPU-hr, 256 GB) — DONE 2026-08-22
+Store built and verified: `$GLP_DATA_ROOT/esm650m_100m_l18/train_store` —
+`meta.json {"n":100000000,"d":1280,"dtype":"float16"}`, `activations.dat` = 256e9 bytes
+(exactly 100M×1280×fp16), `rep_statistics.pt` + `train_manifest.json` present. The
+launcher auto-excluded the 20k eval accessions (guardrail satisfied; 15,237 UniRef50
+headers skipped). Reservoir-sampled 600k of 38.78M UniRef50 seqs, seed 0.
+
+**Store-path gotcha (cost an rmdir once):** `extract_activations.py` writes to
+`$GLP_DATA_ROOT/<output_dir basename>/train_store`, **ignoring** `data.store_dir` (which is
+read only at *train* time). Running extraction with the d6 cell's config landed the store
+at `esm650m_100m_4096_d6/train_store`; it was renamed to `esm650m_100m_l18/train_store` to
+match the grid configs' `store_dir`. To avoid the rename next time, either extract with a
+config whose `output_dir` basename equals the store name, or `mv` afterward.
 
 ### Stage 3 — depth scan (metric A): train d3/d6/d12/d24, FD/PCA each
 Reuse the one store across all four cells (activations depend only on data/model/layer/seed,
