@@ -28,11 +28,42 @@ nothing to do with GLP — see §"What the generation loop costs" below.
 
 ## The two experiments
 
-**Experiment A** — SAE-feature steering on zinc-finger (`--experiment A`).
-InterPLM's released SAE on ESM-2-8M layer 4; a zinc-finger feature is pushed up
-by `clamp` (hard-set) or `scale_shift` (`z* = a·z + b`). Scored by a strict
-C2H2 regex plus ESMFold pLDDT. **Not re-run since the Exp B rebuild** — none of
-the corrections below have been applied to it.
+**Experiment A** — SAE-feature-clamp steering (`--experiment A`). InterPLM's
+released SAE on ESM-2-8M layer 4; one or several features are pushed up by
+`clamp` (hard-set) or `scale_shift` (`z* = a·z + b`), decoded through the same
+masked-Gibbs loop as Exp B but with its own defaults (`mask_fraction=1.0` —
+full resample every round — 100 rounds, z_k-argmax selection). Tested on four
+structural concepts (Helix, Beta strand, Coiled coil, Zinc finger). Concept
+hits are read off the finished sequence or its ESMFold2 fold, never the
+clamped activation: `--concept-detector motif` (default) checks the PROSITE
+PS00028 regex, the best-validated of four candidates against real Swiss-Prot
+ground truth but zinc-finger-specific only; `--concept-detector
+feature_activation` (required for every other concept) re-embeds the finished
+sequence and thresholds the target feature's own F1-calibrated activation.
+Helix/Coiled coil ground truth is DSSP `helix_frac`/EMBOSS `pepcoil`; Beta
+strand needed its own calibration (no motif exists, see
+`steering_history.md` §15.2). Zinc finger has been the most heavily
+re-run/rescored concept — see below.
+
+*Zinc finger is a persistent null, checked several ways, none of which fixes
+it* (`steering_history.md` §15-§18 has the full history; do not re-derive
+this here). Across every feature/pair/joint-clamp/decode-hyperparameter/
+concept-scope variant tried (19 runs, 14k+ sequences as of 2026-08-22), the
+dual-method check (a real Pfam zf-C2H2 HMMER scan, PF00096.33, cross-validated
+against the regex per Sathyaseelan et al. 2023's own protocol) finds **zero**
+corroborated hits. A continuous (non-binary) re-score of the same HMM profile
+does show GLP correction pulling the score distribution toward zf-C2H2
+character in about a third of runs tried, strongest on the flagship UNION(1-5)
+target (feature 1435) — real but weak evidence, not a positive result. Neither
+relaxing the decoder (`--mask-fraction 0.10`, uniform-random) nor picking a
+different/broader-F1 feature (`Zinc finger_any`, feature 5696, the real
+Swiss-Prot "any type" label) rescues it — both leave the binary null unchanged
+and the continuous signal flat or weaker. `--mask-selection confidence`
+(freeze the model's most-confident positions each round, à la MaskGIT) is
+**not** an alternative worth trying here: it mode-collapses to homopolymers in
+the closely-related Exp B decode-loop investigation (§17.2) for a
+model-property reason (ESM-2 is most confident about repetition) that has
+nothing to do with which experiment or concept is being steered.
 
 **Experiment B** — diff-of-means steering on a whole-sequence property
 (`--experiment B --property {gravy,charge,instability}`). A direction `v` is

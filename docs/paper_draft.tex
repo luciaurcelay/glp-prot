@@ -1355,10 +1355,10 @@ The null survives a stronger, dual-method check reproducing \cite{villegas2025pl
 verification protocol \cite{sathyaseelan2023znfprot}: a real Pfam zf-C2H2 profile-HMM scan
 (PF00096.33, via \texttt{pyhmmer}), counted as a genuine hit only if the aligned region also
 covers the profile's conserved Cys/His columns (their own two-stage design, since a
-low-significance Pfam match alone is a known false-positive mode). Across this run and 16
-further zinc-finger variants (different feature picks, feature pairs, and interventions;
-$n{=}11{,}822$ sequences total), \textbf{zero sequences satisfy both a sequence-pattern match
-and a corroborated HMM hit}. Four apparent hits were hand-inspected and are all individually
+low-significance Pfam match alone is a known false-positive mode). Across this run and 18
+further zinc-finger variants (different feature picks, feature pairs, interventions, decode
+hyperparameters, and concept scopes; $n{=}14{,}381$ sequences total), \textbf{zero sequences
+satisfy both a sequence-pattern match and a corroborated HMM hit}. Four apparent hits were hand-inspected and are all individually
 explainable false positives under one method alone: one Pfam alignment covers only the
 profile's non-Cys half in an otherwise cysteine-free sequence, and three pattern matches occur
 in extremely His/Arg/Lys-saturated, low-complexity sequences with zero HMM support at any
@@ -1378,14 +1378,33 @@ one $\alpha$ on an independent feature-pair run with the single strongest effect
 overall ($p{=}1.4\times10^{-8}$ at $\alpha{=}8$; the mean is confounded there by one degenerate
 outlier, the median moves from $-6.7$ naive to $-1.1$ corrected). The effect looks driven
 substantially by histidine enrichment rather than exact motif completion (corrected sequences
-average up to $4\times$ more histidines than naive at matched $\alpha$); 5 of the 17 runs
-tested show it, 12 show none. We read this as evidence that correction measurably nudges
+average up to $4\times$ more histidines than naive at matched $\alpha$); 6 of the 19 runs
+tested show it, 13 show none. We read this as evidence that correction measurably nudges
 generation toward the target concept's amino-acid composition without reconstructing the
 concept itself -- weaker than a positive steering result, but more informative than a flat
-null. We flag the whole variant as an open question rather than a result: its headline would
-be ``the correction's benefit depends on the concept, the $\alpha$, and even the number of
-features clamped, in ways we do not yet have a mechanism for,'' a real but qualified finding,
-not the clean three-property picture in the main text.
+null.
+
+Two further checks target the null more directly and leave it unchanged. The per-unit
+decoder fully resamples the sequence from scratch every round ($\mathrm{mask\_fraction}{=}1$,
+Algorithm~\ref{alg:steer}); re-running the flagship target (feature 1435) at
+$\mathrm{mask\_fraction}{=}0.10$ (uniform-random position choice -- the confidence-frozen
+alternative mode-collapses to homopolymers, Appendix~\ref{app:steer-protocol}, so we do not
+retry it here) still gives 0/1759 HMM-corroborated hits, and \emph{weakens} the graded signal
+rather than improving it (2 of 8 tested $\alpha$ significant, best $p{=}5.4\times10^{-4}$,
+against 5 of 8 and $p{=}2.1\times10^{-5}$ at $\mathrm{mask\_fraction}{=}1$); it also produces
+four more regex-only matches with zero HMM support, the same false-positive pattern
+characterized above. Separately, we picked the single SAE feature with the best
+InterPLM-exact F1 (feature 5696, val F1 $0.91$, test F1 $0.84$) against a broader, real
+Swiss-Prot label -- \emph{Zinc finger\_any}, any zinc-finger type combined, not this paper's
+synthetic five-subtype union -- and steered it directly: 0/800 HMM-corroborated hits, the
+feature's own re-embedded activation never approaches its selection threshold at any $\alpha$
+up to 8, and the graded signal shows no pull whatsoever ($p{=}1$ at every tested $\alpha$, the
+flattest of every zinc-finger variant tried). Neither the decode hyperparameter nor the
+feature/concept choice explains the null. We flag the whole variant as an open question
+rather than a result: its headline would be ``the correction's benefit depends on the
+concept, the $\alpha$, and even the number of features clamped, in ways we do not yet have a
+mechanism for, and is not attributable to an untuned decoder or an unlucky feature pick,''
+a real but qualified finding, not the clean three-property picture in the main text.
 
 \begin{table}[htbp]
 \centering
