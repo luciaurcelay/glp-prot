@@ -549,6 +549,11 @@ E.~Villegas Garcia and A.~Ansuini.
 \newblock Sparse autoencoders for interpretable steering of protein language models.
 \newblock \emph{arXiv:2502.09135}, 2025.
 
+\bibitem{sathyaseelan2023znfprot}
+C.~Sathyaseelan, L.~P.~P.~Patro, and T.~Rathinavelan.
+\newblock Sequence patterns and HMM profiles to predict proteome wide zinc finger motifs.
+\newblock \emph{Pattern Recognition}, 135:109134, 2023.
+
 \bibitem{chang2022maskgit}
 H.~Chang et~al.
 \newblock MaskGIT: Masked generative image transformer.
@@ -1344,10 +1349,62 @@ with $\alpha$ ($0\to{\sim}0.08$ by $\alpha{=}8$) -- and the same null holds in a
 wider pilot at $\alpha\in\{0,4,8,16,30,50\}$. Feature 1435 is an excellent \emph{detector} of
 this concept (F1 $0.907$ against real Swiss-Prot labels, Appendix~\ref{app:tables}) but does
 not work as a steering target at any strength tested here, a detector/steering-target gap
-rather than a scoring artefact. We flag the whole variant as an open question rather than a
-result: its headline would be ``the correction's benefit depends on the concept, the
-$\alpha$, and even the number of features clamped, in ways we do not yet have a mechanism
-for,'' a real but qualified finding, not the clean three-property picture in the main text.
+rather than a scoring artefact.
+
+The null survives a stronger, dual-method check reproducing \cite{villegas2025plmsae}'s own
+verification protocol \cite{sathyaseelan2023znfprot}: a real Pfam zf-C2H2 profile-HMM scan
+(PF00096.33, via \texttt{pyhmmer}), counted as a genuine hit only if the aligned region also
+covers the profile's conserved Cys/His columns (their own two-stage design, since a
+low-significance Pfam match alone is a known false-positive mode). Across this run and 18
+further zinc-finger variants (different feature picks, feature pairs, interventions, decode
+hyperparameters, and concept scopes; $n{=}14{,}381$ sequences total), \textbf{zero sequences
+satisfy both a sequence-pattern match and a corroborated HMM hit}. Four apparent hits were hand-inspected and are all individually
+explainable false positives under one method alone: one Pfam alignment covers only the
+profile's non-Cys half in an otherwise cysteine-free sequence, and three pattern matches occur
+in extremely His/Arg/Lys-saturated, low-complexity sequences with zero HMM support at any
+threshold -- exactly the failure modes \cite{sathyaseelan2023znfprot} designed their
+dual-method check to catch. One partial case is worth noting: a sequence from an
+independently-selected feature pair (6158+4421, picked for the un-numbered base concept)
+contains a correctly-spaced Cys-x(2)-Cys pair and one correctly-positioned conserved
+histidine, missing only the second required histidine -- the closest any generated sequence
+comes to a real C2H2 motif, though still incomplete.
+
+Despite the binary null, re-scoring every sequence against the same HMM profile continuously
+(no pass/fail cutoff; sequences with no detectable alignment floored at the reporting
+threshold rather than discarded) shows GLP correction shifts the score distribution
+significantly toward zf-C2H2 character (one-sided Mann--Whitney, corrected $>$ naive) at 5 of
+8 tested $\alpha$ on the primary run ($p$ as low as $2\times10^{-5}$ at $\alpha{=}6$), and at
+one $\alpha$ on an independent feature-pair run with the single strongest effect observed
+overall ($p{=}1.4\times10^{-8}$ at $\alpha{=}8$; the mean is confounded there by one degenerate
+outlier, the median moves from $-6.7$ naive to $-1.1$ corrected). The effect looks driven
+substantially by histidine enrichment rather than exact motif completion (corrected sequences
+average up to $4\times$ more histidines than naive at matched $\alpha$); 6 of the 19 runs
+tested show it, 13 show none. We read this as evidence that correction measurably nudges
+generation toward the target concept's amino-acid composition without reconstructing the
+concept itself -- weaker than a positive steering result, but more informative than a flat
+null.
+
+Two further checks target the null more directly and leave it unchanged. The per-unit
+decoder fully resamples the sequence from scratch every round ($\mathrm{mask\_fraction}{=}1$,
+Algorithm~\ref{alg:steer}); re-running the flagship target (feature 1435) at
+$\mathrm{mask\_fraction}{=}0.10$ (uniform-random position choice -- the confidence-frozen
+alternative mode-collapses to homopolymers, Appendix~\ref{app:steer-protocol}, so we do not
+retry it here) still gives 0/1759 HMM-corroborated hits, and \emph{weakens} the graded signal
+rather than improving it (2 of 8 tested $\alpha$ significant, best $p{=}5.4\times10^{-4}$,
+against 5 of 8 and $p{=}2.1\times10^{-5}$ at $\mathrm{mask\_fraction}{=}1$); it also produces
+four more regex-only matches with zero HMM support, the same false-positive pattern
+characterized above. Separately, we picked the single SAE feature with the best
+InterPLM-exact F1 (feature 5696, val F1 $0.91$, test F1 $0.84$) against a broader, real
+Swiss-Prot label -- \emph{Zinc finger\_any}, any zinc-finger type combined, not this paper's
+synthetic five-subtype union -- and steered it directly: 0/800 HMM-corroborated hits, the
+feature's own re-embedded activation never approaches its selection threshold at any $\alpha$
+up to 8, and the graded signal shows no pull whatsoever ($p{=}1$ at every tested $\alpha$, the
+flattest of every zinc-finger variant tried). Neither the decode hyperparameter nor the
+feature/concept choice explains the null. We flag the whole variant as an open question
+rather than a result: its headline would be ``the correction's benefit depends on the
+concept, the $\alpha$, and even the number of features clamped, in ways we do not yet have a
+mechanism for, and is not attributable to an untuned decoder or an unlucky feature pick,''
+a real but qualified finding, not the clean three-property picture in the main text.
 
 \begin{table}[htbp]
 \centering

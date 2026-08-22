@@ -1671,3 +1671,220 @@ Operational notes: E>=50 exceeds the 2h `acc_ehpc` wall — run_steering resumes
 partial CSV (skips done cells) if resubmitted. Always read effects **gated and ungated** and
 count degenerate rows; the confidence result is the cautionary case where filtering instead
 of counting would have manufactured a false win.
+
+## §18 The real Villegas-Garcia zinc-finger detector, applied properly (2026-08-21)
+
+Villegas-Garcia & Ansuini's own zinc-finger verification tool is Sathyaseelan, Patro &
+Rathinavelan 2023 (*Pattern Recognition* 135:109134, "ZnF-Prot"). Its actual protocol is
+**two independent methods that must agree**: (1) a curated library of 74 Cys/His sequence
+patterns (their Table 1 — same spirit as, but far larger than, this project's C2H2 regexes)
+and (2) a real Pfam profile-HMM scan (289 HMM profiles, incl. zf-C2H2/PF00096), with an
+E-value protocol (round 1: E<=1e-4; round 2, only if round 1 empty: E<=1e-1) and a final
+cross-check that a Pfam-only hit's aligned region actually contains the profile's conserved
+Cys/His columns before it counts (their NRML/SHFT vs. NMTF/XMUT/**XNCH** categories, §5.5.3
+of the paper). We don't have their 74-pattern library or their web tool, but the HMM half is
+directly reproducible: `pyhmmer` + the real PF00096.33 model (cached at
+`/gpfs/projects/bsc70/bsc070332/glp-prot-runs/adhoc_scripts/PF00096.hmm`, pulled in a prior
+session; `pyhmmer` itself had to be `pip install --user`'d this session — the login node
+does have outbound internet despite `run_steering.py`'s docstring saying otherwise, that
+line is now known-stale).
+
+### §18.1 E-value must be computed per-query, not batch-wide
+
+HMMER's E-value = p-value × Z, where Z defaults to the number of sequences in the search
+block. Batch-scanning e.g. 1800 generated sequences at once (fast, one `pipeline.search_hmm`
+call) inflates every hit's E-value by ~1800× relative to searching that one sequence alone —
+which is the context ZnF-Prot's own 1e-4/1e-1 cutoffs assume. Fix used throughout §18:
+either score sequences one at a time, or batch for speed and divide the reported E-value by
+the batch's own sequence count to recover the single-query-equivalent value.
+
+### §18.2 Dual-method result across all 17 zinc-finger runs: no corroborated hit anywhere
+
+`scripts/apply_pfam_zf_detector.py` runs the (E-value-corrected) Pfam scan against every
+zinc-finger-target Exp A run on disk (excludes Helix/Beta strand/Coiled coil, which reuse
+the `--zinc-finger-feature` flag's name for an unrelated SS concept) and cross-tabulates
+against the strict Banerjee/spec regex (`concept_count_strict`) and a minimal necessary
+sanity filter (a real C2H2 motif needs >=2 Cys in the whole sequence; fewer makes a Pfam
+"hit" automatically spurious):
+
+| run | n | HMM E<=1e-4 | HMM E<=1e-1 | HMM hit w/ >=2 Cys | strict-regex hits |
+|---|---|---|---|---|---|
+| steering_sae_zinc (6158+4421) | 1200 | 1 | 1 | 1 | 0 |
+| steering_sae_zinc_union1435 | 1800 | 1 | 1 | 0 | 0 |
+| steering_sae_zinc_union_top2 (1435+5696) | 800 | 1 | 1 | 0 | 3 |
+| the other 14 runs (interplm_exact, scaleshift, feat_{1547,5819,6311,7033}_solo, top2_interplm_pair, top2_villegas_pair, union1435_archived/argmax, zinc_6311_highalpha_pilot, zincfive, zincsix_min, zinc_villegas) | 8,822 | 0 | 0 | 0 | 0 |
+
+**~11,822 sequences across 17 runs, zero sequences satisfy both methods.** Two apparent
+"hits" and one apparent "hit" cluster were inspected sequence-by-sequence (`scripts/apply_pfam_zf_detector.py`'s
+per-candidate printout) and all fail on closer reading:
+
+- **`union1435` row 1467** (alpha=7, naive): `VRNAIGVTRNKKKKFRKAKHLAKHQRTSGRSAREASK` —
+  **zero cysteines**, so it is categorically impossible as a C2H2 motif (needs 2 Cys + 2
+  His). The HMM alignment itself only covers profile columns 8-22 of 23, missing the
+  N-terminal columns where the model's two conserved cysteines live — textbook ZnF-Prot
+  **XNCH** (Pfam hit, but the aligned region has no conserved marker residues) rejection.
+- **`steering_sae_zinc` row 289** (feature pair 6158+4421, alpha=0.5, naive):
+  `MMEYPCGHCNKSFNHNAGRDAHRGKAGQRGAGGCFMVE` — the one genuinely interesting case. Real
+  Cys-x(2)-Cys at the correct spacing, HMM alignment spans columns 1-19 of 23 (covers both
+  conserved cysteines), and lands on one correctly-positioned conserved His — but the
+  second His of the required `H-x(3-5)-H` pair is absent, so the strict regex (correctly)
+  doesn't match and the motif is incomplete. **This is a real partial C2H2 signature, not a
+  spurious one** — the closest thing to an actual zinc finger found anywhere in this
+  project's zinc-finger steering output, but it is not complete.
+- **`union_top2`'s 3 strict-regex hits** (`MRSNSMAKHMHQHICNRCHNLHGTHKHNKHHHTHTRHRHL`,
+  `MRRQKHNKCMQCTRHASMHRKRKCHTDKHMAN`, `RIRNRKKTCRMHRCRAWNRARHRKHNHSKQRCH`) are the mirror
+  failure: they satisfy the bare regex by chance in extremely His/Arg/Lys-saturated,
+  low-complexity sequences (one is 32.5% histidine) and get **zero HMM support at any
+  threshold** — exactly the false-positive mode ZnF-Prot's own paper motivates its
+  dual-method design around (§3.1: pattern-only search "has a shortcoming of providing
+  false positive(s)").
+
+**Verdict:** under Villegas-Garcia's actual (dual-method) protocol, every zinc-finger
+steering run tested produces zero corroborated C2H2 motifs. This supersedes the plain-regex
+(Banerjee-style) null already established for `union1435` in §15.6/§15.7 — same conclusion,
+now checked against the stronger, cross-validated criterion too.
+
+### §18.3 A graded (non-binary) signal does exist under GLP correction
+
+No hit ≠ no effect. `scripts/zinc_finger_graded_signal.py` scores every generated sequence
+against PF00096 with the pipeline's fast filters disabled and reporting threshold set to
+-1000 bits (`bias_filter=False, F1=F2=F3=1.0, T=domT=-1000.0`), so every sequence gets a
+real, continuous "how zf-C2H2-like is this" score instead of a pass/fail decision, then
+runs a per-alpha Mann-Whitney U test (`corrected > naive`, one-sided) on that score.
+**Sequences with literally no detectable alignment are floored to -1000, not left at -inf**
+— averaging a cell that mixes real scores with -inf silently poisons the whole mean to
+-inf, a stats bug caught mid-session, not a real result.
+
+Ranking across all 17 runs (number of tested alphas with `corrected > naive` at p<0.05):
+
+| run | sig. alphas | / tested | best p | @alpha |
+|---|---|---|---|---|
+| **union1435** | **5** | 8 | 2.1e-05 | 6 |
+| union1435_alpha0to50 (archived pilot — not for reporting, §15.6) | 2 | 5 | 0.0002 | 4 |
+| union_top2 ("union pair", 1435+5696) | 1 | 3 | **1.4e-08** | 8 |
+| zincsix_min (6-feature joint clamp) | 1 | 3 | 0.0006 | 4 |
+| steering_sae_zinc (6158+4421) | 1 | 5 | 0.024 | 2 |
+| other 12 runs | 0 | — | >=0.16 | — |
+
+`union1435` shows the most consistent dose-response — HMM score climbs from alpha=1 through
+alpha=6 under correction, naive stays flat/noisy, 5 of 8 tested alphas individually
+significant. Mechanism: driven substantially by histidine enrichment (e.g. at alpha=4,
+corrected sequences average 4.30 His vs naive's 1.15 — not by completing exact C2H2 spacing,
+Cys-pair rate stays ~1% either arm at that alpha).
+
+`union_top2`'s alpha=8 has the single strongest p-value of all 17 runs (1.4e-08) despite a
+**misleading mean** (naive -6.2 vs corrected -11.9, i.e. corrected looks worse by mean
+alone) — traced to one degenerate outlier in the corrected arm (a single sequence scoring
+the -1000 floor, no alignment at all; a candidate for the existing degeneracy gate to catch).
+The median tells the real story: naive -6.7 vs corrected **-1.1**, and corrected's best
+sequence (9.1) beats naive's best (5.7) too. Lesson: **when a distribution mixes real scores
+with a floored "no hit" value, report the median or a rank test, not the mean** — the same
+class of mistake this section's -inf bug was, one level more subtle.
+
+**Reading for the paper:** no zinc-finger steering run produces a complete, corroborated
+C2H2 motif (§18.2). But under a continuous, non-binary measure, GLP correction shows a
+real, statistically significant pull toward zf-C2H2 profile character in 5/17 runs — most
+consistently in `union1435` (the flagship UNION(1-5) target) across most of its alpha range,
+and most strongly (single best effect, needs the median caveat above) in `union_top2` at
+alpha=8. The other 12 runs show no such effect. This is honest evidence for "steering nudges
+toward the concept" that stops short of "steering produces the concept" — report both
+halves together, not the p-values alone.
+
+### §18.4 Reproduction
+
+```bash
+python3 -m pip install --user pyhmmer scipy   # not in the project .venv; pure-stdlib+these two only
+python3 scripts/apply_pfam_zf_detector.py       # §18.2 binary dual-method table + per-candidate inspection
+python3 scripts/zinc_finger_graded_signal.py    # §18.3 graded score + Mann-Whitney ranking
+```
+Both scripts hardcode `RUNS_ROOT`/`HMM_PATH` at the top (no CLI args) and need no GPU, no
+project venv, no `_bootstrap` — they read already-generated `expA_sae_zincfinger.csv` files
+directly. `scripts/analyze_banerjee_detectors.py` (same session) covers the non-zinc SS
+concepts (Helix/Beta strand domain-count framing) and is unrelated to this section.
+
+### §18.5 `union1435_bmask10` (mask_fraction=0.10 vs default 1.0) — no rescue (2026-08-22)
+
+The `[[project-zinc-finger-steering-investigation]]` memory's ranked next-step (1) proposed
+`--mask-selection confidence --mask-fraction 0.10` (confidence-frozen remasking) as untried.
+What was actually launched (job 44897409, `--mask-fraction 0.10` only, `--mask-selection`
+left at its default `random`) is a weaker version of that idea — partial-resample-per-round,
+but with uniformly random position choice, not confidence-frozen. It also **timed out**
+under `acc_debug`'s 2h cap at alpha=8/corrected (59/100 sequences; every other alpha/arm
+cell completed: 1759/1800 total) — no `three_regime`/pareto stage ran, but the per-sample
+CSV was complete enough to score directly, added to both detector scripts' run lists (§18.2,
+§18.3) and re-run:
+
+- **Dual-method (HMM+regex) verdict unchanged: 0 corroborated hits.** 0/1759 pass the Pfam
+  PF00096 scan at any E-value threshold (E<=1e-4 or E<=1e-1). 4 sequences match the
+  fixed-spacing `concept_count_strict` regex (all `corrected=True`, alphas 1/2/6/8, all with
+  >=2 Cys) but get **zero HMM support** — the same false-positive pattern as `union_top2`'s 3
+  regex-only hits in §18.2, not a new real signature. The one PROSITE-regex hit reported by
+  the live pipeline's own `motif_hit` column (alpha=6, corrected, `SVKWCAMECSLILSAKNRLSEH
+  LKHVFHRQQIRINTNRDV`) is a subset of these 4 and is included in that same "no HMM support"
+  verdict.
+- **Graded signal: weaker than the flagship run, not better.** 2/8 tested alphas
+  significant (best p=5.4e-4 @ alpha=6) vs. plain `union1435`'s 5/8 (best p=2.1e-5 @
+  alpha=6) — ranks #3 of 18 runs now tracked, behind `union1435` and the archived
+  alpha0-50 pilot.
+
+**Conclusion: reducing the per-round mask fraction to 0.10 (with random position choice)
+does not rescue zinc-finger steering** — same null on the binary criterion, a same-order
+graded pull that if anything got noisier. This doesn't yet test the memory's actual proposal
+(`--mask-selection confidence`, i.e. freezing high-confidence positions rather than choosing
+uniformly at random) — that variant is still untried and remains the most promising
+untested lead from the §15.7 checkpoint's ranked list.
+
+**Cross-check against a working case (`helix_5355_bmask10`, same session, job 44888658):**
+same `--mask-fraction 0.10` recipe, but targeting SAE feature 5355 for the Helix concept
+(`--concept-detector feature_activation`, threshold 0.15) instead of zinc finger. This one
+shows a strong, clean dose-response: naive concept-hit rate 12%->85% by alpha=1 (stays
+81-85% through alpha=5); GLP-corrected starts far weaker (2% at alpha=0) but converges to
+naive by alpha=3-5 (78-82%). This confirms the masked-Gibbs generation loop and
+`--mask-fraction 0.10` recipe both work correctly end-to-end — the zinc-finger null is a
+property of that concept/feature, not a pipeline bug, consistent with every other line of
+evidence in §15-§18.
+
+Reproduction: same as §18.4 (both scripts' `RUN_DIRS`/`RUNS` lists now include
+`steering_sae_zinc_union1435_bmask10`).
+
+### §18.6 `zinc_any_5696` — the InterPLM-exact top pick for the real "any zinc finger" label, still 0 hits (2026-08-22)
+
+`runs/adhoc_scripts/select_zinc_any_interplm_exact.py` exhaustively scanned all 10,240 SAE
+features against **`Zinc finger_any`** — a real, pre-existing Swiss-Prot column covering any
+zinc-finger type (C2H2, C4, RING, ...) combined, distinct from the project's synthetic
+C2H2-only UNION(1-5) label — using InterPLM's own `calc_metrics_sparse`/`calculate_metrics`
+at InterPLM's own threshold grid. Winner: **feature 5696 @ threshold 0.5** (domain-adjusted
+F1, since `Zinc finger_any` isn't in InterPLM's `per_aa_concepts` list): val F1=0.909, test
+F1=0.842 — the best interplm-exact pick found for any zinc concept in this project by a wide
+margin (c.f. `Zinc finger_C2H2-type`'s interplm_exact best of F1~0.17 in
+`compare_feature_methods_zinc.json` — different concept scope *and* a more lenient
+domain-level metric, not a directly comparable improvement).
+
+Steered it anyway (job 44917045, Exp A, alphas 2/4/8, n=100/cell, `--concept-detector
+feature_activation --concept-threshold 0.5 --concept-sign 1`, default mask_fraction=1.0,
+`--no-fold`) → `steering_sae_zinc_zinc_any_5696`. Added to both detector scripts'
+run lists and scored:
+
+- **Dual-method (PF00096 HMM + regex): 0/800, matching every other run.** 0 hits at either
+  E-value threshold, 0 regex hits (neither strict nor PROSITE). Caveat: PF00096 is
+  C2H2-specific, so this scan can't see a genuine non-C2H2 zinc finger (C4/RING) even if one
+  were produced — a real gap for this particular concept that doesn't apply to the UNION(1-5)
+  runs.
+- **The inline generation-time detector (feature_activation @ 0.5) also never fires: 0/800.**
+  `target_feature_activation_max` tops out at 0.05-0.23 across all alpha/arm cells (mean
+  0.02-0.05) — well under the 0.5 threshold at every alpha including 8. This is the exact
+  same threshold-transfer failure mode already documented in §15.1 for `union1435`
+  (full-length-Swiss-Prot-calibrated thresholds don't transfer to ~30-40-residue generated
+  fragments), now confirmed on a second, independently-selected feature/concept.
+- **Graded HMM signal: no pull at all, worst of all 19 runs tracked.** 0/3 alphas
+  significant, p=1.0 at every tested alpha (rank-sum never favors corrected). Ranks last in
+  the `zinc_finger_graded_signal.py` table, behind even `zinc_villegas`.
+
+**Conclusion: picking the single best-F1 feature for a broader, more lenient "any zinc
+finger" label doesn't rescue the null either** — if anything this run shows less pull than
+`union1435`'s dedicated UNION(1-5) target. Combined with §18.2's 0/13,581-then-0/14,381
+running total, the zinc-finger null looks like a property of steering a ~35-residue window at
+one layer, not of any particular feature/concept-label choice tried so far.
+
+Reproduction: same as §18.4 (`RUN_DIRS`/`RUNS` now also include
+`steering_sae_zinc_zinc_any_5696`). Feature selection: `runs/adhoc_scripts/select_zinc_any_interplm_exact.py`.
