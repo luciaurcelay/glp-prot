@@ -1846,3 +1846,45 @@ evidence in §15-§18.
 
 Reproduction: same as §18.4 (both scripts' `RUN_DIRS`/`RUNS` lists now include
 `steering_sae_zinc_union1435_bmask10`).
+
+### §18.6 `zinc_any_5696` — the InterPLM-exact top pick for the real "any zinc finger" label, still 0 hits (2026-08-22)
+
+`runs/adhoc_scripts/select_zinc_any_interplm_exact.py` exhaustively scanned all 10,240 SAE
+features against **`Zinc finger_any`** — a real, pre-existing Swiss-Prot column covering any
+zinc-finger type (C2H2, C4, RING, ...) combined, distinct from the project's synthetic
+C2H2-only UNION(1-5) label — using InterPLM's own `calc_metrics_sparse`/`calculate_metrics`
+at InterPLM's own threshold grid. Winner: **feature 5696 @ threshold 0.5** (domain-adjusted
+F1, since `Zinc finger_any` isn't in InterPLM's `per_aa_concepts` list): val F1=0.909, test
+F1=0.842 — the best interplm-exact pick found for any zinc concept in this project by a wide
+margin (c.f. `Zinc finger_C2H2-type`'s interplm_exact best of F1~0.17 in
+`compare_feature_methods_zinc.json` — different concept scope *and* a more lenient
+domain-level metric, not a directly comparable improvement).
+
+Steered it anyway (job 44917045, Exp A, alphas 2/4/8, n=100/cell, `--concept-detector
+feature_activation --concept-threshold 0.5 --concept-sign 1`, default mask_fraction=1.0,
+`--no-fold`) → `steering_sae_zinc_zinc_any_5696`. Added to both detector scripts'
+run lists and scored:
+
+- **Dual-method (PF00096 HMM + regex): 0/800, matching every other run.** 0 hits at either
+  E-value threshold, 0 regex hits (neither strict nor PROSITE). Caveat: PF00096 is
+  C2H2-specific, so this scan can't see a genuine non-C2H2 zinc finger (C4/RING) even if one
+  were produced — a real gap for this particular concept that doesn't apply to the UNION(1-5)
+  runs.
+- **The inline generation-time detector (feature_activation @ 0.5) also never fires: 0/800.**
+  `target_feature_activation_max` tops out at 0.05-0.23 across all alpha/arm cells (mean
+  0.02-0.05) — well under the 0.5 threshold at every alpha including 8. This is the exact
+  same threshold-transfer failure mode already documented in §15.1 for `union1435`
+  (full-length-Swiss-Prot-calibrated thresholds don't transfer to ~30-40-residue generated
+  fragments), now confirmed on a second, independently-selected feature/concept.
+- **Graded HMM signal: no pull at all, worst of all 19 runs tracked.** 0/3 alphas
+  significant, p=1.0 at every tested alpha (rank-sum never favors corrected). Ranks last in
+  the `zinc_finger_graded_signal.py` table, behind even `zinc_villegas`.
+
+**Conclusion: picking the single best-F1 feature for a broader, more lenient "any zinc
+finger" label doesn't rescue the null either** — if anything this run shows less pull than
+`union1435`'s dedicated UNION(1-5) target. Combined with §18.2's 0/13,581-then-0/14,381
+running total, the zinc-finger null looks like a property of steering a ~35-residue window at
+one layer, not of any particular feature/concept-label choice tried so far.
+
+Reproduction: same as §18.4 (`RUN_DIRS`/`RUNS` now also include
+`steering_sae_zinc_zinc_any_5696`). Feature selection: `runs/adhoc_scripts/select_zinc_any_interplm_exact.py`.

@@ -61,6 +61,7 @@ RUN_DIRS = [
     "steering_sae_zinc_zincfive",          # partial/cancelled run, ~3min in -- flagged, not clean
     "steering_sae_zinc_zincsix_min",
     "steering_sae_zinc_zinc_villegas",
+    "steering_sae_zinc_zinc_any_5696",
 ]
 
 PRIMARY_E = 1e-4   # ZnF-Prot round-1 cutoff

@@ -62,6 +62,7 @@ RUNS = [
     ("steering_sae_zinc_zincfive", "5-feature joint clamp (partial/cancelled run)"),
     ("steering_sae_zinc_zincsix_min", "6-feature joint clamp"),
     ("steering_sae_zinc_zinc_villegas", "villegas_garcia-style pick"),
+    ("steering_sae_zinc_zinc_any_5696", "Zinc finger_any, feature 5696, interplm_exact pick (val F1=0.91)"),
 ]
 
 CYS_PAIR_RE = re.compile(r"C.{2,4}C")
