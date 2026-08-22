@@ -109,28 +109,34 @@ Reuse the one store across all four cells (activations depend only on data/model
 not `n_blocks`). Per-cell: train → `submit_eval_generation` (FD, `fd_num_steps=1000`; PCA
 overlap). **Not** `submit_pipeline.sh` (which would also probe). Watch-items in §6.
 
-### Metric A results (in progress, 2026-08-22)
+### Metric A results — COMPLETE (2026-08-22)
 
-FD@1000 steps. **Absolute FD is not comparable across PLMs** (different dims/scales:
-650M FD~1347, floor 317.9; 8M FD~4.3, floor ~0.96) — compare the **lower-bound ratio**.
+FD@1000 steps (all 8 cells sweep `[20,50,100,300,1000]`). **Absolute FD is not comparable
+across PLMs** (different dims/scales: 650M FD~1347, floor 317.9; 8M FD~4.3, floor ~0.96) —
+compare the **lower-bound ratio** (FD ÷ intrinsic floor).
 
-| depth | 8M ratio | 650M ratio | 650M train time |
-|-------|----------|------------|-----------------|
-| d3    | 4.467    | 4.236      | 0:47            |
-| d6    | 4.470    | 4.234      | 2:35 (I/O contention w/ d3) |
-| d12   | 4.148    | *running* (44911418) | — |
-| d24   | 4.058    | *queued* (44911421, afterok d12) | — |
+| depth | 8M ratio | 650M ratio | Δ (8M−650M) |
+|-------|----------|------------|-------------|
+| d3    | 4.4667   | 4.2363     | +0.230 |
+| d6    | 4.4701   | 4.2344     | +0.236 |
+| d12   | 4.1477   | 3.9740     | +0.174 |
+| d24   | 4.0579   | 3.8610     | +0.197 |
 
-**Eval-time gotcha:** `submit_eval_generation.sh` defaults to `--time=02:00:00`, but the
-d24 FD sweep (generation up to 1000 steps with the 24-block model, ~4× d6's per-step cost)
-exceeds 2 h and TIMED OUT. Re-run deep cells' eval with `--time=10:00:00`. (d3/d6/d12 evals
-finished in ~18 min; only d24 needed the longer limit.)
+**The depth-scaling behavior ports cleanly from 8M to 650M:**
+1. **Same curve shape** — flat d3→d6 (depth below 6 blocks doesn't help), then monotone
+   improvement at d12/d24 at *both* scales.
+2. **Same magnitude of depth benefit** — d6→d24 ratio drops 9.2% (8M) vs 8.8% (650M); the
+   two curves are essentially parallel.
+3. **650M uniformly better** — lower ratio at every depth (Δ≈0.17–0.24): the GLP fits the
+   larger PLM's activation manifold at least as faithfully in relative terms.
 
-Findings so far: (1) both PLMs are **flat d3→d6** — depth below 6 blocks doesn't help at
-either scale (phenomenology ports); (2) 650M ratio (~4.23) is marginally better than 8M
-(~4.47) at d3/d6. The depth *improvement* only appears past d6 in the 8M curve, so d12/d24
-decide whether the 650M curve also bends down. d12→d24 launched sequentially (chained so the
-two heavy trains never contend on the store).
+650M train times (fp32, 1×H100): d3 0:47, d6 2:35 (I/O contention w/ d3), d12 ~4h, d24 6:42.
+
+**Eval-time gotcha:** `submit_eval_generation.sh` defaults to `--time=02:00:00`; the d24 FD
+sweep (generation to 1000 steps with the 24-block model, ~4× d6's per-step cost) exceeds 2h.
+Its first run wrote the full, valid sweep and then TIMED OUT on a downstream step — the d24
+numbers above are correct. Re-run deep cells' eval with `--time=10:00:00` if a clean exit is
+needed. (d3/d6/d12 evals finished in ~18 min.)
 
 ### Stage 4 — compare (metric A deliverable)
 Plot FD (and lower-bound ratio) vs `n_blocks` at fixed 1000 sampler steps, 650M curve
