@@ -121,6 +121,11 @@ FD@1000 steps. **Absolute FD is not comparable across PLMs** (different dims/sca
 | d12   | 4.148    | *running* (44911418) | — |
 | d24   | 4.058    | *queued* (44911421, afterok d12) | — |
 
+**Eval-time gotcha:** `submit_eval_generation.sh` defaults to `--time=02:00:00`, but the
+d24 FD sweep (generation up to 1000 steps with the 24-block model, ~4× d6's per-step cost)
+exceeds 2 h and TIMED OUT. Re-run deep cells' eval with `--time=10:00:00`. (d3/d6/d12 evals
+finished in ~18 min; only d24 needed the longer limit.)
+
 Findings so far: (1) both PLMs are **flat d3→d6** — depth below 6 blocks doesn't help at
 either scale (phenomenology ports); (2) 650M ratio (~4.23) is marginally better than 8M
 (~4.47) at d3/d6. The depth *improvement* only appears past d6 in the 8M curve, so d12/d24
