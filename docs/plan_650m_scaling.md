@@ -109,6 +109,24 @@ Reuse the one store across all four cells (activations depend only on data/model
 not `n_blocks`). Per-cell: train → `submit_eval_generation` (FD, `fd_num_steps=1000`; PCA
 overlap). **Not** `submit_pipeline.sh` (which would also probe). Watch-items in §6.
 
+### Metric A results (in progress, 2026-08-22)
+
+FD@1000 steps. **Absolute FD is not comparable across PLMs** (different dims/scales:
+650M FD~1347, floor 317.9; 8M FD~4.3, floor ~0.96) — compare the **lower-bound ratio**.
+
+| depth | 8M ratio | 650M ratio | 650M train time |
+|-------|----------|------------|-----------------|
+| d3    | 4.467    | 4.236      | 0:47            |
+| d6    | 4.470    | 4.234      | 2:35 (I/O contention w/ d3) |
+| d12   | 4.148    | *running* (44911418) | — |
+| d24   | 4.058    | *queued* (44911421, afterok d12) | — |
+
+Findings so far: (1) both PLMs are **flat d3→d6** — depth below 6 blocks doesn't help at
+either scale (phenomenology ports); (2) 650M ratio (~4.23) is marginally better than 8M
+(~4.47) at d3/d6. The depth *improvement* only appears past d6 in the 8M curve, so d12/d24
+decide whether the 650M curve also bends down. d12→d24 launched sequentially (chained so the
+two heavy trains never contend on the store).
+
 ### Stage 4 — compare (metric A deliverable)
 Plot FD (and lower-bound ratio) vs `n_blocks` at fixed 1000 sampler steps, 650M curve
 overlaid on the **already-complete 8M/100M curve**
