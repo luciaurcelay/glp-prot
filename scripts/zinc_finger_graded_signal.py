@@ -56,6 +56,7 @@ RUNS = [
     ("steering_sae_zinc_union1435", "UNION(1-5), feature 1435"),
     ("steering_sae_zinc_union1435_alpha0to50_n100_archived", "UNION(1-5) feature 1435, archived alpha0-50 pilot"),
     ("steering_sae_zinc_union1435_argmax", "UNION(1-5) feature 1435, argmax sampling"),
+    ("steering_sae_zinc_union1435_bmask10", "UNION(1-5) feature 1435, mask_fraction=0.10 (vs default 1.0)"),
     ("steering_sae_zinc_union_top2", "UNION(1-5) own top-2 pair (1435+5696) -- 'union_pair'"),
     ("steering_sae_zinc_zinc_6311_highalpha_pilot", "feature 6311, high-alpha pilot"),
     ("steering_sae_zinc_zincfive", "5-feature joint clamp (partial/cancelled run)"),

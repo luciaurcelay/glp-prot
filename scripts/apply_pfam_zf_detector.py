@@ -55,6 +55,7 @@ RUN_DIRS = [
     "steering_sae_zinc_union1435",
     "steering_sae_zinc_union1435_alpha0to50_n100_archived",
     "steering_sae_zinc_union1435_argmax",
+    "steering_sae_zinc_union1435_bmask10",
     "steering_sae_zinc_union_top2",
     "steering_sae_zinc_zinc_6311_highalpha_pilot",
     "steering_sae_zinc_zincfive",          # partial/cancelled run, ~3min in -- flagged, not clean

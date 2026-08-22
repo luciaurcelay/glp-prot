@@ -1801,3 +1801,48 @@ Both scripts hardcode `RUNS_ROOT`/`HMM_PATH` at the top (no CLI args) and need n
 project venv, no `_bootstrap` — they read already-generated `expA_sae_zincfinger.csv` files
 directly. `scripts/analyze_banerjee_detectors.py` (same session) covers the non-zinc SS
 concepts (Helix/Beta strand domain-count framing) and is unrelated to this section.
+
+### §18.5 `union1435_bmask10` (mask_fraction=0.10 vs default 1.0) — no rescue (2026-08-22)
+
+The `[[project-zinc-finger-steering-investigation]]` memory's ranked next-step (1) proposed
+`--mask-selection confidence --mask-fraction 0.10` (confidence-frozen remasking) as untried.
+What was actually launched (job 44897409, `--mask-fraction 0.10` only, `--mask-selection`
+left at its default `random`) is a weaker version of that idea — partial-resample-per-round,
+but with uniformly random position choice, not confidence-frozen. It also **timed out**
+under `acc_debug`'s 2h cap at alpha=8/corrected (59/100 sequences; every other alpha/arm
+cell completed: 1759/1800 total) — no `three_regime`/pareto stage ran, but the per-sample
+CSV was complete enough to score directly, added to both detector scripts' run lists (§18.2,
+§18.3) and re-run:
+
+- **Dual-method (HMM+regex) verdict unchanged: 0 corroborated hits.** 0/1759 pass the Pfam
+  PF00096 scan at any E-value threshold (E<=1e-4 or E<=1e-1). 4 sequences match the
+  fixed-spacing `concept_count_strict` regex (all `corrected=True`, alphas 1/2/6/8, all with
+  >=2 Cys) but get **zero HMM support** — the same false-positive pattern as `union_top2`'s 3
+  regex-only hits in §18.2, not a new real signature. The one PROSITE-regex hit reported by
+  the live pipeline's own `motif_hit` column (alpha=6, corrected, `SVKWCAMECSLILSAKNRLSEH
+  LKHVFHRQQIRINTNRDV`) is a subset of these 4 and is included in that same "no HMM support"
+  verdict.
+- **Graded signal: weaker than the flagship run, not better.** 2/8 tested alphas
+  significant (best p=5.4e-4 @ alpha=6) vs. plain `union1435`'s 5/8 (best p=2.1e-5 @
+  alpha=6) — ranks #3 of 18 runs now tracked, behind `union1435` and the archived
+  alpha0-50 pilot.
+
+**Conclusion: reducing the per-round mask fraction to 0.10 (with random position choice)
+does not rescue zinc-finger steering** — same null on the binary criterion, a same-order
+graded pull that if anything got noisier. This doesn't yet test the memory's actual proposal
+(`--mask-selection confidence`, i.e. freezing high-confidence positions rather than choosing
+uniformly at random) — that variant is still untried and remains the most promising
+untested lead from the §15.7 checkpoint's ranked list.
+
+**Cross-check against a working case (`helix_5355_bmask10`, same session, job 44888658):**
+same `--mask-fraction 0.10` recipe, but targeting SAE feature 5355 for the Helix concept
+(`--concept-detector feature_activation`, threshold 0.15) instead of zinc finger. This one
+shows a strong, clean dose-response: naive concept-hit rate 12%->85% by alpha=1 (stays
+81-85% through alpha=5); GLP-corrected starts far weaker (2% at alpha=0) but converges to
+naive by alpha=3-5 (78-82%). This confirms the masked-Gibbs generation loop and
+`--mask-fraction 0.10` recipe both work correctly end-to-end — the zinc-finger null is a
+property of that concept/feature, not a pipeline bug, consistent with every other line of
+evidence in §15-§18.
+
+Reproduction: same as §18.4 (both scripts' `RUN_DIRS`/`RUNS` lists now include
+`steering_sae_zinc_union1435_bmask10`).
