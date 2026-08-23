@@ -100,11 +100,15 @@ gotchas — all written up there, don't re-derive).
 W1 complete (**Gate G1 passed**) plus a mid-scale **local** run (`configs/local_clean.yaml`)
 and most of W3 probing — see the PLAN §9 checklist and `runs/local_clean/run_summary.md`.
 
-Headline: on 104 pre-registered concepts GLP meta-neurons lead 1-D probing AUC
-(**0.945** vs raw-MLP 0.916, SAE 0.900, raw-layer 0.861 — all paired-significant). On
-InterPLM-native **F1** the SAE is more precise (0.347 vs 0.241) and leads numerically
-(0.286 vs 0.264), but **not significantly** at n=14; GLP beats both raw baselines there.
-Don't overclaim either direction — extend F1 to all 104 concepts to settle it.
+Headline (probing — paper-authoritative is the **24-block/500M** model, `docs/paper_draft.tex`
+Tab. 2): on 104 pre-registered Swiss-Prot concepts a single GLP meta-neuron leads 1-D probing
+test AUC — **0.897** vs ESM-FFN 0.876, SAE 0.842, raw-layer 0.827 (every margin
+paired-significant) — and on 10 continuous properties GLP leads Spearman ρ (0.663 vs SAE
+0.605). **This reproduces at ESM-2-650M** (24-block/100M, layer 18): GLP **0.938** vs SAE
+0.890 over 166 concepts, GLP winning 152/166 (Wilcoxon p=4e-26; margin +0.048 ≈ the 8M
++0.055) — see `docs/plan_650m_scaling.md`. Do **not** quote the older `local_clean` numbers
+(0.945/0.900, a retired mid-scale local run) or the local F1 side-analysis (n=14); the paper
+reports AUC + Spearman.
 
 **Never train on eval proteins.** `extract_activations.py --exclude-from <eval tsv>` is
 mandatory: the default REST queries overlap ~98%, which silently hands GLP activations
