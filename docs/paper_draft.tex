@@ -49,7 +49,8 @@ GLP from language to protein language models and report three findings. First, a
 flow-matching GLP's generation quality improves monotonically with depth and data, all runs
 falling on one loss--compute curve. Second, probed one unit at a time for Swiss-Prot
 concepts, GLP's internal units isolate concepts at least as cleanly as InterPLM's released
-sparse-autoencoder features. Third, used as an on-manifold prior for activation steering of
+sparse-autoencoder features; both of these regularities reproduce on a $160\times$ larger
+host (ESM-2-650M). Third, used as an on-manifold prior for activation steering of
 three biochemical properties, the GLP correction is what makes steering effective, and it does
 restore the edited activations to GLP's learned manifold; but that on-manifold-ness does not
 translate into more natural, structurally plausible proteins. The three-property design lets
@@ -72,11 +73,12 @@ directly with no linearity or sparsity assumption. In the LLM setting GLP serves
 lens on representations and as an on-manifold prior for editing them.
 
 We take the first step of porting GLP to PLMs, and scope our claims to what we have
-\emph{built and validated}. Our contributions are: (i) a pipeline producing GLP a flow-matching GLP on ESM-2
-activations, and a characterization of how its generation quality scales with depth and data
-(Section~\ref{sec:gen-quality}); (ii) a single-unit concept-probing study showing GLP's
-internal units isolate Swiss-Prot concepts at least as cleanly as InterPLM's released SAE
-features, with a linear-falsification control (Section~\ref{sec:probing-results}); and
+\emph{built and validated}. Our contributions are: (i) a pipeline producing a flow-matching GLP on ESM-2
+activations, and a characterization of how its generation quality scales with depth and data,
+reproduced on ESM-2-650M (Section~\ref{sec:gen-quality}); (ii) a single-unit concept-probing
+study showing GLP's internal units isolate Swiss-Prot concepts at least as cleanly as
+InterPLM's released SAE features --- at both host sizes we test, ESM-2-8M and -650M --- with a
+linear-falsification control (Section~\ref{sec:probing-results}); and
 (iii) a three-property test of GLP as an on-manifold prior for activation steering
 (Section~\ref{sec:steering-results}), in which the correction makes steering effective but
 the naturalness benefit it was meant to buy does not appear, a failure the three-property design localizes to the
@@ -496,7 +498,9 @@ Porting the Generative Latent Prior to protein language models is worthwhile, bu
 different reasons than the LLM setting first suggested. As a lens on representations it
 delivers: a flow-matching GLP on ESM-2 activations scales cleanly with compute, and its
 internal units probe Swiss-Prot concepts at least as well as InterPLM's released SAE
-features. As an editing prior the picture is sharper and more cautionary. The GLP correction
+features --- and both results reproduce on a $160\times$ larger host (ESM-2-650M), so they are
+not artefacts of the smallest model. As an editing prior the picture is sharper and more
+cautionary. The GLP correction
 is what turns diff-of-means steering from ineffective into effective across all three
 biochemical properties we test, and it does return the edited activations to GLP's manifold.
 Yet the naturalness benefit that on-manifold-ness was meant to buy does not appear, and the
@@ -516,9 +520,9 @@ fix.
 \noindent\textbf{Limitations and next steps.}
 We report training rather than held-out loss for the scaling curve, over a $\sim$1-decade
 compute range that leaves the power law's floor unconstrained, primarily on ESM-2-8M --- with
-the depth grid and the single-unit probing comparison reproduced on ESM-2-650M
-(Sections~\ref{sec:gen-quality},~\ref{sec:probing-results}) --- at one hook layer per host,
-varying only depth. The probing comparison is single-unit and correlational,
+the depth grid and the single-unit probing comparison reproduced on ESM-2-650M at the 100M
+data scale (Sections~\ref{sec:gen-quality},~\ref{sec:probing-results}) --- at one hook layer
+per host, varying only depth. The probing comparison is single-unit and correlational,
 not causal, and its concept pool is dominated by domain/motif annotations. The steering study
 covers one intervention (diff-of-means) on three whole-sequence biochemical scalars, steered
 through amino-acid composition (Appendix~\ref{app:steer-instability}); we have not shown it
@@ -634,21 +638,30 @@ sits below the published LLM-activation reference (dotted).}
 \caption{Depth $\times$ data-scale grid, generation quality only. $N$ = parameters,
 $C = 6ND$, FD at 1000 sampler steps; ratio is FD / real-vs-real lower bound; loss is the
 mean of the last 500 training steps (the per-step flow-matching loss is noisy;
-Appendix~\ref{app:flops}).}
+Appendix~\ref{app:flops}). The ESM-2-8M and ESM-2-650M hosts occupy different-dimensional
+activation spaces ($d{=}320$ vs.\ $1280$), so absolute FD and loss are not comparable across
+the two host blocks; only the FD ratio is. The 650M grid is at the 100M data scale only.}
 \label{tab:scaling}
 \begin{tabular}{lrrrrrr}
 \toprule
 Data & Blocks & Params & $C = 6ND$ & FD@1000 & FD ratio & Loss \\
 \midrule
+\multicolumn{7}{l}{\emph{ESM-2-8M host ($d{=}320$)}} \\
 100M & 3  & 11.1M & $6.7{\times}10^{15}$ & 4.27 & 4.47$\times$ & 1.017 \\
 100M & 6  & 20.9M & $1.3{\times}10^{16}$ & 4.28 & 4.47$\times$ & 0.989 \\
 100M & 12 & 40.6M & $2.4{\times}10^{16}$ & 3.97 & 4.15$\times$ & 0.956 \\
 100M & 24 & 80.0M & $4.8{\times}10^{16}$ & 3.88 & 4.06$\times$ & 0.924 \\
-\midrule
+\cmidrule(l){1-7}
 500M & 3  & 11.1M & $3.3{\times}10^{16}$ & 3.54 & 3.33$\times$ & 0.946 \\
 500M & 6  & 20.9M & $6.3{\times}10^{16}$ & 3.52 & 3.31$\times$ & 0.902 \\
 500M & 12 & 40.6M & $1.2{\times}10^{17}$ & 3.23 & 3.04$\times$ & 0.863 \\
 \textbf{500M} & \textbf{24} & \textbf{80.0M} & $2.4{\times}10^{17}$ & \textbf{2.58} & \textbf{2.42$\times$} & \textbf{0.835} \\
+\midrule
+\multicolumn{7}{l}{\emph{ESM-2-650M host ($d{=}1280$, layer 18) --- absolute FD/loss in this host's own space}} \\
+100M & 3  & 177M  & $1.1{\times}10^{17}$ & 1346.8 & 4.24$\times$ & 1.038 \\
+100M & 6  & 334M  & $2.0{\times}10^{17}$ & 1346.1 & 4.23$\times$ & 0.974 \\
+100M & 12 & 649M  & $3.9{\times}10^{17}$ & 1263.4 & 3.97$\times$ & 0.919 \\
+100M & 24 & 1.28B & $7.7{\times}10^{17}$ & 1227.4 & 3.86$\times$ & 0.877 \\
 \bottomrule
 \end{tabular}
 \end{table}
