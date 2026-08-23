@@ -190,7 +190,13 @@ into depth or data. Our curve sits below the published LLM-activation reference,
 protein-activation models reach a lower loss at equal compute, though our roughly one-decade
 range is too narrow to pin the law's asymptote. Separately, Fréchet Distance to real
 activations falls monotonically with both depth and data, and depth pays off more when there
-is more data to support it (Appendix~\ref{app:scaling}).
+is more data to support it (Appendix~\ref{app:scaling}). This depth-dependence is not specific
+to the 8M host: repeating the depth grid on ESM-2-650M --- a $160{\times}$ larger PLM
+($d{=}1280$), hooked at layer~18 --- reproduces it (Fig.~\ref{fig:scaling650m}). The FD
+lower-bound ratio is flat below six blocks and then improves by ${\sim}9\%$ through 24 blocks
+at both host sizes, and 650M reaches a lower (better) ratio at every depth; because absolute
+FD is not comparable across hosts of different width, the comparison is on the ratio, which
+normalises each host by its own real-versus-real floor.
 
 \begin{figure}[t]
 \centering
@@ -200,6 +206,17 @@ power law in compute $C{=}6ND$; our protein-activation curve lies below the publ
 LLM-activation reference (dotted). Training curves, the FD grid and the scaling table are in
 Appendix~\ref{app:scaling}.}
 \label{fig:flops}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.58\textwidth]{figures/metric_a_ratio_vs_depth.png}
+\caption{FD lower-bound ratio (FD@1000 / real-vs-real floor; lower is better) vs GLP depth,
+on matched 100M-activation UniRef50 grids for ESM-2-8M and ESM-2-650M (layer 18). The
+depth-scaling shape ports across a $160{\times}$ change in host size --- flat below six blocks,
+then improving --- and 650M is uniformly lower. Absolute FD is not comparable across hosts of
+different width, so the ratio, which normalises each host by its own floor, is what is plotted.}
+\label{fig:scaling650m}
 \end{figure}
 
 \subsection{Concept probing: GLP meta-neurons vs.\ the SAE}
@@ -241,7 +258,26 @@ both axes.}
 \label{fig:probingauc}
 \end{figure}
 
+\textbf{The ordering holds at a $160{\times}$ larger host.} Repeating the single-unit
+comparison on ESM-2-650M (24-block GLP, layer~18, 166 qualifying concepts) reproduces the
+result: a single GLP meta-neuron again isolates concepts better than every baseline
+(Fig.~\ref{fig:probing650m}), beating the SAE on 152 of 166 concepts --- a paired margin of
+$+0.048$ AUC (Wilcoxon $p{<}10^{-25}$) that matches the 8M gap ($+0.055$). The two hosts are
+probed on different concept pools (166 vs 104), so absolute AUCs are not comparable across
+hosts; the within-host GLP-over-SAE margin is. One baseline ordering does shift: ESM's own
+feedforward neurons, second only to GLP at 8M, fall to last at 650M as the SAE becomes the
+strongest baseline --- but GLP still leads at both scales.
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.72\textwidth]{figures/probing_auc_8m_vs_650m.png}
+\caption{1-D probing mean test AUC by method and host (ESM-2-8M solid, ESM-2-650M hatched;
+95\% bootstrap CI). GLP meta-neurons lead at both host sizes. The two hosts use different
+concept pools (104 vs 166), so absolute AUCs are not comparable across hosts --- the
+within-host ordering is. ESM's FFN neurons drop from second (8M) to last (650M) as the SAE
+strengthens.}
+\label{fig:probing650m}
+\end{figure}
 
 \textbf{What this does and does not show.} A unit that best separates a concept says GLP's
 representation is more convenient to probe, not that it holds information the SAE's dictionary
@@ -479,8 +515,10 @@ fix.
 \medskip
 \noindent\textbf{Limitations and next steps.}
 We report training rather than held-out loss for the scaling curve, over a $\sim$1-decade
-compute range that leaves the power law's floor unconstrained, on a single host (ESM-2-8M) at
-one hook layer varying only depth. The probing comparison is single-unit and correlational,
+compute range that leaves the power law's floor unconstrained, primarily on ESM-2-8M --- with
+the depth grid and the single-unit probing comparison reproduced on ESM-2-650M
+(Sections~\ref{sec:gen-quality},~\ref{sec:probing-results}) --- at one hook layer per host,
+varying only depth. The probing comparison is single-unit and correlational,
 not causal, and its concept pool is dominated by domain/motif annotations. The steering study
 covers one intervention (diff-of-means) on three whole-sequence biochemical scalars, steered
 through amino-acid composition (Appendix~\ref{app:steer-instability}); we have not shown it
