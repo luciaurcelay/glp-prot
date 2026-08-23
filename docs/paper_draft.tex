@@ -51,8 +51,9 @@ falling on one loss--compute curve. Second, probed one unit at a time for Swiss-
 concepts, GLP's internal units isolate concepts at least as cleanly as InterPLM's released
 sparse-autoencoder features; both of these regularities reproduce on a $160\times$ larger
 host (ESM-2-650M). Third, used as an on-manifold prior for activation steering of
-three biochemical properties, the GLP correction is what makes steering effective, and it does
-restore the edited activations to GLP's learned manifold; but that on-manifold-ness does not
+three biochemical properties, the GLP correction is what makes steering effective, and it
+restores a steered activation to GLP's learned manifold in isolation; but that restoration does
+not survive decoding into a sequence --- for either steering mechanism we test --- and does not
 translate into more natural, structurally plausible proteins. The three-property design lets
 us localise this failure to the decoding loop rather than the prior, show that the
 intervention moves amino-acid composition rather than sequence order, and demonstrate that
@@ -467,6 +468,28 @@ results from junk (Appendix~\ref{app:steer-metrics}). And a lighter decoding bud
 better than the fixed point, confirming that the fixed point is a property of the decoder
 rather than of the method.
 
+\textbf{The restoration does not survive decoding --- for either steering mechanism.} The loss
+restoration above is measured on the steered activation \emph{in isolation}, before it is
+decoded (Appendix~\ref{app:steer-sdedit}); it does not carry through to the sequences steering
+actually produces. Re-embedding every finished generation and recomputing GLP's diffusion loss,
+the corrected arm is \emph{not} more on-manifold than the naive arm --- it is marginally
+\emph{worse}. For diff-of-means the mean re-embedded loss is $0.76$--$0.78$ (corrected) versus
+$0.74$--$0.75$ (naive) across all three properties; for the SAE-clamp structural runs it is
+$0.74$--$0.81$ versus $0.73$--$0.78$, significant for coiled coil, beta strand and zinc finger
+($p{<}10^{-17}$; helix is a null), with both arms sitting below the real-protein loss of $0.87$.
+Crucially this holds for \emph{both} decoders --- the diff-of-means loop that resamples a tenth
+of the positions per round, and the structural loop that regenerates the whole sequence each
+round --- so it is not an artifact of partial demasking. The root cause is precise: GLP is a
+prior over a \emph{continuous} activation manifold, applied to an intermediate activation, but
+the objective lives in \emph{discrete} sequence space, and the map from a corrected activation
+to tokens and back to a re-embedded activation is lossy and non-invertible. The language head
+uses the corrected activation only to \emph{choose amino acids}; re-embedding those amino acids
+returns whatever ESM computes for that sequence, with no constraint that it be GLP-typical. The
+correction cannot survive being turned into a sequence. This sharpens the dissociation above
+from ``on-manifold does not imply foldable'' to ``the on-manifold-ness does not even reach the
+output'': a continuous activation-space prior, corrected at an intermediate step, does not
+transmit through discrete decoding, independently of the decoder.
+
 \textbf{Per-unit steering: the correction's benefit is concept-dependent, not automatic.}
 Clamping a single SAE feature toward each of three structural concepts
 ($\alpha\in\{0,\ldots,5\}$, $n{=}100$ per cell, ground truth from ESMFold2+DSSP/\texttt{pepcoil}
@@ -502,10 +525,16 @@ features --- and both results reproduce on a $160\times$ larger host (ESM-2-650M
 not artefacts of the smallest model. As an editing prior the picture is sharper and more
 cautionary. The GLP correction
 is what turns diff-of-means steering from ineffective into effective across all three
-biochemical properties we test, and it does return the edited activations to GLP's manifold.
-Yet the naturalness benefit that on-manifold-ness was meant to buy does not appear, and the
-three-property design is what lets us say why. The lost structure is the masked-Gibbs decoder
-driving every protein toward a common foldability, not the prior. The correction's own effect
+biochemical properties we test, and it does return the edited activations to GLP's manifold ---
+but only \emph{in isolation}: re-embedding the sequences steering actually produces, the
+corrected arm is no more on-manifold than the naive one, and this holds for both steering
+mechanisms, including the one that regenerates the whole sequence rather than demasking part of
+it. So the restoration never reaches the output, for a precise reason: a prior over a
+continuous activation manifold, corrected at an intermediate step, cannot transmit through the
+lossy, non-invertible decode from a corrected activation to discrete tokens and back. The
+naturalness benefit that on-manifold-ness was meant to buy therefore does not appear, and the
+three-property, two-mechanism design is what lets us say why. The lost structure is the
+masked-Gibbs decoder driving every protein toward a common foldability, not the prior. The correction's own effect
 is a single compositional bias whose per-property signature includes a predicted null that
 holds. The steering reaches composition rather than sequence order. And the standard
 naturalness metrics are unreliable here, rating degenerate output above genuine proteins. The
