@@ -144,6 +144,35 @@ overlaid on the **already-complete 8M/100M curve**
 (`uniref50_100m_4096_b{3,6,12,24}/metrics/fd_vs_steps.json`). `compare_runs.py` currently
 keys its x-axis on `n_activations`; needs a small tweak to key on `n_blocks`.
 
+### Metric B results — COMPLETE (2026-08-23)
+
+650M, **d24** checkpoint (matches the paper's 24-block probing model, `paper_draft.tex`
+Tab. 2), layer-18 eval store, 166 qualifying concepts, select-on-valid/report-on-test.
+
+| Method | Mean test AUC | GLP wins vs it |
+|--------|---------------|----------------|
+| **GLP meta-neurons** | **0.9379** | — |
+| SAE (InterPLM)       | 0.8899 | 152/166 |
+| raw-layer            | 0.8509 | 158/166 |
+| raw-MLP (ESM FFN)    | 0.8415 | 160/166 |
+
+**Claim 1 ports to 650M.** GLP vs SAE: paired mean diff **+0.048** (median +0.027), GLP wins
+**152/166 (92%)**, Wilcoxon **p=4e-26**. The GLP-over-SAE margin matches the 8M paper (+0.048
+vs +0.055). raw-layer AUC (0.85085) matches the pilot to 5 dp (pipeline consistency check).
+
+Caveats for the paper paragraph: (1) baseline ordering shifts — at 8M ESM-FFN was 2nd
+(0.876 > SAE 0.842); at 650M ESM-FFN is last (0.841) and SAE is 2nd (0.890), i.e. the SAE
+strengthens at scale but GLP still wins. Concept sets differ (166 vs 104) so absolute AUCs
+aren't cross-scale comparable — the GLP−SAE margin is. (2) Selection-pool asymmetry (d24 GLP
+122,880 meta-neurons vs SAE 40,960, 3×) is inherited from the paper's method, run the same
+way; the pool-controlled re-run is the robustness follow-up. (3) 650M probing is 100M-act
+(paper's 8M probing was 500M) — depth matched, activation count did not.
+
+Config: `submit_run_probing.sh configs/esm650m_100m_4096_d24.yaml auc "" <pilot-l18 processed>`,
+default methods (all 4). Leakage gate passed with 0 overlap. NB: cancelling a probing run
+mid-`raw_mlp`-cache-build leaves a corrupt cache — delete `<processed>/cache/raw_mlp_*.npy`
+before re-running.
+
 ### Stage 5 — probing (metric B, only if time)
 Eval extraction with `--exclude-from <eval tsv>` (**never train on eval proteins**), the
 650M eval store (4× bigger, still small absolute), download SAE at the hooked layer, then
